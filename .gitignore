@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+*.tgz
+.env
+.env.*
+!.env.example
+.DS_Store
+next-env.d.ts

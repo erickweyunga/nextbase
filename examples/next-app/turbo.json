@@ -1,0 +1,13 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build", "typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^build", "build"],
+      "env": ["NEXTBASE_TEST_DATABASE_URL"]
+    }
+  }
+}
