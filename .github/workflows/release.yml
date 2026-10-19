@@ -31,9 +31,7 @@ jobs:
           publish-script: pnpm release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No npm token: each package trusts this workflow on npmjs.com
+          # (trusted publishing), which publishes with GitHub's OIDC token
+          # (id-token: write) and adds provenance.
           NPM_CONFIG_PROVENANCE: "true"
-          # A granular npm token, needed until each package has a trusted
-          # publisher on npmjs.com (which needs the package to exist). After
-          # that, delete the secret: publishing then uses OIDC.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
