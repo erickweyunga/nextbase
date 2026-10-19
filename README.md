@@ -1,4 +1,9 @@
-# NextBase
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/svg/nextbase-logo-light.svg">
+    <img src="brand/svg/nextbase-logo-dark.svg" alt="NextBase" height="48">
+  </picture>
+</h1>
 
 **Your backend, built into your app.**
 
@@ -13,18 +18,6 @@ React.
 **One package. One application. One deployment.**
 
 > Early development. Documentation: [nextbase.dev](https://nextbase.dev).
-
-## Repository layout
-
-| Path | What it is |
-| --- | --- |
-| `packages/nextbase-core` | `@nextbasejs/core`: the backend and the `nextbase` CLI, for any framework that speaks web-standard `Request`/`Response` |
-| `packages/nextbase-client` | `@nextbasejs/client`: the SDK and the wire types shared with the server |
-| `packages/nextbase-next` | `@nextbasejs/next`: route handlers and a server client for Next.js |
-| `packages/nextbase-react` | `@nextbasejs/react`: provider and hooks |
-| `packages/nextbase-admin` | Private admin UI, built to one HTML file and embedded into the server bundle |
-| `packages/nextbase-dbx` | Private Postgres query builder and data access layer, bundled into the server |
-| `examples/next-app` | Next.js app wired to the package; used for manual and end-to-end testing |
 
 ## Development
 
