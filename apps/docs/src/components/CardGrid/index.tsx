@@ -2,7 +2,6 @@ import Link from "@docusaurus/Link";
 import type { ReactNode } from "react";
 import styles from "./styles.module.css";
 
-// Outline icons on a 24-unit grid, drawn with the current text color.
 const ICONS = {
   database: (
     <>
@@ -64,11 +63,9 @@ export interface CardItem {
   title: string;
   description: ReactNode;
   icon: keyof typeof ICONS;
-  /** Makes the whole card a link. */
   href?: string;
 }
 
-/** A responsive grid of cards: features, or links into the docs. */
 export default function CardGrid({ items }: { items: CardItem[] }): ReactNode {
   return (
     <div className={styles.grid}>

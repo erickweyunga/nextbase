@@ -1,0 +1,50 @@
+---
+title: Email verification
+---
+
+# Email verification
+
+Verification proves that a user controls their email address, and sets the
+record's `verified` field. It needs [email sending](/docs/guides/auth/email).
+
+## Send the link
+
+```ts
+await nb.collection("users").requestVerification("ann@example.com");
+```
+
+The call resolves the same way whether or not the address belongs to an
+unverified account, so it reveals nothing about who has signed up.
+
+## Confirm it
+
+The email links to `/verify-email?token=...` in your app. That page confirms
+the token:
+
+```tsx title="app/verify-email/page.tsx"
+import { serverClient } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function VerifyEmail({
+  searchParams,
+}: {
+  searchParams: Promise<{ token?: string }>;
+}) {
+  const { token = "" } = await searchParams;
+  const nb = await serverClient(nextbase);
+  try {
+    await nb.collection("users").confirmVerification(token);
+    return <p>Your email is verified.</p>;
+  } catch {
+    return <p>This link is invalid or has expired.</p>;
+  }
+}
+```
+
+A link stops working once the account's email changes.
+
+## Require verification
+
+To keep unverified accounts from signing in, set the collection's
+`authRule` to `verified = true`. See
+[Email & Password](/docs/guides/auth/email-password#require-a-verified-email).

@@ -1,0 +1,46 @@
+---
+title: Email change
+---
+
+# Email change
+
+A signed-in user changes their email by confirming a link sent to the new
+address. It needs [email sending](/docs/guides/auth/email).
+
+## Send the link
+
+```ts
+await nb.collection("users").requestEmailChange("ann@new.example.com");
+```
+
+The user must be signed in. Whether another account already uses the new
+address is checked only on confirming, so the request reveals nothing.
+
+## Confirm it
+
+The email links to `/confirm-email-change?token=...` in your app. That page
+asks for the current password and confirms the change:
+
+```ts title="app/confirm-email-change/actions.ts"
+"use server";
+import { serverClient } from "@nextbasejs/next";
+import { redirect } from "next/navigation";
+import { nextbase } from "@/lib/nextbase";
+
+export async function confirmEmailChange(form: FormData) {
+  const nb = await serverClient(nextbase);
+  await nb
+    .collection("users")
+    .confirmEmailChange(String(form.get("token")), String(form.get("password")));
+  redirect("/sign-in");
+}
+```
+
+After the change:
+
+- the new email counts as verified,
+- every session of the account ends, so the user signs in again,
+- the old address gets an email saying the email changed.
+
+Only superusers, or callers matching the collection's `manageRule`, can change
+an email directly by updating the record.

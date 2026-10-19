@@ -5,7 +5,6 @@
   margin: 1.5rem 0 2rem;
 }
 
-/* One column on phones. */
 @media (max-width: 640px) {
   .grid {
     grid-template-columns: 1fr;

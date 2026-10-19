@@ -1,6 +1,12 @@
 import type { SidebarsConfig } from "@docusaurus/plugin-content-docs";
 
-// Top-level groups, each with an icon (see `sidebar-icon-*` in custom.css).
+const doc = (id: string, label: string, icon: string) => ({
+  type: "doc" as const,
+  id,
+  label,
+  className: `sidebar-item-icon sidebar-icon-${icon}`,
+});
+
 const sidebars: SidebarsConfig = {
   docs: [
     {
@@ -18,6 +24,11 @@ const sidebars: SidebarsConfig = {
         "guides/records",
         "guides/filters",
         "guides/rules",
+        "guides/auth/sessions",
+        "guides/auth/email",
+        "guides/auth/verification",
+        "guides/auth/password-reset",
+        "guides/auth/email-change",
       ],
     },
     {
@@ -25,15 +36,15 @@ const sidebars: SidebarsConfig = {
       label: "Authentication",
       className: "sidebar-icon sidebar-icon-auth",
       items: [
-        { type: "doc", id: "guides/auth/index", label: "Overview" },
-        "guides/auth/sessions",
+        doc("guides/auth/index", "Overview", "info"),
+        doc("guides/auth/email-password", "Email & Password", "mail"),
       ],
     },
     {
       type: "category",
-      label: "Next.js",
-      className: "sidebar-icon sidebar-icon-nextjs",
-      items: ["guides/server"],
+      label: "Integrations",
+      className: "sidebar-icon sidebar-icon-integrations",
+      items: [{ type: "doc", id: "integrations/nextjs", label: "Next.js" }],
     },
     {
       type: "category",

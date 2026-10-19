@@ -1,0 +1,81 @@
+---
+title: Sending email
+---
+
+# Sending email
+
+Email verification, password reset and email change send links by email.
+Give NextBase a `mail` option with any provider, such as Resend, SES, Postmark
+or SMTP:
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "nextbasejs";
+import { after } from "next/server";
+import { Resend } from "resend";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+export const nextbase = new NextBase({
+  mail: {
+    from: "app@example.com",
+    appUrl: "https://app.example.com",
+    async send({ from, to, subject, text, html }) {
+      await resend.emails.send({ from, to, subject, text, html });
+    },
+  },
+  waitUntil: after,
+});
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `from` | Required. The sender address. |
+| `send` | Required. Sends one email: `{ from, to, subject, text, html? }`. |
+| `appUrl` | Required. Your app's URL. Links point at pages there. HTTPS, except on localhost. |
+| `templates` | Optional. Replaces the subject and text of any kind of email. |
+
+Without `mail`, the account email endpoints answer 400 in production. In
+development, the emails are written to the server log instead, so you can
+follow the links.
+
+## Pages that take the links
+
+Links open pages in your app, at these paths under `appUrl`, with the token in
+`?token=`:
+
+| Email | Path | Guide |
+| ----- | ---- | ----- |
+| Verify your email | `/verify-email` | [Email verification](/docs/guides/auth/verification) |
+| Reset your password | `/reset-password` | [Password reset](/docs/guides/auth/password-reset) |
+| Confirm your new email | `/confirm-email-change` | [Email change](/docs/guides/auth/email-change) |
+
+The link's address always comes from `appUrl`, never from the request, so an
+attacker cannot make NextBase send links to their own site.
+
+## Sending in the background
+
+Emails are sent after the response, so requests answer just as fast whether or
+not an account exists. On serverless platforms, background work needs
+`waitUntil`: on Next.js, pass `after` from `next/server`, as above. On Vercel,
+NextBase uses Vercel's own `waitUntil` by default.
+
+## Custom templates
+
+Each kind of email has a plain-text default. Replace any of them:
+
+```ts
+mail: {
+  // ...
+  templates: {
+    passwordReset: ({ url }) => ({
+      subject: "Reset your Acme password",
+      text: `Choose a new password: ${url}`,
+      html: `<p><a href="${url}">Choose a new password</a></p>`,
+    }),
+  },
+},
+```
+
+The kinds are `verification`, `passwordReset`, `emailChange`,
+`passwordChanged` and `emailChanged`. The last two tell the owner that their
+password or email changed, and carry no link.

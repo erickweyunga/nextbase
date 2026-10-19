@@ -1,0 +1,279 @@
+---
+title: Next.js integration
+description: Integrate NextBase with Next.js.
+---
+
+# Next.js integration
+
+NextBase runs inside your Next.js app through the `@nextbasejs/next` package.
+Before you start, make sure you have a NextBase instance configured. If you
+haven't done that yet, follow [Getting started](/docs/getting-started).
+
+```sh
+npm i @nextbasejs/next @nextbasejs/react
+```
+
+`@nextbasejs/next` needs Next.js 16 or later and the App Router.
+
+## Create the API route
+
+Mount NextBase on a catch-all route. Create a route file in the
+`app/api/nextbase/[...path]` directory and add:
+
+```ts title="app/api/nextbase/[...path]/route.ts"
+import { newNextHandler } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
+```
+
+:::info
+
+You can mount NextBase elsewhere with the `basePath` option of
+`new NextBase()`, but we recommend keeping it at `/api/nextbase`, the default
+of every client.
+
+:::
+
+Route handlers run on the Node.js runtime, the Next.js default. The Edge
+runtime cannot connect to Postgres, so do not set `runtime = "edge"` on this
+route.
+
+## Create a client
+
+In client components, use `@nextbasejs/react`. Wrap your app in
+`NextBaseProvider` once, in the root layout. Passing the session the server
+read lets the first render already show the signed-in user:
+
+```tsx title="app/layout.tsx"
+import { serverClient } from "@nextbasejs/next";
+import { NextBaseProvider } from "@nextbasejs/react";
+import type { ReactNode } from "react";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const nb = await serverClient(nextbase);
+  const session = await nb.getSession();
+  return (
+    <html lang="en">
+      <body>
+        <NextBaseProvider session={session}>{children}</NextBaseProvider>
+      </body>
+    </html>
+  );
+}
+```
+
+Then any client component can reach the client and the signed-in user:
+
+```tsx title="components/sign-in-form.tsx"
+"use client";
+import { useNextBase, useSession } from "@nextbasejs/react";
+import { useRouter } from "next/navigation";
+
+export function SignInForm() {
+  const nb = useNextBase();
+  const { data: user } = useSession();
+  const router = useRouter();
+
+  if (user) return <p>Signed in as {String(user.email)}</p>;
+
+  async function signIn(form: FormData) {
+    await nb
+      .collection("users")
+      .signInWithPassword(String(form.get("email")), String(form.get("password")), {
+        cookie: true,
+      });
+    router.refresh(); // re-render server components as the signed-in user
+  }
+
+  return (
+    <form action={signIn}>
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
+      <button>Sign in</button>
+    </form>
+  );
+}
+```
+
+- `useSession()` returns `{ data, isPending, refetch }`, where `data` is the
+  signed-in record or `null`. It stays current as the user signs in and out,
+  in this tab or another.
+- `useNextBase()` returns the [client SDK](/docs/sdk) instance, for reading and
+  writing records.
+- Sign in with `{ cookie: true }` so the session lives in an HttpOnly cookie
+  that server components can read. See [Sessions and cookies](/docs/guides/auth/sessions).
+
+## Server components and server actions
+
+`serverClient(nextbase)` returns a client that acts as the user of the
+session cookie. It calls NextBase directly, without an HTTP request, and
+applies the same [access rules](/docs/guides/rules) as the REST API, so the
+server never sees more than the user could. Call it once per request.
+
+**Example: reading data in a server component**
+
+```tsx title="app/notes/page.tsx"
+import { serverClient } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function NotesPage() {
+  const nb = await serverClient(nextbase);
+  const session = await nb.getSession();
+  if (!session) return <p>Not signed in</p>;
+
+  const { items } = await nb.collection("notes").getList(1, 20);
+  return (
+    <ul>
+      {items.map((note) => (
+        <li key={note.id}>{String(note.text)}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+**Example: writing data in a server action**
+
+```ts title="app/notes/actions.ts"
+"use server";
+import { serverClient } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export async function addNote(form: FormData) {
+  const nb = await serverClient(nextbase);
+  const session = await nb.getSession();
+  if (!session) throw new Error("Sign in first.");
+  await nb.collection("notes").create({
+    text: String(form.get("text")),
+    owner: session.record.id,
+  });
+}
+```
+
+:::warning
+
+Server components cannot set cookies. Reading the session there works, but a
+renewal of the cookie that the request would trigger is skipped until the user
+next calls a server action or the API, which happens at most once a day.
+
+:::
+
+### Signing in and out in server actions
+
+In server actions, `serverClient` writes the session cookie through Next.js's
+`cookies()`, so signing in and out needs no extra setup:
+
+```ts title="app/actions.ts"
+"use server";
+import { serverClient } from "@nextbasejs/next";
+import { redirect } from "next/navigation";
+import { nextbase } from "@/lib/nextbase";
+
+export async function signIn(form: FormData) {
+  const nb = await serverClient(nextbase);
+  await nb
+    .collection("users")
+    .signInWithPassword(String(form.get("email")), String(form.get("password")), {
+      cookie: true,
+    });
+  redirect("/dashboard");
+}
+
+export async function signOut() {
+  const nb = await serverClient(nextbase);
+  await nb.signOut();
+  redirect("/sign-in");
+}
+```
+
+Wrong credentials throw a `ClientError` with status 400. Catch it to show a
+message.
+
+### Acting as a superuser
+
+For trusted server code, such as seed scripts, webhooks and admin tasks,
+`nextbase.client({ superuser: true })` bypasses every rule. Never let user
+input decide what it reads or writes. Requests over HTTP can never use this
+mode; it exists only for code running inside your app.
+
+## Protecting pages
+
+Next.js recommends keeping `proxy.ts` to quick checks, since it runs on every
+matched request, prefetches included. Redirect there optimistically, and check
+the session for real in each page.
+
+### Optimistic redirects in `proxy.ts`
+
+`hasSessionCookie()` checks that a session cookie is present, without a
+database query:
+
+```ts title="proxy.ts"
+import { hasSessionCookie } from "nextbasejs";
+import { type NextRequest, NextResponse } from "next/server";
+
+export function proxy(request: NextRequest) {
+  // Not a security check: anyone can send a cookie. It only spares signed-out
+  // visitors a page they would be redirected from anyway.
+  if (!hasSessionCookie(request)) {
+    return NextResponse.redirect(new URL("/sign-in", request.url));
+  }
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*"],
+};
+```
+
+To validate the session in the proxy too, use `nextbase.getSession(request)`.
+It checks the cookie or Bearer token against the database, and neither extends
+the session nor sets cookies. Match only the routes that need it:
+
+```ts title="proxy.ts"
+import { type NextRequest, NextResponse } from "next/server";
+import { nextbase } from "@/lib/nextbase";
+
+export async function proxy(request: NextRequest) {
+  const session = await nextbase.getSession(request);
+  if (!session) {
+    return NextResponse.redirect(new URL("/sign-in", request.url));
+  }
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*"],
+};
+```
+
+:::warning
+
+A proxy check never replaces checks where data is read. Your
+[access rules](/docs/guides/rules) protect the data itself, and each page
+should still check the session before rendering anything private.
+
+:::
+
+### Checking the session in each page
+
+```tsx title="app/dashboard/page.tsx"
+import { serverClient } from "@nextbasejs/next";
+import { redirect } from "next/navigation";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function DashboardPage() {
+  const nb = await serverClient(nextbase);
+  const session = await nb.getSession();
+  if (!session) redirect("/sign-in");
+
+  return <h1>Welcome {String(session.record.name)}</h1>;
+}
+```
+
+## Next steps
+
+- [Sessions and cookies](/docs/guides/auth/sessions)
+- [Access rules](/docs/guides/rules)
+- [Going to production](/docs/guides/production)

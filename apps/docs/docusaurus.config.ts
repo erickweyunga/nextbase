@@ -17,14 +17,12 @@ const config: Config = {
   future: {
     v4: {
       removeLegacyPostBuildHeadAttribute: true,
-      // Experimental: its polyfill outranks every rule in custom.css.
       useCssCascadeLayers: false,
       siteStorageNamespacing: true,
       fasterByDefault: true,
       mdx1CompatDisabledByDefault: true,
     },
   },
-  // The brand assets live in one place, at the repository root.
   staticDirectories: ["static", "../../brand/svg"],
   i18n: { defaultLocale: "en", locales: ["en"] },
   clientModules: ["./src/fonts.ts"],

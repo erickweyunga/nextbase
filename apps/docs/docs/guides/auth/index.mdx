@@ -1,7 +1,14 @@
+---
+title: Authentication
+sidebar_label: Overview
+---
+
 # Authentication
 
 Users live in **auth collections**. An auth collection has the system fields
 `email`, `password`, `verified` and `emailVisibility`; you add your own fields.
+Each signed-in user gets a session in the database, which you can list and
+revoke.
 
 ## Create a users collection
 
@@ -26,48 +33,26 @@ await superuser.collections.create({
 A rule of `""` allows anyone, `null` allows only superusers, and anything else
 is a filter the request must match.
 
-## Sign up and sign in
+## Ways to sign in
 
-```ts
-import { NextBaseClient } from "@nextbasejs/client";
+- [Email & Password](/docs/guides/auth/email-password): sign up, sign in and
+  sign out, with optional email verification.
 
-const nb = new NextBaseClient();
+## Account emails
 
-await nb.collection("users").create({
-  email: "ann@example.com",
-  password: "a long password",
-  passwordConfirm: "a long password",
-  name: "Ann",
-});
+With [email sending](/docs/guides/auth/email) set up, users can
+[verify their email](/docs/guides/auth/verification),
+[reset a forgotten password](/docs/guides/auth/password-reset) and
+[change their email](/docs/guides/auth/email-change).
 
-await nb.collection("users").signInWithPassword("ann@example.com", "a long password");
-nb.authStore.record; // the signed-in user
-```
+## Sessions
 
-Every later request carries the session, and the collection's rules decide what
-the user can read and write.
-
-## Sign out
-
-```ts
-await nb.signOut(); // ends the session on the server
-```
-
-Signing out deletes the session on the server, so its token stops working at
-once, not just on this device.
+Every sign-in creates a session that you keep in an HttpOnly cookie or as a
+Bearer token. See [Sessions and cookies](/docs/guides/auth/sessions).
 
 ## Protections
 
 - Passwords are hashed with scrypt.
-- Failed sign-ins are limited to 10 per account every 15 minutes.
-- Changing a password signs out every other session.
-- Errors never reveal whether an email is registered.
-
-To use the signed-in user in server components and server actions, sign in
-with a [session cookie](/docs/guides/auth/sessions).
-
-## Next steps
-
-- [Sessions and cookies](/docs/guides/auth/sessions)
-- [Access rules](/docs/guides/rules)
-- [REST API reference: auth](/docs/api/auth)
+- Failed sign-ins are limited per account, and repeated emails per address.
+- A password reset or email change signs out every session.
+- Requests never reveal whether an email is registered.
