@@ -1,7 +1,10 @@
 name: CI
 
-# Manual only: run from the Actions tab.
+# Runs on pull requests into dev and main, where passing is required to
+# merge, and manually from the Actions tab.
 on:
+  pull_request:
+    branches: [dev, main]
   workflow_dispatch:
 
 concurrency:

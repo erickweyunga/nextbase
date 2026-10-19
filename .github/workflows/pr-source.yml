@@ -1,0 +1,30 @@
+name: PR source
+
+# main only takes changes from dev and the changesets "Version Packages"
+# branch. Required to merge into main.
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the source branch
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Pull requests into main must come from this repository, not a fork. Open them against dev."
+            exit 1
+          fi
+          case "$HEAD_REF" in
+            dev | changeset-release/main) ;;
+            *)
+              echo "::error::Pull requests into main must come from dev, not $HEAD_REF. Open this one against dev."
+              exit 1
+              ;;
+          esac

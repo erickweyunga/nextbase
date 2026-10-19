@@ -1,19 +1,66 @@
 name: Release
 
-# Manual only: run from the Actions tab.
+# Every push to main opens or updates the "Version packages" PR while
+# changesets are pending. Merging that PR leaves unpublished versions on main,
+# and the publish job then waits for approval in the npm environment.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency: release-${{ github.ref }}
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+permissions: {}
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      unpublished: ${{ steps.unpublished.outputs.unpublished }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm version-packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A version missing from npm (or an unreachable registry) means there is
+      # something to publish; changeset publish skips what is already there.
+      - id: unpublished
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          unpublished=false
+          for manifest in packages/*/package.json; do
+            if [ "$(jq -r '.private // false' "$manifest")" = true ]; then continue; fi
+            spec="$(jq -r '"\(.name)@\(.version)"' "$manifest")"
+            if ! npm view "$spec" version > /dev/null 2>&1; then
+              echo "$spec is not on npm"
+              unpublished=true
+            fi
+          done
+          echo "unpublished=$unpublished" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: version
+    if: needs.version.outputs.unpublished == 'true'
+    runs-on: ubuntu-latest
+    # Required reviewers and the main-only branch policy live on this
+    # environment, and each package's npm trusted publisher names it, so npm
+    # rejects a publish that did not pass that approval.
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -23,15 +70,11 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      # Opens a "Version packages" PR while changesets are pending; publishes
-      # to npm, with provenance, when none are pending.
+      # Publishes with GitHub's OIDC token through each package's npm trusted
+      # publisher (no npm token), then tags and creates GitHub releases.
       - uses: changesets/action@v2
         with:
-          version-script: pnpm version-packages
           publish-script: pnpm release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No npm token: each package trusts this workflow on npmjs.com
-          # (trusted publishing), which publishes with GitHub's OIDC token
-          # (id-token: write) and adds provenance.
           NPM_CONFIG_PROVENANCE: "true"
