@@ -1,5 +1,5 @@
-import type { Collection } from "@nextbase/client";
-import type { Row } from "@nextbase/dbx";
+import type { Collection } from "@nextbasejs/client";
+import type { Row } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 
 /**

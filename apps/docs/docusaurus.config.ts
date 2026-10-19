@@ -14,7 +14,16 @@ const config: Config = {
   onBrokenLinks: "throw",
   onBrokenAnchors: "throw",
   markdown: { hooks: { onBrokenMarkdownLinks: "throw" } },
-  future: { v4: true },
+  future: {
+    v4: {
+      removeLegacyPostBuildHeadAttribute: true,
+      // Experimental: its polyfill outranks every rule in custom.css.
+      useCssCascadeLayers: false,
+      siteStorageNamespacing: true,
+      fasterByDefault: true,
+      mdx1CompatDisabledByDefault: true,
+    },
+  },
   // The brand assets live in one place, at the repository root.
   staticDirectories: ["static", "../../brand/svg"],
   i18n: { defaultLocale: "en", locales: ["en"] },
@@ -26,6 +35,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: "./sidebars.ts",
+          breadcrumbs: false,
           editUrl: `${REPOSITORY}/tree/main/apps/docs/`,
         },
         blog: false,
@@ -59,7 +69,12 @@ const config: Config = {
           position: "left",
         },
         { to: "/docs/api", label: "REST API", position: "left" },
-        { href: REPOSITORY, label: "GitHub", position: "right" },
+        {
+          href: REPOSITORY,
+          position: "right",
+          className: "header-github-link",
+          "aria-label": "GitHub repository",
+        },
       ],
     },
     footer: {

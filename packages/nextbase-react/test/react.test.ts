@@ -1,10 +1,10 @@
-import type { CurrentSession } from "@nextbase/client";
+import type { CurrentSession } from "@nextbasejs/client";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { NextBaseProvider, useNextBase, useSession } from "../src/index.ts";
 
-describe("@nextbase/react", () => {
+describe("@nextbasejs/react", () => {
   const session: CurrentSession = {
     id: "s1",
     created: "2026-10-19T00:00:00.000Z",

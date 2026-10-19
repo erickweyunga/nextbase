@@ -1,6 +1,6 @@
-# @nextbase/dbx
+# @nextbasejs/dbx
 
-Postgres query builder and data access on a [node-postgres](https://node-postgres.com) pool. It is a private package, bundled into `@nextbase/server`.
+Postgres query builder and data access on a [node-postgres](https://node-postgres.com) pool. It is a private package, bundled into `nextbasejs`.
 
 - SQL with named `{:name}` placeholders and quoted `{{table}}` and `[[column]]` names
 - A SELECT builder, insert, upsert, update and delete, and record CRUD by primary key
@@ -13,7 +13,7 @@ Postgres query builder and data access on a [node-postgres](https://node-postgre
 
 ```ts
 import pg from "pg";
-import { DB, hash } from "@nextbase/dbx";
+import { DB, hash } from "@nextbasejs/dbx";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const db = new DB(pool);
@@ -227,7 +227,7 @@ The tests run against a real Postgres. Each test file works in its own temporary
 
 ```sh
 createdb nextbase_test
-pnpm --filter @nextbase/dbx test
+pnpm --filter @nextbasejs/dbx test
 ```
 
 `NEXTBASE_TEST_DATABASE_URL` sets the database, and defaults to `postgres://localhost/nextbase_test`.

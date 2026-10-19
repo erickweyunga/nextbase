@@ -1,5 +1,5 @@
-import { serverClient } from "@nextbase/next";
-import { NextBaseProvider } from "@nextbase/react";
+import { serverClient } from "@nextbasejs/next";
+import { NextBaseProvider } from "@nextbasejs/react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { nextbase } from "@/lib/nextbase";

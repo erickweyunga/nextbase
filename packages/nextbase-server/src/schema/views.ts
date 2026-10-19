@@ -1,5 +1,5 @@
-import type { Collection, Field, ViewCollection } from "@nextbase/client";
-import type { Builder, Tx } from "@nextbase/dbx";
+import type { Collection, Field, ViewCollection } from "@nextbasejs/client";
+import type { Builder, Tx } from "@nextbasejs/dbx";
 import { SCHEMA, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";

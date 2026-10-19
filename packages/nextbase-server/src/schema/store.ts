@@ -2,8 +2,8 @@ import type {
   AuthCollection,
   Collection,
   ViewCollection,
-} from "@nextbase/client";
-import { type Builder, exp, hash, type Tx } from "@nextbase/dbx";
+} from "@nextbasejs/client";
+import { type Builder, exp, hash, type Tx } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 
 interface CollectionRow {

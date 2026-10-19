@@ -1,4 +1,4 @@
-import { serverClient } from "@nextbase/next";
+import { serverClient } from "@nextbasejs/next";
 import { nextbase } from "@/lib/nextbase";
 
 // proxy.ts sends signed-out visitors to /sign-in before this renders, and

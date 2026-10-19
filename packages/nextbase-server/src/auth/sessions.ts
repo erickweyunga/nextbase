@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { AuthCollection, SessionModel } from "@nextbase/client";
-import { type Builder, hash, type Row } from "@nextbase/dbx";
+import type { AuthCollection, SessionModel } from "@nextbasejs/client";
+import { type Builder, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";

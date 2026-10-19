@@ -2,7 +2,7 @@ import {
   ClientError,
   type CollectionInput,
   type NextBaseClient,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";

@@ -9,29 +9,29 @@ NextBase is four packages, one per layer, so the server is not tied to Next.js:
 
 | Package | For |
 | --- | --- |
-| `@nextbase/server` | The backend. `nextbase.handle(request)` takes a web-standard `Request` and returns a `Response`, so any framework that speaks the Fetch API can mount it. |
-| `@nextbase/next` | Next.js: route handlers, and a server client that reads `cookies()`. Needs `next`. |
-| `@nextbase/react` | React: `NextBaseProvider`, `useSession()`, `useNextBase()`. Needs `react`. |
-| `@nextbase/client` | The SDK, for browsers and any JavaScript runtime. |
+| `nextbasejs` | The backend. `nextbase.handle(request)` takes a web-standard `Request` and returns a `Response`, so any framework that speaks the Fetch API can mount it. |
+| `@nextbasejs/next` | Next.js: route handlers, and a server client that reads `cookies()`. Needs `next`. |
+| `@nextbasejs/react` | React: `NextBaseProvider`, `useSession()`, `useNextBase()`. Needs `react`. |
+| `@nextbasejs/client` | The SDK, for browsers and any JavaScript runtime. |
 
 ```ts
 // lib/nextbase.ts
 import "server-only";
-import { NextBase } from "@nextbase/server";
+import { NextBase } from "nextbasejs";
 
 export const nextbase = new NextBase();
 ```
 
 ```ts
 // app/api/nextbase/[...path]/route.ts
-import { newNextHandler } from "@nextbase/next";
+import { newNextHandler } from "@nextbasejs/next";
 import { nextbase } from "@/lib/nextbase";
 
 export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
 ```
 
 ```ts
-import { NextBaseClient } from "@nextbase/client";
+import { NextBaseClient } from "@nextbasejs/client";
 
 const nb = new NextBaseClient();
 // Creates the account and signs it in, in one request:
@@ -51,7 +51,7 @@ in-process. `serverClient` reads the session cookie, so it acts as the
 signed-in user:
 
 ```ts
-import { serverClient } from "@nextbase/next";
+import { serverClient } from "@nextbasejs/next";
 
 const nb = await serverClient(nextbase);
 const session = await nb.getSession();
@@ -129,8 +129,8 @@ out:
 
 ```tsx
 // app/layout.tsx
-import { serverClient } from "@nextbase/next";
-import { NextBaseProvider } from "@nextbase/react";
+import { serverClient } from "@nextbasejs/next";
+import { NextBaseProvider } from "@nextbasejs/react";
 
 export default async function RootLayout({ children }) {
   const session = await (await serverClient(nextbase)).getSession();
@@ -146,7 +146,7 @@ export default async function RootLayout({ children }) {
 
 ```tsx
 "use client";
-import { useNextBase, useSession } from "@nextbase/react";
+import { useNextBase, useSession } from "@nextbasejs/react";
 
 export function UserMenu() {
   const { data, isPending } = useSession();

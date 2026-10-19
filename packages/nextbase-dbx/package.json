@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/dbx",
+  "name": "@nextbasejs/dbx",
   "version": "0.0.0",
   "private": true,
   "description": "Postgres query builder and data access for NextBase.",

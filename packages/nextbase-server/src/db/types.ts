@@ -1,4 +1,4 @@
-import type { TypeParsers } from "@nextbase/dbx";
+import type { TypeParsers } from "@nextbasejs/dbx";
 import pg from "pg";
 import { parseTimestamptz } from "../storable.ts";
 

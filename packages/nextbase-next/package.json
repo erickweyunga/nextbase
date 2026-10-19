@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/next",
+  "name": "@nextbasejs/next",
   "version": "0.0.0",
   "license": "MIT",
   "type": "module",
@@ -39,14 +39,14 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@nextbase/client": "workspace:^",
-    "@nextbase/server": "workspace:^",
+    "@nextbasejs/client": "workspace:^",
+    "nextbasejs": "workspace:^",
     "next": ">=16"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
-    "@nextbase/client": "workspace:*",
-    "@nextbase/server": "workspace:*",
+    "@nextbasejs/client": "workspace:*",
+    "nextbasejs": "workspace:*",
     "@types/node": "catalog:",
     "next": "catalog:",
     "publint": "catalog:",

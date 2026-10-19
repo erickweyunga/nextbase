@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/server",
+  "name": "nextbasejs",
   "version": "0.0.0",
   "license": "MIT",
   "type": "module",
@@ -44,15 +44,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@nextbase/client": "workspace:*",
+    "@nextbasejs/client": "workspace:*",
     "@vercel/functions": "catalog:",
     "jose": "catalog:",
     "pg": "catalog:"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
-    "@nextbase/admin": "workspace:*",
-    "@nextbase/dbx": "workspace:*",
+    "@nextbasejs/admin": "workspace:*",
+    "@nextbasejs/dbx": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "publint": "catalog:",

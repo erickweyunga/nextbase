@@ -5,7 +5,7 @@ import {
   NextBaseClient,
   type RecordModel,
   type RecordService,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Io, run } from "../src/cli/run.ts";
 import { NextBase } from "../src/index.ts";

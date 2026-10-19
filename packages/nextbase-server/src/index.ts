@@ -1,5 +1,5 @@
-import adminHtml from "@nextbase/admin/index.html?raw";
-import type { AuthCollection } from "@nextbase/client";
+import adminHtml from "@nextbasejs/admin/index.html?raw";
+import type { AuthCollection } from "@nextbasejs/client";
 import {
   AuthStore,
   ClientError,
@@ -7,8 +7,8 @@ import {
   DEFAULT_BASE_PATH,
   type HealthResponse,
   NextBaseClient,
-} from "@nextbase/client";
-import { DB, type Pool } from "@nextbase/dbx";
+} from "@nextbasejs/client";
+import { DB, type Pool } from "@nextbasejs/dbx";
 import { ROUTES } from "./api/routes.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
 import { type Principal, resolvePrincipal } from "./auth/principal.ts";
@@ -57,8 +57,8 @@ export type {
   ErrorData,
   FieldError,
   HealthResponse,
-} from "@nextbase/client";
-export type { Pool } from "@nextbase/dbx";
+} from "@nextbasejs/client";
+export type { Pool } from "@nextbasejs/dbx";
 export type {
   MailContext,
   MailKind,
@@ -309,7 +309,7 @@ export class NextBase {
    * Handles any request under `basePath`: a web-standard Request in, a
    * Response out, so any framework that speaks the Fetch API can mount it.
    * Bound, so safe to pass around. For Next.js, see `newNextHandler()` in
-   * `@nextbase/next`.
+   * `@nextbasejs/next`.
    */
   readonly handle: RouteHandler = (request) =>
     this.#dispatch(request, { http: true });

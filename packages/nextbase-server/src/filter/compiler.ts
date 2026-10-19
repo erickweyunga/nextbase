@@ -1,5 +1,5 @@
-import type { Collection, Field } from "@nextbase/client";
-import { type Expression, exp, type Params } from "@nextbase/dbx";
+import type { Collection, Field } from "@nextbasejs/client";
+import { type Expression, exp, type Params } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 import { table } from "../db/system.ts";
 import type { Schema } from "../schema/cache.ts";

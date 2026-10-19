@@ -1,4 +1,4 @@
-import { type DB, hash } from "@nextbase/dbx";
+import { type DB, hash } from "@nextbasejs/dbx";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { migrate } from "../src/db/migrations.ts";

@@ -1,4 +1,4 @@
-import type { Collection, Field, ListResult } from "@nextbase/client";
+import type { Collection, Field, ListResult } from "@nextbasejs/client";
 import {
   and,
   type Builder,
@@ -9,7 +9,7 @@ import {
   type Params,
   type Row,
   type Tx,
-} from "@nextbase/dbx";
+} from "@nextbasejs/dbx";
 import { verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";

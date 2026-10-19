@@ -1,6 +1,6 @@
 "use client";
 
-import { useSession } from "@nextbase/react";
+import { useSession } from "@nextbasejs/react";
 
 export function UserBadge() {
   const { data, isPending } = useSession();

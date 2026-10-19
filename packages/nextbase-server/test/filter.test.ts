@@ -1,5 +1,5 @@
-import type { AuthCollection, Collection } from "@nextbase/client";
-import { DB, type Params } from "@nextbase/dbx";
+import type { AuthCollection, Collection } from "@nextbasejs/client";
+import { DB, type Params } from "@nextbasejs/dbx";
 import { describe, expect, it } from "vitest";
 import type { Principal } from "../src/auth/principal.ts";
 import {

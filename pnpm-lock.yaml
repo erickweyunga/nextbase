@@ -341,21 +341,21 @@ importers:
 
   examples/next-app:
     dependencies:
-      '@nextbase/client':
+      '@nextbasejs/client':
         specifier: workspace:*
         version: link:../../packages/nextbase-client
-      '@nextbase/next':
+      '@nextbasejs/next':
         specifier: workspace:*
         version: link:../../packages/nextbase-next
-      '@nextbase/react':
+      '@nextbasejs/react':
         specifier: workspace:*
         version: link:../../packages/nextbase-react
-      '@nextbase/server':
-        specifier: workspace:*
-        version: link:../../packages/nextbase-server
       next:
         specifier: 'catalog:'
         version: 16.4.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      nextbasejs:
+        specifier: workspace:*
+        version: link:../../packages/nextbase-server
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -438,18 +438,18 @@ importers:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
         version: 0.18.5
-      '@nextbase/client':
+      '@nextbasejs/client':
         specifier: workspace:*
         version: link:../nextbase-client
-      '@nextbase/server':
-        specifier: workspace:*
-        version: link:../nextbase-server
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
       next:
         specifier: 'catalog:'
         version: 16.4.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      nextbasejs:
+        specifier: workspace:*
+        version: link:../nextbase-server
       publint:
         specifier: 'catalog:'
         version: 0.3.25
@@ -474,7 +474,7 @@ importers:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
         version: 0.18.5
-      '@nextbase/client':
+      '@nextbasejs/client':
         specifier: workspace:*
         version: link:../nextbase-client
       '@types/react':
@@ -504,7 +504,7 @@ importers:
 
   packages/nextbase-server:
     dependencies:
-      '@nextbase/client':
+      '@nextbasejs/client':
         specifier: workspace:*
         version: link:../nextbase-client
       '@vercel/functions':
@@ -520,10 +520,10 @@ importers:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
         version: 0.18.5
-      '@nextbase/admin':
+      '@nextbasejs/admin':
         specifier: workspace:*
         version: link:../nextbase-admin
-      '@nextbase/dbx':
+      '@nextbasejs/dbx':
         specifier: workspace:*
         version: link:../nextbase-dbx
       '@types/node':

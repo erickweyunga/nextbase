@@ -1,4 +1,4 @@
-import type { Pool } from "@nextbase/dbx";
+import type { Pool } from "@nextbasejs/dbx";
 import { attachDatabasePool } from "@vercel/functions";
 import pg from "pg";
 

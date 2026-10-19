@@ -1,4 +1,4 @@
-import type { DB, Tx } from "@nextbase/dbx";
+import type { DB, Tx } from "@nextbasejs/dbx";
 import { ALPHANUMERIC, randomString } from "../random.ts";
 import { superusersCollection } from "../schema/collection.ts";
 import { saveCollectionRow } from "../schema/store.ts";

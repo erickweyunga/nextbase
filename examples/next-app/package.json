@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/example-next-app",
+  "name": "@nextbasejs/example-next-app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@nextbase/client": "workspace:*",
-    "@nextbase/next": "workspace:*",
-    "@nextbase/react": "workspace:*",
-    "@nextbase/server": "workspace:*",
+    "@nextbasejs/client": "workspace:*",
+    "@nextbasejs/next": "workspace:*",
+    "@nextbasejs/react": "workspace:*",
+    "nextbasejs": "workspace:*",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

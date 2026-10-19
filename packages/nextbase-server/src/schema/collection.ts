@@ -7,7 +7,7 @@ import type {
   Rule,
   TokenConfig,
   TokenType,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { ApiError } from "../errors.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import {

@@ -3,7 +3,7 @@ import type {
   Field,
   FieldType,
   PasswordField,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { type Issues, isRecord, type Path, Reader } from "./input.ts";
 

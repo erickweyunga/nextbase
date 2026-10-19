@@ -1,5 +1,5 @@
-import type { Collection, Field } from "@nextbase/client";
-import type { Builder, Row } from "@nextbase/dbx";
+import type { Collection, Field } from "@nextbasejs/client";
+import type { Builder, Row } from "@nextbasejs/dbx";
 import { hashPassword } from "../auth/password.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";

@@ -24,13 +24,13 @@ database with your existing tables.
 ## 1. Install
 
 ```sh
-npm i @nextbase/server @nextbase/client @nextbase/next
+npm i nextbasejs @nextbasejs/client @nextbasejs/next
 ```
 
 ## 2. Create the instance
 
 ```ts title="lib/nextbase.ts"
-import { NextBase } from "@nextbase/server";
+import { NextBase } from "nextbasejs";
 
 // Reads DATABASE_URL. Connects lazily, so `next build` needs no database.
 export const nextbase = new NextBase();
@@ -39,7 +39,7 @@ export const nextbase = new NextBase();
 ## 3. Mount the route handler
 
 ```ts title="app/api/nextbase/[...path]/route.ts"
-import { newNextHandler } from "@nextbase/next";
+import { newNextHandler } from "@nextbasejs/next";
 import { nextbase } from "@/lib/nextbase";
 
 export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
@@ -64,7 +64,7 @@ From a script or seed file you can also call
 ## 5. Make a request
 
 ```ts
-import { NextBaseClient } from "@nextbase/client";
+import { NextBaseClient } from "@nextbasejs/client";
 
 const nb = new NextBaseClient(); // defaults to /api/nextbase
 await nb.health(); // { status: "ok" }

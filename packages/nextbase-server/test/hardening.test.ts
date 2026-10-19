@@ -1,4 +1,4 @@
-import type { AuthCollection } from "@nextbase/client";
+import type { AuthCollection } from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Principal } from "../src/auth/principal.ts";
 import { compileFilter } from "../src/filter/compiler.ts";

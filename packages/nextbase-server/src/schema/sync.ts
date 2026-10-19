@@ -1,5 +1,5 @@
-import type { Collection, ErrorData, Field } from "@nextbase/client";
-import type { Builder, DB, Tx } from "@nextbase/dbx";
+import type { Collection, ErrorData, Field } from "@nextbasejs/client";
+import type { Builder, DB, Tx } from "@nextbasejs/dbx";
 import { lockSchema, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { ruleProblem } from "../filter/compiler.ts";

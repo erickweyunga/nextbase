@@ -1,4 +1,4 @@
-import { ClientError, type NextBaseClient } from "@nextbase/client";
+import { ClientError, type NextBaseClient } from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type MailMessage, NextBase } from "../src/index.ts";
 import { call } from "./http.ts";

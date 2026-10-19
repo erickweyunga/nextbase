@@ -1,4 +1,4 @@
-import type { AuthCollection, Collection, ErrorData } from "@nextbase/client";
+import type { AuthCollection, Collection, ErrorData } from "@nextbasejs/client";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../src/random.ts";

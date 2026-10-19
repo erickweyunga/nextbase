@@ -5,7 +5,7 @@ import {
   filter,
   NextBaseClient,
   type RecordModel,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseFilter } from "../src/filter/parser.ts";
 import { NextBase } from "../src/index.ts";

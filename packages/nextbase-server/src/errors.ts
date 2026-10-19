@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ErrorData } from "@nextbase/client";
+import type { ApiErrorBody, ErrorData } from "@nextbasejs/client";
 
 /** An error with an HTTP status, returned to the client as an ApiErrorBody. */
 export class ApiError extends Error {

@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/react",
+  "name": "@nextbasejs/react",
   "version": "0.0.0",
   "license": "MIT",
   "type": "module",
@@ -39,12 +39,12 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@nextbase/client": "workspace:^",
+    "@nextbasejs/client": "workspace:^",
     "react": ">=19"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
-    "@nextbase/client": "workspace:*",
+    "@nextbasejs/client": "workspace:*",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "publint": "catalog:",

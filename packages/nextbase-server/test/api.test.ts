@@ -1,4 +1,4 @@
-import { hash } from "@nextbase/dbx";
+import { hash } from "@nextbasejs/dbx";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../src/auth/password.ts";
 import { NextBase } from "../src/index.ts";

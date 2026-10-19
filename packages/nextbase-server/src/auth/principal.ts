@@ -1,5 +1,5 @@
-import type { AuthCollection } from "@nextbase/client";
-import type { DB, Row } from "@nextbase/dbx";
+import type { AuthCollection } from "@nextbasejs/client";
+import type { DB, Row } from "@nextbasejs/dbx";
 import { ApiError } from "../errors.ts";
 import type { Schema } from "../schema/cache.ts";
 import {

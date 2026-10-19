@@ -1,7 +1,7 @@
 # Client SDK
 
 ```ts
-import { NextBaseClient, type RecordModel } from "@nextbase/client";
+import { NextBaseClient, type RecordModel } from "@nextbasejs/client";
 
 const nb = new NextBaseClient(); // baseUrl defaults to "/api/nextbase"
 ```
@@ -44,7 +44,7 @@ numbers stay numbers, and `null` or `undefined` become `null`.
 Every failure throws a `ClientError`:
 
 ```ts
-import { ClientError } from "@nextbase/client";
+import { ClientError } from "@nextbasejs/client";
 
 try {
   await posts.create({});

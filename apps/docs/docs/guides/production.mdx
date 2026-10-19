@@ -34,7 +34,7 @@ Or pass a pool, for example Neon's serverless driver:
 
 ```ts
 import { Pool } from "@neondatabase/serverless";
-import { NextBase } from "@nextbase/server";
+import { NextBase } from "nextbasejs";
 
 export const nextbase = new NextBase({
   database: new Pool({ connectionString: process.env.DATABASE_URL }),

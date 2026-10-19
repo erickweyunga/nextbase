@@ -1,4 +1,4 @@
-import type { Builder } from "@nextbase/dbx";
+import type { Builder } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 

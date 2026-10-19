@@ -1,5 +1,5 @@
 {
-  "name": "@nextbase/docs",
+  "name": "@nextbasejs/docs",
   "version": "0.0.0",
   "private": true,
   "scripts": {
@@ -27,5 +27,17 @@
     "@docusaurus/types": "catalog:",
     "@types/react": "catalog:",
     "typescript": "catalog:"
+  },
+  "browserslist": {
+    "production": [
+      ">0.5%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 3 chrome version",
+      "last 3 firefox version",
+      "last 5 safari version"
+    ]
   }
 }

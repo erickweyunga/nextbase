@@ -1,4 +1,4 @@
-import { filter } from "@nextbase/client";
+import { filter } from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Api } from "./client.ts";
 import { type Server, startServer } from "./server.ts";

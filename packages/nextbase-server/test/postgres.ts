@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DB } from "@nextbase/dbx";
+import { DB } from "@nextbasejs/dbx";
 import pg from "pg";
 
 const url =

@@ -8,7 +8,7 @@ Users live in **auth collections**. An auth collection has the system fields
 As a superuser, for example from a one-time script:
 
 ```ts title="scripts/setup-auth.ts"
-import { NextBase } from "@nextbase/server";
+import { NextBase } from "nextbasejs";
 
 const superuser = new NextBase().client({ superuser: true });
 
@@ -29,7 +29,7 @@ is a filter the request must match.
 ## Sign up and sign in
 
 ```ts
-import { NextBaseClient } from "@nextbase/client";
+import { NextBaseClient } from "@nextbasejs/client";
 
 const nb = new NextBaseClient();
 

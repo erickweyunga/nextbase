@@ -1,5 +1,5 @@
-import type { AuthCollection } from "@nextbase/client";
-import { type Builder, type DB, hash, type Row } from "@nextbase/dbx";
+import type { AuthCollection } from "@nextbasejs/client";
+import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { lockSchema, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";

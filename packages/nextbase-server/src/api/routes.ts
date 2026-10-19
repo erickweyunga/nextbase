@@ -1,5 +1,9 @@
-import type { AuthCollection, AuthMethods, Collection } from "@nextbase/client";
-import { type DB, hash, type Tx } from "@nextbase/dbx";
+import type {
+  AuthCollection,
+  AuthMethods,
+  Collection,
+} from "@nextbasejs/client";
+import { type DB, hash, type Tx } from "@nextbasejs/dbx";
 import {
   confirmEmailChange,
   confirmPasswordReset,

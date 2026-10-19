@@ -1,4 +1,4 @@
-import type { ErrorData, FieldError } from "@nextbase/client";
+import type { ErrorData, FieldError } from "@nextbasejs/client";
 
 export type Path = readonly (string | number)[];
 

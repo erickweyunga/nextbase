@@ -2,7 +2,7 @@ import {
   ClientError,
   NextBaseClient,
   type RecordModel,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Server, startServer } from "./server.ts";
 

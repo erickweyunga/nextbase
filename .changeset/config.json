@@ -8,10 +8,10 @@
   },
   "fixed": [
     [
-      "@nextbase/client",
-      "@nextbase/server",
-      "@nextbase/next",
-      "@nextbase/react"
+      "@nextbasejs/client",
+      "nextbasejs",
+      "@nextbasejs/next",
+      "@nextbasejs/react"
     ]
   ]
 }

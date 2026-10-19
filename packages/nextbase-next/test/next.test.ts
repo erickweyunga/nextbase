@@ -1,8 +1,8 @@
-import { NextBase } from "@nextbase/server";
+import { NextBase } from "nextbasejs";
 import { describe, expect, it } from "vitest";
 import { newNextHandler } from "../src/index.ts";
 
-describe("@nextbase/next", () => {
+describe("@nextbasejs/next", () => {
   it("mounts NextBase as App Router route handlers", async () => {
     const handlers = newNextHandler(new NextBase({ database: "unused" }));
     expect(Object.keys(handlers)).toEqual([

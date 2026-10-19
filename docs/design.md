@@ -57,8 +57,8 @@ new NextBase(options) ──► router ──► body limits ──► principal
 ### 2.1 Package layout
 
 Runtime code is published as four packages, versioned together (a Changesets `fixed` group):
-`@nextbase/client` (the SDK and the wire types), `@nextbase/server` (which depends on the client),
-and the adapters `@nextbase/next` and `@nextbase/react`, which take the core packages, `next` and
+`@nextbasejs/client` (the SDK and the wire types), `nextbasejs` (which depends on the client),
+and the adapters `@nextbasejs/next` and `@nextbasejs/react`, which take the core packages, `next` and
 `react` as peer dependencies. The server is framework-agnostic: `handle(request)` takes a
 web-standard `Request` and returns a `Response`, and the in-process client takes any cookie store
 with `get` and `set`. Paths below are within those packages.
@@ -77,7 +77,7 @@ with `get` and `set`. Paths below are within those packages.
 | `react/`               | React bindings: `NextBaseProvider`, `useSession()`, `useNextBase()` |
 | `shared/`              | Wire types shared by server and client                       |
 
-The admin UI stays in the private `@nextbase/admin` package and is embedded at build time.
+The admin UI stays in the private `@nextbasejs/admin` package and is embedded at build time.
 
 ### 2.2 Runtime
 
@@ -97,7 +97,7 @@ The admin UI stays in the private `@nextbase/admin` package and is embedded at b
 ```ts
 // lib/nextbase.ts
 import "server-only";
-import { NextBase, s3Storage } from "@nextbase/server";
+import { NextBase, s3Storage } from "nextbasejs";
 
 export const nextbase = new NextBase({
   database: process.env.DATABASE_URL, // or a pg-compatible Pool
@@ -127,10 +127,10 @@ drivers mirror its `Pool` interface, and it binds parameters natively, which the
 relies on.
 
 No ORM is used. Collections are defined at runtime, so a static schema tool like Drizzle or Prisma
-cannot describe them. SQL goes through the private `@nextbase/dbx` package, a Postgres-only query
+cannot describe them. SQL goes through the private `@nextbasejs/dbx` package, a Postgres-only query
 builder: named `{:name}` parameters numbered as `$n`, identifier quoting, composable condition expressions,
 SELECT/DML/DDL builders, record-level insert/update/delete and transactions. It is bundled into
-`@nextbase/server`. Names are validated against the name regex before they reach it, and values
+`nextbasejs`. Names are validated against the name regex before they reach it, and values
 are never interpolated into SQL text.
 
 ## 3. Database layout
@@ -991,7 +991,7 @@ The invariant: every filename stored in the database exists in storage.
 ## 10. Client SDK
 
 ```ts
-import { NextBaseClient } from "@nextbase/client";
+import { NextBaseClient } from "@nextbasejs/client";
 
 const nb = new NextBaseClient(); // baseUrl defaults to "/api/nextbase"
 
@@ -1038,7 +1038,7 @@ nb.authStore.onChange((token, record) => {});
 
 ```ts
 // Server component or server action: acts as the user of the session cookie.
-// serverClient (from @nextbase/next) reads Next.js's cookies(); elsewhere, pass any
+// serverClient (from @nextbasejs/next) reads Next.js's cookies(); elsewhere, pass any
 // cookie store: nextbase.client({ cookies }).
 const nb = await serverClient(nextbase);
 const session = await nb.getSession();

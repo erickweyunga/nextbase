@@ -5,7 +5,7 @@ import {
   type CurrentSession,
   NextBaseClient,
   type RecordModel,
-} from "@nextbase/client";
+} from "@nextbasejs/client";
 import {
   createContext,
   createElement,

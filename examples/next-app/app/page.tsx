@@ -1,4 +1,4 @@
-import { serverClient } from "@nextbase/next";
+import { serverClient } from "@nextbasejs/next";
 import { nextbase } from "@/lib/nextbase";
 
 export default async function Home() {

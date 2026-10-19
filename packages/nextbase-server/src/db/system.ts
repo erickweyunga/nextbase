@@ -1,4 +1,4 @@
-import type { Tx } from "@nextbase/dbx";
+import type { Tx } from "@nextbasejs/dbx";
 
 /** The Postgres schema holding every NextBase table. */
 export const SCHEMA = "nextbase";
