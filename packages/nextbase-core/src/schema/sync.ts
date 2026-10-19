@@ -122,6 +122,16 @@ export async function deleteCollection(
     } else
       await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
     await deleteCollectionRow(tx, existing.id);
+    if (existing.type === "auth") {
+      for (const name of ["_external_auths", "_oauth2_states"]) {
+        await tx
+          .newQuery(
+            `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
+          )
+          .bind({ collectionId: existing.id })
+          .execute();
+      }
+    }
     await bumpSchemaVersion(tx);
   });
 }

@@ -85,6 +85,7 @@ describe("migrate", () => {
       "0002_sessions",
       "0003_parse_timestamptz",
       "0004_view_collections",
+      "0005_oauth2",
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

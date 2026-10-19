@@ -47,6 +47,7 @@
     "@nextbasejs/client": "workspace:*",
     "@vercel/functions": "catalog:",
     "jose": "catalog:",
+    "oauth4webapi": "catalog:",
     "pg": "catalog:"
   },
   "devDependencies": {

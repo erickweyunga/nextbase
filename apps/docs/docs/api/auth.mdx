@@ -107,6 +107,184 @@ The password matched, but the `authRule` did not.
 </TabItem>
 </Tabs>
 
+## Sign in with OAuth2
+
+Redirects the browser to an [OAuth2 provider](/docs/guides/auth/oauth2). The
+provider sends it back to the callback below, which signs it in and redirects
+to `redirect` on your app, or to `errorRedirect` with `?error=`. Open it as a
+page, not with `fetch`.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+nb.collection("users").signInWithOAuth2("google", { redirect: "/dashboard" });
+
+// Or the URL, for a link:
+const url = nb.collection("users").oauth2Url("google", { redirect: "/dashboard" });
+```
+
+</TabItem>
+<TabItem value="html" label="HTML">
+
+```html
+<a href="/api/nextbase/collections/users/auth-with-oauth2/google?redirect=/dashboard">
+  Continue with Google
+</a>
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /collections/{collection}/auth-with-oauth2/{provider}
+```
+
+**Query parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `redirect` | string | Optional. A path on your app to return to, such as `/dashboard`. Defaults to `appUrl`. |
+| `errorRedirect` | string | Optional. A path to return to with `?error=` when the sign-in fails, such as `/sign-in`. Defaults to `redirect`. |
+| `link` | boolean | Optional. `true` links the provider to the signed-in record instead of signing in. Needs a session cookie, and must come from this site. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="302" label="302">
+
+Redirects to the provider and sets a short-lived cookie that ties the sign-in
+to this browser.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "redirect must be a path on the app.", "data": { "redirect": { "code": "validation_invalid_redirect", "message": "Must be a path, such as /dashboard." } } }
+```
+Also returned for the superusers collection.
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "OAuth2 provider not found.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## OAuth2 callback
+
+Where providers send the browser back: register
+`{appUrl}{basePath}/oauth2-callback` at each provider. It finishes the
+sign-in, sets the session cookie and redirects to the sign-in's `redirect`,
+or, when it fails, to its `errorRedirect` with `?error=` (see
+[when a sign-in fails](/docs/guides/auth/oauth2#when-a-sign-in-fails)).
+
+```http
+GET /oauth2-callback
+```
+
+## List linked providers
+
+The OAuth2 providers linked to a record. Only the record itself and
+superusers may list them.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const linked = await nb.collection("users").listExternalAuths("u7v8w9x0y1z2a3b");
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/external-auths \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /collections/{collection}/records/{id}/external-auths
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "items": [
+    { "id": "e1f2g3h4i5j6k7l", "provider": "github", "created": "2026-10-19T12:00:00.000Z" }
+  ]
+}
+```
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to manage linked providers.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Record not found.", "data": {} }
+```
+Also returned for another user's record.
+
+</TabItem>
+</Tabs>
+
+## Unlink a provider
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.collection("users").unlinkExternalAuth("u7v8w9x0y1z2a3b", "github");
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/external-auths/github \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /collections/{collection}/records/{id}/external-auths/{provider}
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "The provider is not linked.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
 ## Refresh
 
 Extends the current session to its full lifetime and returns the record,

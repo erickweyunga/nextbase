@@ -556,6 +556,15 @@ async function deleteWithReferences(
     }
   }
   await tx.delete(table(collection.name), hash({ id })).execute();
+  // Its linked provider accounts may then sign up again.
+  if (collection.type === "auth") {
+    await tx
+      .newQuery(
+        `DELETE FROM {{${table("_external_auths")}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
+      )
+      .bind({ collectionId: collection.id, id })
+      .execute();
+  }
 }
 
 // --- output ----------------------------------------------------------------

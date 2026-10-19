@@ -1,0 +1,164 @@
+---
+title: OAuth2
+---
+
+# OAuth2
+
+Users can sign in with an account they already have at Google, GitHub, or any
+OpenID Connect provider, such as Microsoft, Auth0, Okta or Keycloak. The
+first sign-in creates their account; later ones sign in to it.
+
+## Set up a provider
+
+1. Register an OAuth app at the provider. As its **redirect URI** (also called
+   callback URL), enter your app's URL followed by the base path and
+   `/oauth2-callback`:
+
+   ```text
+   https://example.com/api/nextbase/oauth2-callback
+   ```
+
+2. Pass the app's URL and the provider's credentials to NextBase:
+
+   ```ts title="lib/nextbase.ts"
+   import { NextBase } from "@nextbasejs/core";
+
+   export const nextbase = new NextBase({
+     appUrl: "https://example.com",
+     oauth2: {
+       google: {
+         clientId: process.env.GOOGLE_CLIENT_ID!,
+         clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+       },
+       github: {
+         clientId: process.env.GITHUB_CLIENT_ID!,
+         clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+       },
+       // Any OpenID Connect provider, by its issuer:
+       microsoft: {
+         issuer: "https://login.microsoftonline.com/<tenant>/v2.0",
+         clientId: process.env.MICROSOFT_CLIENT_ID!,
+         clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
+         displayName: "Microsoft",
+       },
+     },
+   });
+   ```
+
+| Option | Description |
+| ------ | ----------- |
+| `clientId` | Required. From the provider's OAuth app. |
+| `clientSecret` | Required. Keep it in an environment variable, never in code. |
+| `issuer` | Required except for `google` and `github`. The provider's OpenID Connect issuer; NextBase discovers its endpoints from it. |
+| `displayName` | Optional. The name to show on sign-in buttons. |
+
+`appUrl` must be the address users open your app at, and serve NextBase: the
+sign-in starts and ends there. Redirects are always built from it, never from
+the request.
+
+## Sign in
+
+Send the browser to the provider. It comes back to `redirect`, a path on your
+app, signed in with a session cookie, or to `errorRedirect` when the sign-in
+fails:
+
+```tsx
+"use client";
+
+import { useNextBase } from "@nextbasejs/react";
+
+export function SignInWithGoogle() {
+  const nb = useNextBase();
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        nb.collection("users").signInWithOAuth2("google", {
+          redirect: "/dashboard",
+          errorRedirect: "/sign-in",
+        })
+      }
+    >
+      Continue with Google
+    </button>
+  );
+}
+```
+
+`oauth2Url(provider, options)` returns the same URL for a plain link. To build
+buttons from the providers you set up, read them from `listAuthMethods()`:
+
+```ts
+const { oauth2 } = await nb.collection("users").listAuthMethods();
+// oauth2.providers: [{ name: "google", displayName: "Google" }, ...]
+```
+
+## When a sign-in fails
+
+The browser comes back to `errorRedirect`, or `redirect` without it, with
+`?error=` naming what went wrong. Point `errorRedirect` at a page that does not
+need a session, such as your sign-in page, so the error is not lost on the way:
+
+| Error | Meaning |
+| ----- | ------- |
+| `oauth2_denied` | The user cancelled at the provider. |
+| `oauth2_failed` | The sign-in took too long, started in another browser, or the provider failed. The server log has the details. |
+| `account_exists` | An account with this email exists but cannot be linked automatically (see below). Sign in to it, then link the provider. |
+| `email_required` | The provider did not share an email address, which a new account needs. |
+| `sign_up_disabled` | The collection's `createRule` does not allow this sign-up. |
+| `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
+| `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
+| `already_linked` | The provider account belongs to another user, or this user already linked one from this provider. |
+
+## New accounts
+
+A first sign-in creates an account under the collection's `createRule`, as a
+sign-up does. Its email comes from the provider, and it is verified when the
+provider says it verified it. The account gets a random password that nobody
+knows; to sign in with a password too, the user sets one through
+[password reset](/docs/guides/auth/password-reset).
+
+## Existing accounts with the same email
+
+A user is found by the provider's permanent account id, never by email. When
+a new provider account has the email of an existing account, NextBase links
+them automatically only when **both** the provider and NextBase verified that
+email, and then emails the account to say a new way to sign in was added.
+Otherwise the sign-in fails with `account_exists`: the user signs in the way
+they usually do and links the provider from their account.
+
+This keeps someone who controls a provider account claiming your email from
+signing in to your account.
+
+## Link and unlink providers
+
+A signed-in user can link a provider to their account. The sign-in session
+stays as it is:
+
+```ts
+nb.collection("users").signInWithOAuth2("github", {
+  link: true,
+  redirect: "/settings",
+});
+```
+
+List and unlink a user's providers:
+
+```ts
+const users = nb.collection("users");
+const linked = await users.listExternalAuths(user.id);
+// [{ id: "...", provider: "github", created: "2026-10-19T12:00:00.000Z" }]
+await users.unlinkExternalAuth(user.id, "github");
+```
+
+## Protections
+
+- The authorization code flow with PKCE (S256), a one-time `state` bound to
+  the browser by an HttpOnly cookie, and an OpenID Connect `nonce` checked
+  against the ID token, as the OAuth 2.0 Security Best Current Practice
+  (RFC 9700) recommends.
+- The protocol is handled by [oauth4webapi](https://github.com/panva/oauth4webapi),
+  a certified OpenID Connect relying party.
+- `redirect` must be a path on your app, so a sign-in can never send users to
+  another site.
+- Superusers always sign in with their password.

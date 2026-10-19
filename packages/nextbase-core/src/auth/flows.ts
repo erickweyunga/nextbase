@@ -1,5 +1,5 @@
 import type { AuthCollection, TokenType } from "@nextbasejs/client";
-import { type DB, exp, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { updateRecord } from "../records/service.ts";
@@ -50,12 +50,11 @@ export async function requestVerification(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
   if (!record || record.verified === true) return;
-  ctx.mailer.send(
-    "verification",
-    collection.name,
-    record.email as string,
-    await token(collection, record, "verification", { email: record.email }),
-  );
+  ctx.mailer.send("verification", collection.name, record.email as string, {
+    token: await token(collection, record, "verification", {
+      email: record.email,
+    }),
+  });
 }
 
 /** Marks the record of a verification token as verified. */
@@ -87,12 +86,11 @@ export async function requestPasswordReset(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
   if (!record) return;
-  ctx.mailer.send(
-    "passwordReset",
-    collection.name,
-    record.email as string,
-    await token(collection, record, "passwordReset", { email: record.email }),
-  );
+  ctx.mailer.send("passwordReset", collection.name, record.email as string, {
+    token: await token(collection, record, "passwordReset", {
+      email: record.email,
+    }),
+  });
 }
 
 /**
@@ -154,15 +152,12 @@ export async function requestEmailChange(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   // Whether another record has the address is checked on confirming, so
   // this request does not reveal it.
-  ctx.mailer.send(
-    "emailChange",
-    collection.name,
-    address,
-    await token(collection, record, "emailChange", {
+  ctx.mailer.send("emailChange", collection.name, address, {
+    token: await token(collection, record, "emailChange", {
       email: record.email,
       newEmail: address,
     }),
-  );
+  });
 }
 
 /**
@@ -223,8 +218,8 @@ function checkEmail(value: unknown, field = "email"): string {
 }
 
 /** Emails are unique regardless of case, so they match regardless of case. */
-async function findByEmail(
-  db: DB,
+export async function findByEmail(
+  db: Builder,
   collection: AuthCollection,
   email: string,
 ): Promise<Row | undefined> {

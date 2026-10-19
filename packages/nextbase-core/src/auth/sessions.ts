@@ -244,8 +244,8 @@ export function bearerToken(request: Request): string | undefined {
   return match?.[1] ?? "";
 }
 
-/** Whether a request's session cookie is Secure, and so `__Host-` prefixed. */
-function isSecure(request: Request): boolean {
+/** Whether a request's cookies are Secure, and so `__Host-` prefixed. */
+export function isSecure(request: Request): boolean {
   return (
     new URL(request.url).protocol === "https:" ||
     process.env.NODE_ENV === "production"
@@ -254,9 +254,17 @@ function isSecure(request: Request): boolean {
 
 /** The session cookie's value, or undefined without one. */
 export function sessionCookie(request: Request): string | undefined {
-  const wanted = isSecure(request)
-    ? SESSION_COOKIES.secure
-    : SESSION_COOKIES.plain;
+  return readCookie(
+    request,
+    isSecure(request) ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
+  );
+}
+
+/** A cookie's value, or undefined without it. */
+export function readCookie(
+  request: Request,
+  wanted: string,
+): string | undefined {
   for (const part of (request.headers.get("cookie") ?? "").split(";")) {
     const [name, ...value] = part.trim().split("=");
     if (name === wanted) return value.join("=");

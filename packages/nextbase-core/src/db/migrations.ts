@@ -139,6 +139,41 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: "0005_oauth2",
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // OAuth2 sign-ins in progress, one per redirect to a provider. Keyed by
+      // the SHA-256 of the state the browser also holds in a cookie, so a
+      // database leak cannot finish anyone's sign-in (see auth/oauth2.ts).
+      await exec(`
+        CREATE TABLE {{${table("_oauth2_states")}}} (
+          id             text PRIMARY KEY,
+          collection_id  text NOT NULL,
+          provider       text NOT NULL,
+          code_verifier  text NOT NULL,
+          nonce          text NOT NULL,
+          redirect       text NOT NULL,
+          error_redirect text NOT NULL,
+          link_record_id text,
+          expires        timestamptz NOT NULL
+        )`);
+      // Provider accounts linked to auth records: at most one per provider
+      // and record, and each provider account to one record.
+      await exec(`
+        CREATE TABLE {{${table("_external_auths")}}} (
+          id            text PRIMARY KEY,
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          provider      text NOT NULL,
+          provider_id   text NOT NULL,
+          created       timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (collection_id, provider, provider_id),
+          UNIQUE (collection_id, record_id, provider)
+        )`);
+    },
+  },
 ];
 
 /**
