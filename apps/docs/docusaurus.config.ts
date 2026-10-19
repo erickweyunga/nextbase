@@ -9,7 +9,7 @@ const config: Config = {
   tagline:
     "Your backend, built into Next.js: database, auth and auto-generated APIs.",
   favicon: "nextbase-icon-dark.svg",
-  url: "https://nextbase.dev",
+  url: "https://nextbase.goomzo.com",
   baseUrl: "/",
   onBrokenLinks: "throw",
   onBrokenAnchors: "throw",

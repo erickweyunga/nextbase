@@ -13,7 +13,7 @@ A backend for your app on Postgres: collections, access rules, auth and sessions
 
 ## Documentation
 
-[nextbase.dev](https://nextbase.dev)
+[nextbase.goomzo.com](https://nextbase.goomzo.com)
 
 ## License
 
