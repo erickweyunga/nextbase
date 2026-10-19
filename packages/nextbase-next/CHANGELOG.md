@@ -1,5 +1,14 @@
 # @nextbasejs/next
 
+## 0.1.2
+
+### Patch Changes
+
+- c654eaf: Publish from GitHub Actions with npm trusted publishing, so each release carries provenance.
+- Updated dependencies [c654eaf]
+  - @nextbasejs/core@0.1.2
+  - @nextbasejs/client@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes
