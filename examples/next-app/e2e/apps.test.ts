@@ -1,4 +1,4 @@
-import { filter } from "@nextbase/nextbase/client";
+import { filter } from "@nextbase/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Api } from "./client.ts";
 import { type Server, startServer } from "./server.ts";
@@ -25,13 +25,13 @@ beforeAll(async () => {
   const setup = await anonymous.send("POST", "/setup", {
     token,
     email: "admin@example.com",
-    password: "admin password",
+    password: "admin password 123",
   });
   expect(setup.status).toBe(200);
   admin = await anonymous.login(
     "_superusers",
     "admin@example.com",
-    "admin password",
+    "admin password 123",
   );
 
   const users = await admin.send("POST", "/collections", {
@@ -568,22 +568,23 @@ describe("a multi-team task board", () => {
 });
 
 describe("accounts", () => {
-  it("changes a password, signing out every old session", async () => {
+  it("changes a password, signing out every other session", async () => {
     const anonymous = new Api(server.api);
     const frank = await anonymous.signup("frank@example.com", "frank");
     const laptop = await anonymous.login(
       "users",
       "frank@example.com",
-      "pw-frank-123",
+      "pw-frank-123-4567",
     );
     const change = await frank.api.update("users", frank.id, {
-      oldPassword: "pw-frank-123",
+      oldPassword: "pw-frank-123-4567",
       password: "a brand new password",
       passwordConfirm: "a brand new password",
     });
     expect(change.status).toBe(200);
     expect((await laptop.view("users", frank.id)).status).toBe(401);
-    expect((await frank.api.view("users", frank.id)).status).toBe(401);
+    // The session that made the change stays signed in.
+    expect((await frank.api.view("users", frank.id)).status).toBe(200);
     const again = await anonymous.login(
       "users",
       "frank@example.com",
@@ -630,7 +631,7 @@ describe("accounts", () => {
       "/collections/users/auth-with-password",
       {
         identity: "ivan@example.com",
-        password: "pw-ivan-123",
+        password: "pw-ivan-123-4567",
       },
     );
     expect(real.status).toBe(429);

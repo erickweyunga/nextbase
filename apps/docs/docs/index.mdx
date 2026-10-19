@@ -1,0 +1,97 @@
+---
+title: Introduction
+description: Introduction to NextBase.
+---
+
+import CardGrid from "@site/src/components/CardGrid";
+
+# Introduction
+
+NextBase is an open-source backend for Next.js. It runs inside your app and
+gives it a Postgres database, authentication, access rules and a REST API,
+with a typed client SDK for the browser, server components and server actions.
+Whether you are building a blog, a team workspace or a SaaS product, there is
+no separate backend to deploy, host or keep in sync, so you can focus on your
+app instead of its plumbing.
+
+:::warning
+
+NextBase is in early development and not recommended for production yet.
+Until version 1.0, releases may change the API and the database layout, and
+upgrading may need manual steps described in the changelog.
+
+:::
+
+## Features
+
+NextBase aims to be everything an app needs from a backend, without leaving
+Next.js. It provides the essentials out of the box, from your data and who
+may access it to signing users in. Here are some of the features:
+
+<CardGrid
+  items={[
+    {
+      icon: "database",
+      title: "Collections",
+      description: "Tables you define at runtime, with typed fields, validation, relations and indexes, stored in Postgres.",
+    },
+    {
+      icon: "api",
+      title: "REST API",
+      description: "List, filter, sort, paginate, expand relations, create, update and delete, for every collection.",
+    },
+    {
+      icon: "shield",
+      title: "Access rules",
+      description: "Who may list, view, create, update or delete, per collection, in a small filter language.",
+    },
+    {
+      icon: "key",
+      title: "Authentication",
+      description: "Email and password sign-in, database-backed sessions you can revoke, and superusers.",
+    },
+    {
+      icon: "server",
+      title: "Server components",
+      description: "Read the signed-in user and their data on the server, through an HttpOnly session cookie.",
+    },
+    {
+      icon: "code",
+      title: "Typed client SDK",
+      description: "One SDK for the browser and the server, with safe filters and typed errors.",
+    },
+  ]}
+/>
+
+## Documentation
+
+Whether you learn by reading or by doing, start where it suits you:
+
+<CardGrid
+  items={[
+    {
+      icon: "rocket",
+      title: "Getting started",
+      description: "Install NextBase, mount the route handler and create your first superuser.",
+      href: "/docs/getting-started",
+    },
+    {
+      icon: "book",
+      title: "Guides",
+      description: "Collections, records, filters, access rules, authentication and production, explained.",
+      href: "/docs/guides/collections",
+    },
+    {
+      icon: "api",
+      title: "REST API reference",
+      description: "Every endpoint, with its parameters, rules and example responses.",
+      href: "/docs/api",
+    },
+    {
+      icon: "code",
+      title: "Client SDK",
+      description: "The methods your app calls, in the browser and on the server.",
+      href: "/docs/sdk",
+    },
+  ]}
+/>

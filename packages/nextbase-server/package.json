@@ -1,0 +1,63 @@
+{
+  "name": "@nextbase/server",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "description": "Your backend, built into your app: database, auth and auto-generated APIs on Postgres, served from any framework that speaks web-standard Request and Response.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erickweyunga/nextbase.git",
+    "directory": "packages/nextbase-server"
+  },
+  "keywords": [
+    "backend",
+    "baas",
+    "postgres",
+    "auth",
+    "nextjs"
+  ],
+  "bin": {
+    "nextbase": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc",
+    "check:package": "publint --strict && attw --pack --profile esm-only",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nextbase/client": "workspace:*",
+    "@vercel/functions": "catalog:",
+    "jose": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "catalog:",
+    "@nextbase/admin": "workspace:*",
+    "@nextbase/dbx": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "publint": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

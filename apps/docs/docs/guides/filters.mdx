@@ -1,0 +1,139 @@
+---
+title: Filter language
+---
+
+# Filter language
+
+One small language serves the `filter` parameter of list requests and the
+collection [rules](/docs/guides/rules).
+
+```txt
+published = true && (title ~ "next" || tags ?= "react") && created > @monthStart
+```
+
+## Syntax
+
+A filter is one or more comparisons joined with `&&` (and) and `||` (or),
+grouped with parentheses.
+
+| Operator | Meaning |
+| -------- | ------- |
+| `=` `!=` | equal, not equal |
+| `>` `>=` `<` `<=` | greater, less (numbers, dates, text) |
+| `~` `!~` | contains, does not contain (case-insensitive) |
+
+Values are strings in single or double quotes (a backslash escapes the next
+character), numbers, `true`, `false` and `null`.
+
+`~` wraps the value in wildcards, so `title ~ "next"` matches "Next.js tips".
+Write `%` yourself to anchor it: `title ~ "next%"` matches titles that start
+with "next".
+
+:::warning
+
+Never paste user input into a filter string. Use `nb.filter()`, which quotes
+values safely: `nb.filter("title ~ {:q}", { q })`.
+
+:::
+
+## Empty values
+
+Comparing with `""` or `null` matches an empty field: `""` for text,
+`0` for numbers, `false` for booleans, no date, no relation, or an empty list.
+
+```txt
+assignee = ""        // unassigned
+due != ""            // has a due date
+```
+
+## Relations
+
+A dot follows a relation to the related record:
+
+```txt
+author.name = "Ann"
+team.owner.email ~ "@example.com"
+```
+
+`<collection>_via_<field>` follows a relation backwards. From a post,
+`comments_via_post` is every comment whose `post` field points at it:
+
+```txt
+comments_via_post.author = "u1"
+```
+
+In a client filter, a relation path only sees related records the caller is
+allowed to view, so a filter cannot reveal data the caller could not read.
+
+## Fields with many values
+
+Multiple selects, multiple relations and back-relations hold many values.
+
+- `?=` (and `?!=`, `?~` and so on) matches when **any** value matches:
+  `tags ?= "react"`.
+- A plain operator matches when there is **at least one** value and **every**
+  value matches: `tags = "react"` means every tag is "react".
+
+The "at least one" part is deliberate: a rule like
+`allowed.id = @request.auth.id` must not let everyone in when `allowed` is
+empty.
+
+## Modifiers
+
+| Modifier | Example | Meaning |
+| -------- | ------- | ------- |
+| `:length` | `comments_via_post:length >= 2` | number of values |
+| `:lower` | `name:lower = "ann"` | lowercase text |
+| `:isset` | `@request.body.owner:isset = false` | whether the request sent the field (rules only) |
+
+## JSON fields
+
+A dot reads a key inside a JSON field. The value is compared as the type of the
+other side; a missing key, or a value of another type, reads as `null`.
+
+```txt
+meta.priority >= 3
+meta.address.city = "Dodoma"
+meta.tags.0 = "first"
+```
+
+Compared with a date field or a date macro, a JSON string in ISO 8601 form is
+read as a date.
+
+## Date macros
+
+| Macro | Value (UTC) |
+| ----- | ----------- |
+| `@now` | the current time |
+| `@todayStart`, `@todayEnd` | start and end of today |
+| `@monthStart`, `@monthEnd` | start and end of this month |
+| `@yearStart`, `@yearEnd` | start and end of this year |
+
+```txt
+due < @now && done = false
+```
+
+## Request data (rules only)
+
+Rules can also read the request:
+
+| Path | Value |
+| ---- | ----- |
+| `@request.auth.<field>` | the signed-in record, or empty values when signed out |
+| `@request.body.<field>` | the submitted value (create and update) |
+| `@request.query.<name>` | a query parameter |
+| `@request.headers.<name>` | a request header, lowercase |
+| `@request.method` | `GET`, `POST`, `PATCH` or `DELETE` |
+| `@collection.<name>.<field>` | records of any collection |
+
+See [Access rules](/docs/guides/rules) for how to use them.
+
+## Limits
+
+A filter has at most 3500 characters, 200 comparisons and 6 levels of nesting.
+Hidden fields cannot be used in client filters or sorts.
+
+## Next steps
+
+- [Access rules](/docs/guides/rules)
+- [Working with records](/docs/guides/records)

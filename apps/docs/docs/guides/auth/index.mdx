@@ -1,0 +1,73 @@
+# Authentication
+
+Users live in **auth collections**. An auth collection has the system fields
+`email`, `password`, `verified` and `emailVisibility`; you add your own fields.
+
+## Create a users collection
+
+As a superuser, for example from a one-time script:
+
+```ts title="scripts/setup-auth.ts"
+import { NextBase } from "@nextbase/server";
+
+const superuser = new NextBase().client({ superuser: true });
+
+await superuser.collections.create({
+  name: "users",
+  type: "auth",
+  createRule: "", // anyone can sign up
+  viewRule: "id = @request.auth.id", // users see only themselves
+  updateRule: "id = @request.auth.id",
+  deleteRule: "id = @request.auth.id",
+  fields: [{ name: "name", type: "text", required: true }],
+});
+```
+
+A rule of `""` allows anyone, `null` allows only superusers, and anything else
+is a filter the request must match.
+
+## Sign up and sign in
+
+```ts
+import { NextBaseClient } from "@nextbase/client";
+
+const nb = new NextBaseClient();
+
+await nb.collection("users").create({
+  email: "ann@example.com",
+  password: "a long password",
+  passwordConfirm: "a long password",
+  name: "Ann",
+});
+
+await nb.collection("users").signInWithPassword("ann@example.com", "a long password");
+nb.authStore.record; // the signed-in user
+```
+
+Every later request carries the session, and the collection's rules decide what
+the user can read and write.
+
+## Sign out
+
+```ts
+await nb.signOut(); // ends the session on the server
+```
+
+Signing out deletes the session on the server, so its token stops working at
+once, not just on this device.
+
+## Protections
+
+- Passwords are hashed with scrypt.
+- Failed sign-ins are limited to 10 per account every 15 minutes.
+- Changing a password signs out every other session.
+- Errors never reveal whether an email is registered.
+
+To use the signed-in user in server components and server actions, sign in
+with a [session cookie](/docs/guides/auth/sessions).
+
+## Next steps
+
+- [Sessions and cookies](/docs/guides/auth/sessions)
+- [Access rules](/docs/guides/rules)
+- [REST API reference: auth](/docs/api/auth)

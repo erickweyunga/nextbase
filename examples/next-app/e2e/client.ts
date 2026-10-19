@@ -112,7 +112,7 @@ export class Api {
 
   /** Signs up through a public create rule and logs in. */
   async signup(email: string, name: string): Promise<{ api: Api; id: string }> {
-    const password = `pw-${name}-123`;
+    const password = `pw-${name}-123-4567`;
     const reply = await this.as("").create("users", {
       email,
       name,

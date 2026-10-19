@@ -1,0 +1,20 @@
+{
+  "name": "@nextbase/admin",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NextBase admin UI, built to a single HTML file embedded into @nextbase/server.",
+  "type": "module",
+  "exports": {
+    "./index.html": "./dist/index.html"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-singlefile": "catalog:"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "@nextbase/react",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "description": "NextBase for React: a provider seeded with the server's session, useSession and useNextBase.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erickweyunga/nextbase.git",
+    "directory": "packages/nextbase-react"
+  },
+  "keywords": [
+    "react",
+    "hooks",
+    "auth"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc",
+    "check:package": "publint --strict && attw --pack --profile esm-only",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@nextbase/client": "workspace:^",
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "catalog:",
+    "@nextbase/client": "workspace:*",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "publint": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

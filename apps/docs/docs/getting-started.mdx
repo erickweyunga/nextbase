@@ -1,0 +1,77 @@
+# Getting started
+
+This guide adds NextBase to a Next.js app and takes you to your first API
+request in a few minutes.
+
+## Before you begin
+
+Make sure you have:
+
+- **A Next.js app** on version 16 or later, using the App Router. To start a
+  new one, run `npx create-next-app@latest`.
+- **Node.js** 20.9 or later.
+- **A Postgres database**, version 15 or later. A local server works, and so
+  does a hosted one such as Neon, Supabase or Amazon RDS. Put its connection
+  string in `.env.local` as `DATABASE_URL`:
+
+  ```sh title=".env.local"
+  DATABASE_URL=postgres://user:password@localhost:5432/app
+  ```
+
+NextBase creates its tables in their own `nextbase` schema, so it can share a
+database with your existing tables.
+
+## 1. Install
+
+```sh
+npm i @nextbase/server @nextbase/client @nextbase/next
+```
+
+## 2. Create the instance
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "@nextbase/server";
+
+// Reads DATABASE_URL. Connects lazily, so `next build` needs no database.
+export const nextbase = new NextBase();
+```
+
+## 3. Mount the route handler
+
+```ts title="app/api/nextbase/[...path]/route.ts"
+import { newNextHandler } from "@nextbase/next";
+import { nextbase } from "@/lib/nextbase";
+
+export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
+```
+
+## 4. Create the first superuser
+
+Start the app and make any request to the API:
+
+```sh
+curl http://localhost:3000/api/nextbase/setup
+```
+
+NextBase creates its tables on the first request. While no superuser exists,
+the server log prints a `curl` command with a one-time setup token, valid for
+one hour. Only someone who can read your logs can claim a fresh deployment.
+Run that command with your own email and password.
+
+From a script or seed file you can also call
+`await nextbase.createSuperuser(email, password)`.
+
+## 5. Make a request
+
+```ts
+import { NextBaseClient } from "@nextbase/client";
+
+const nb = new NextBaseClient(); // defaults to /api/nextbase
+await nb.health(); // { status: "ok" }
+```
+
+## Next steps
+
+- [Authentication](/docs/guides/auth)
+- [Collections and fields](/docs/guides/collections)
+- [REST API reference](/docs/api)

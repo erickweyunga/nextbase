@@ -1,0 +1,94 @@
+---
+title: Going to production
+---
+
+# Going to production
+
+:::warning
+
+NextBase is in early development and not recommended for production yet.
+Until version 1.0, releases may change the API and the database layout. This
+page describes how it is designed to run.
+
+:::
+
+## Runtime
+
+NextBase runs on the Node.js runtime, the Next.js default for route handlers.
+The Edge runtime is not supported: it cannot open TCP connections to Postgres.
+
+`new NextBase()` never connects in its constructor, so `next build` works
+without a database. The first request connects, creates or upgrades
+NextBase's tables, and loads the schema.
+
+## Database
+
+Any Postgres 15 or later works, including Neon, Supabase, RDS and a local
+server.
+
+```sh
+DATABASE_URL=postgres://user:password@host:5432/app
+```
+
+Or pass a pool, for example Neon's serverless driver:
+
+```ts
+import { Pool } from "@neondatabase/serverless";
+import { NextBase } from "@nextbase/server";
+
+export const nextbase = new NextBase({
+  database: new Pool({ connectionString: process.env.DATABASE_URL }),
+});
+```
+
+- **Connection poolers:** NextBase works behind PgBouncer (including its
+  transaction mode) and the poolers of Neon, Supabase and RDS Proxy. Use the
+  pooled connection string on serverless platforms.
+- **Schema:** everything lives in the `nextbase` Postgres schema. The first
+  request creates it, so the database role needs permission to create schemas
+  and tables, or create the schema for it in advance.
+- **Settings:** NextBase refuses to start unless `DateStyle` is `ISO` and
+  `standard_conforming_strings` is `on`, the Postgres defaults.
+- **Trigram indexes** install the `pg_trgm` extension, which needs the CREATE
+  privilege on the database.
+
+## Migrations
+
+NextBase upgrades its own tables on the first request after a deploy, under a
+lock, so concurrent instances never run them twice. To do it before traffic
+arrives, run it from a deploy script:
+
+```ts title="scripts/migrate.ts"
+import { nextbase } from "../lib/nextbase";
+
+await nextbase.migrate();
+```
+
+## Many instances
+
+Serverless platforms run many copies of your app. A collection or rule change
+made through one copy applies to every copy from its next request, and two
+changes made at the same time never interfere.
+
+## First superuser
+
+On a fresh deployment, the server log prints a one-time setup token, valid for
+one hour, until the first superuser exists. Only someone who can read your
+logs can claim the deployment. Create the superuser right after the first
+deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
+
+## Security checklist
+
+- Serve the app over HTTPS. Session cookies are `Secure` in production.
+- Add IP rate limiting at your platform or proxy. NextBase limits failed
+  sign-ins per account (10 every 15 minutes), but cannot see trusted client IPs
+  itself.
+- Review every collection's rules. New collections default to superuser-only.
+- Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
+  server code.
+- Request bodies are limited to 1 MiB.
+
+## Next steps
+
+- [Getting started](/docs/getting-started)
+- [Access rules](/docs/guides/rules)

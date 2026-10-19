@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "declaration": true,
+    "isolatedDeclarations": true,
+    // Web platform types (fetch, Request, URLSearchParams): the SDK runs in
+    // browsers and in any runtime that implements them.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src", "tsdown.config.ts"]
+}

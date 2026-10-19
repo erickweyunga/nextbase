@@ -1,0 +1,71 @@
+# Client SDK
+
+```ts
+import { NextBaseClient, type RecordModel } from "@nextbase/client";
+
+const nb = new NextBaseClient(); // baseUrl defaults to "/api/nextbase"
+```
+
+## Records
+
+```ts
+interface Post extends RecordModel {
+  title: string;
+  author: string;
+}
+
+const posts = nb.collection<Post>("posts");
+
+const page = await posts.getList(1, 20, {
+  filter: nb.filter("title ~ {:q} && created > {:since}", { q, since }),
+  sort: "-created",
+  expand: "author",
+});
+const all = await posts.getFullList({ sort: "title" });
+const first = await posts.getFirstListItem(nb.filter("slug = {:slug}", { slug }));
+const one = await posts.getOne(id, { fields: "id,title" });
+
+await posts.create({ title: "Hello" });
+await posts.update(id, { title: "Hello again" });
+await posts.delete(id);
+```
+
+`create` and `update` return `null` when the write succeeded but the rules do
+not let the caller view the result.
+
+## Filters
+
+Never put user input into a filter string yourself. `nb.filter()` replaces each
+`{:name}` with a safely quoted value: strings and dates become quoted strings,
+numbers stay numbers, and `null` or `undefined` become `null`.
+
+## Errors
+
+Every failure throws a `ClientError`:
+
+```ts
+import { ClientError } from "@nextbase/client";
+
+try {
+  await posts.create({});
+} catch (error) {
+  if (error instanceof ClientError) {
+    error.status; // 400
+    error.data; // { title: { code: "validation_required", message: "Cannot be blank." } }
+  }
+}
+```
+
+A request that never got a response (offline, or aborted) has `status` 0.
+
+## Request options
+
+Every method takes fetch options such as `signal`, `cache` and Next.js's
+`next: { revalidate }`, plus `query` and `headers`.
+
+## Auth store
+
+`nb.authStore` holds the signed-in record (and the token, for Bearer
+sessions). In the browser it persists to `localStorage` and syncs across tabs.
+Subscribe with `nb.authStore.onChange((token, record) => {})`. A 401 from the
+server clears it.

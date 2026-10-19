@@ -1,0 +1,113 @@
+---
+title: Server components and actions
+---
+
+# Server components and actions
+
+On the server, `nextbase.client()` returns the same client SDK as in the
+browser. It calls NextBase directly instead of sending HTTP requests, but
+applies the same validation and [access rules](/docs/guides/rules) as the
+REST API, so the server never sees more than the user could.
+
+```ts
+import { nextbase } from "@/lib/nextbase";
+
+const nb = nextbase.client(); // signed out
+```
+
+:::warning
+
+Create a client per request. A signed-in client must never be shared between
+users, so never keep one at module scope.
+
+:::
+
+## As the signed-in user
+
+Pass the request's cookies to act as the user signed in with a
+[session cookie](/docs/guides/auth/sessions):
+
+```tsx title="app/dashboard/page.tsx"
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function Dashboard() {
+  const nb = nextbase.client({ cookies: await cookies() });
+  const session = await nb.getSession();
+  if (!session) redirect("/sign-in");
+
+  const { items } = await nb.collection("notes").getList(1, 20);
+  return (
+    <ul>
+      {items.map((note) => (
+        <li key={note.id}>{String(note.text)}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The list only contains notes the user's rules allow, exactly as in the
+browser.
+
+## In server actions
+
+Server actions can change the cookie, so signing in and out works there:
+
+```ts title="app/actions.ts"
+"use server";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { nextbase } from "@/lib/nextbase";
+
+export async function signIn(form: FormData) {
+  const nb = nextbase.client({ cookies: await cookies() });
+  await nb
+    .collection("users")
+    .signInWithPassword(String(form.get("email")), String(form.get("password")), {
+      cookie: true,
+    });
+  redirect("/dashboard");
+}
+
+export async function addNote(form: FormData) {
+  const nb = nextbase.client({ cookies: await cookies() });
+  const session = await nb.getSession();
+  if (!session) redirect("/sign-in");
+  await nb.collection("notes").create({
+    text: String(form.get("text")),
+    owner: session.record.id,
+  });
+}
+
+export async function signOut() {
+  await nextbase.client({ cookies: await cookies() }).signOut();
+  redirect("/sign-in");
+}
+```
+
+Wrong credentials throw a `ClientError` with status 400; catch it to show a
+message.
+
+Server components cannot set cookies. Reading the session there works; a
+renewal of the cookie that the request would trigger is skipped, and happens
+on the next API call or server action instead.
+
+## As a superuser
+
+For trusted server code, such as seed scripts, webhooks and admin tasks:
+
+```ts
+const superuser = nextbase.client({ superuser: true });
+await superuser.collection("posts").update(id, { featured: true });
+```
+
+A superuser client bypasses every rule. Never let user input decide what it
+reads or writes. Requests over HTTP can never use this mode; it exists only
+for code running inside your app.
+
+## Next steps
+
+- [Sessions and cookies](/docs/guides/auth/sessions)
+- [Client SDK](/docs/sdk)

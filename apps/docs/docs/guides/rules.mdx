@@ -1,0 +1,115 @@
+---
+title: Access rules
+---
+
+# Access rules
+
+Every collection has five rules: `listRule`, `viewRule`, `createRule`,
+`updateRule` and `deleteRule`. Each one is:
+
+| Value | Who is allowed |
+| ----- | -------------- |
+| `null` | superusers only (the default) |
+| `""` | anyone, including signed-out visitors |
+| a [filter](/docs/guides/filters) | callers for whom it matches |
+
+Superusers bypass every rule. To change rules, update the collection as a
+superuser:
+
+```ts
+await superuser.collections.update("posts", {
+  listRule: 'published = true || author = @request.auth.id',
+  viewRule: 'published = true || author = @request.auth.id',
+  createRule: "author = @request.auth.id",
+  updateRule: "author = @request.auth.id",
+  deleteRule: "author = @request.auth.id",
+});
+```
+
+Rules are checked when you save them: a rule that does not compile, or
+refers to a missing field, is rejected.
+
+## How each rule applies
+
+| Rule | When it does not match |
+| ---- | ---------------------- |
+| list | the record is left out of the results |
+| view | 404, as if the record did not exist |
+| update | 404 |
+| delete | 404 |
+| create | 400 |
+
+- In update and delete rules, bare field names are the **stored** record and
+  `@request.body.*` is what the caller sent.
+- The create rule is checked against the new record before it is inserted, so
+  a caller without permission learns nothing from it, not even whether a
+  unique value is taken.
+- A `null` rule answers everyone but superusers with a 403.
+
+## Recipes
+
+**Signed-in users only**
+
+```txt
+@request.auth.id != ""
+```
+
+**Owner only**
+
+```txt
+owner = @request.auth.id
+```
+
+**Create only for yourself**, as a create rule:
+
+```txt
+owner = @request.auth.id
+```
+
+**Lock a field after creation**, as an update rule:
+
+```txt
+owner = @request.auth.id && @request.body.owner:isset = false
+```
+
+**Shared with a list of users**, through a multiple relation:
+
+```txt
+owner = @request.auth.id || viewers ?= @request.auth.id
+```
+
+**Team membership** through another collection. One `members` row must match
+both conditions:
+
+```txt
+@collection.members.user = @request.auth.id && @collection.members.team = team
+```
+
+To compare two different rows of the same collection, give each an alias:
+`@collection.members:a.user` and `@collection.members:b.user`.
+
+**Only verified users**, on any rule:
+
+```txt
+@request.auth.verified = true
+```
+
+**Published, or yours:**
+
+```txt
+published = true || author = @request.auth.id
+```
+
+## Auth collection rules
+
+Auth collections have two more:
+
+- `authRule` decides who may sign in. `""` (the default) allows every record,
+  `null` disables sign-in, and a filter such as `verified = true` must match.
+- `manageRule` lets matching callers change other records' email, password
+  and verified flag. By default only superusers can.
+
+## Next steps
+
+- [Filter language](/docs/guides/filters)
+- [Authentication](/docs/guides/auth)

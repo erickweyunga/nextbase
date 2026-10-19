@@ -1,0 +1,135 @@
+---
+title: Collections and fields
+---
+
+# Collections and fields
+
+A **collection** is a table of records. Each collection is a real Postgres
+table in the `nextbase` schema, and each field is a real column, so you can
+query it with SQL too.
+
+Collections are created and changed at runtime by a superuser, through the
+[REST API](/docs/api/collections) or the client SDK:
+
+```ts
+const superuser = nextbase.client({ superuser: true });
+
+await superuser.collections.create({
+  name: "posts",
+  listRule: "",
+  viewRule: "",
+  fields: [
+    { name: "title", type: "text", required: true, max: 200 },
+    { name: "published", type: "bool" },
+    { name: "created", type: "autodate" },
+  ],
+});
+```
+
+## Collection types
+
+| Type   | System fields |
+| ------ | ------------- |
+| `base` | `id` |
+| `auth` | `id`, `email`, `emailVisibility`, `verified`, `password`, `tokenKey` |
+
+Auth collections hold users who can sign in. See
+[Authentication](/docs/guides/auth).
+
+A collection created without any fields gets `created` and `updated` autodate
+fields. Record ids are 15 characters from `a-z0-9`; you may supply your own id
+on create if it has that form.
+
+## Names
+
+Collection and field names start with a letter and contain letters, digits and
+`_`, up to 63 characters. They are unique regardless of case. `expand`,
+`collectionId` and `collectionName` are reserved.
+
+## Field types
+
+Every field has `name`, `type`, `required` (must not be empty) and `hidden`
+(left out of API output, client filters and sorts).
+
+| Type       | Value | Empty value | Options |
+| ---------- | ----- | ----- | ------- |
+| `text`     | string | `""` | `min`, `max` (default 5000), `pattern` |
+| `number`   | number | `0` | `min`, `max`, `onlyInt` |
+| `bool`     | boolean | `false` | |
+| `email`    | string | `""` | `onlyDomains`, `exceptDomains` |
+| `url`      | string | `""` | `onlyDomains`, `exceptDomains` |
+| `date`     | ISO 8601 string | `""` | `min`, `max` |
+| `autodate` | ISO 8601 string, set by the server | | `onCreate`, `onUpdate` |
+| `select`   | one value, or an array with `maxSelect` > 1 | `""` or `[]` | `values`, `maxSelect` |
+| `relation` | record id, or an array with `maxSelect` > 1 | `""` or `[]` | `collectionId`, `maxSelect`, `cascadeDelete` |
+| `json`     | any JSON | `null` | `maxSize` (bytes, default 1 MiB) |
+
+Dates are returned in UTC with milliseconds, such as
+`2026-10-19T09:30:00.000Z`.
+
+:::note
+
+File fields are part of the schema but uploads are not available yet.
+
+:::
+
+## Relations
+
+A relation field points at records of another collection (or the same one).
+
+```ts
+{ name: "author", type: "relation", collectionId: users.id, maxSelect: 1 }
+```
+
+- Ids are checked on write: pointing at a record that does not exist is a
+  validation error.
+- When a referenced record is deleted, records pointing at it are deleted too
+  with `cascadeDelete: true`. Otherwise the reference is cleared, and if that
+  leaves a `required` field empty, the delete fails with a 400.
+- Relations also work backwards: from a post, `comments_via_post` means
+  "the comments whose `post` field points at this post". It works in [filters](/docs/guides/filters),
+  [rules](/docs/guides/rules) and `expand`.
+
+## Indexes
+
+```ts
+{
+  name: "posts_slug",
+  unique: true,
+  fields: ["slug000000"], // field ids
+  type: "btree",
+}
+```
+
+- `btree` (the default) serves equality, ranges and sorting. `unique: true`
+  enforces unique values; a duplicate is a `validation_not_unique` error on
+  the field.
+- `trigram` serves `~` ("contains") searches on text fields. The first one
+  installs Postgres's `pg_trgm` extension.
+
+Indexes refer to fields by id, so they survive renames. To refer to a new
+field, give it an `id` of 10 characters from `a-z0-9` when you create it.
+
+NextBase also maintains indexes it needs itself: unique emails in auth
+collections, every relation, and `(created, id)` for the default sort.
+
+## Changing a collection
+
+`PATCH` the collection with the new definition. Fields are matched by `id`:
+
+- a field without an `id` is added,
+- a missing field is dropped, with its data,
+- a field with a new name is renamed, keeping its data,
+- toggling `maxSelect` between 1 and more converts the data.
+
+Other type changes are rejected: delete the field and add a new one. The whole
+change runs in one transaction, and every rule must still compile afterwards,
+so a rename that would break a rule is rejected with an error naming it.
+
+Every instance picks up the change on its next request.
+
+## Next steps
+
+- [Working with records](/docs/guides/records)
+- [Access rules](/docs/guides/rules)
+- [REST API reference: collections](/docs/api/collections)

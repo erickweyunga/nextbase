@@ -2,5 +2,16 @@
   "baseBranch": "main",
   "access": "public",
   "format": false,
-  "privatePackages": { "version": false, "tag": false }
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  },
+  "fixed": [
+    [
+      "@nextbase/client",
+      "@nextbase/server",
+      "@nextbase/next",
+      "@nextbase/react"
+    ]
+  ]
 }

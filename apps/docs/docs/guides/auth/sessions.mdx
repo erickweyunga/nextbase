@@ -1,0 +1,88 @@
+# Sessions and cookies
+
+Every sign-in creates a session in the database. The client proves who it is
+on later requests with the session's token, which it keeps in one of two ways:
+
+- **In a cookie** the browser sends by itself. Scripts cannot read it, and
+  server components can see who is signed in.
+- **As a Bearer token**: the client stores the token and sends it in the
+  `Authorization: Bearer <token>` header of each request.
+
+**In a Next.js app, use the cookie.** It is the only way for server components
+and server actions to know the user, and it keeps the token out of reach of
+injected scripts. Use Bearer tokens for mobile apps, scripts and other servers,
+which have no browser to keep a cookie.
+
+| | Bearer token | Session cookie |
+| - | - | - |
+| Sign in | `signInWithPassword(email, password)` | `signInWithPassword(email, password, { cookie: true })` |
+| Readable by scripts | Yes | No |
+| Sent on page loads | No | Yes |
+| Server components | No | Yes |
+| Use for | Mobile apps, scripts, other servers | Next.js apps |
+
+## Sign in with a cookie
+
+```ts
+await nb.collection("users").signInWithPassword(email, password, { cookie: true });
+```
+
+The response sets `nextbase_session` as an `HttpOnly`, `SameSite=Lax` cookie,
+`Secure` in production, and returns no token. Restore the signed-in user after
+a reload with `nb.getSession()`.
+
+## Read the user in a server component
+
+```tsx title="app/page.tsx"
+import { cookies } from "next/headers";
+import { nextbase } from "@/lib/nextbase";
+
+export default async function Page() {
+  const nb = nextbase.client({ cookies: await cookies() });
+  const session = await nb.getSession();
+  return <p>{session ? `Hi ${session.record.name}` : "Not signed in"}</p>;
+}
+```
+
+`nextbase.client()` calls NextBase directly, without an HTTP request, and
+applies the same validation and rules as the REST API. Create one per request.
+
+## Sign in and out from a server action
+
+```ts title="app/actions.ts"
+"use server";
+import { cookies } from "next/headers";
+import { nextbase } from "@/lib/nextbase";
+
+export async function signIn(form: FormData) {
+  const nb = nextbase.client({ cookies: await cookies() });
+  await nb
+    .collection("users")
+    .signInWithPassword(String(form.get("email")), String(form.get("password")), {
+      cookie: true,
+    });
+}
+
+export async function signOut() {
+  await nextbase.client({ cookies: await cookies() }).signOut();
+}
+```
+
+## Lifetime and revocation
+
+- Sessions last 7 days (superusers: 1 day) and are extended while in use.
+- `nb.listSessions()` lists the user's devices, and `nb.revokeSession(id)`
+  signs one out.
+- Changing a password ends every other session. Rotating the collection's auth
+  secret ends all of its sessions.
+
+## Cross-site protection
+
+A write that authenticates with the cookie must carry an `Origin` header
+naming your site, or it gets a 403. Another site cannot sign a browser in with
+an account of its choosing either.
+
+## Next steps
+
+- [Server components and actions](/docs/guides/server)
+- [REST API reference: auth](/docs/api/auth)

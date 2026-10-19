@@ -1,0 +1,226 @@
+---
+title: Collections
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Collections
+
+Create, change and delete [collections](/docs/guides/collections). Every
+endpoint needs a superuser: anyone else gets a `401` when signed out and a
+`403` when signed in.
+
+In the SDK examples, `superuser` is a client signed in as a superuser, or
+`nextbase.client({ superuser: true })` in server code.
+
+## List collections
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const collections = await superuser.collections.getFullList();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl https://app.example/api/nextbase/collections -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /collections
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "page": 1,
+  "perPage": 2,
+  "totalItems": 2,
+  "totalPages": 1,
+  "items": [
+    { "id": "_superusers", "name": "_superusers", "type": "auth", "system": true, "...": "..." },
+    {
+      "id": "c1a2b3c4d5e6f7g",
+      "name": "posts",
+      "type": "base",
+      "system": false,
+      "fields": [
+        { "id": "_id", "name": "id", "type": "text", "system": true, "primaryKey": true, "...": "..." },
+        { "id": "title00000", "name": "title", "type": "text", "required": true, "max": 200, "...": "..." }
+      ],
+      "indexes": [],
+      "listRule": "",
+      "viewRule": "",
+      "createRule": null,
+      "updateRule": null,
+      "deleteRule": null
+    }
+  ]
+}
+```
+
+</TabItem>
+</Tabs>
+
+## View a collection
+
+```http
+GET /collections/{collection}
+```
+
+Returns one collection, by name or id. SDK: `superuser.collections.getOne("posts")`.
+
+## Create a collection
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await superuser.collections.create({
+  name: "posts",
+  listRule: "",
+  viewRule: "",
+  fields: [
+    { name: "title", type: "text", required: true, max: 200 },
+    { id: "slug000000", name: "slug", type: "text", required: true },
+    { name: "created", type: "autodate" },
+  ],
+  indexes: [{ name: "posts_slug", unique: true, fields: ["slug000000"] }],
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections \
+  -H 'authorization: Bearer <superuser token>' \
+  -H 'content-type: application/json' \
+  -d '{"name":"posts","listRule":"","viewRule":"","fields":[{"name":"title","type":"text","required":true}]}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /collections
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `name` | string | Required. Letters, digits and `_`, starting with a letter. |
+| `type` | string | Optional. `base` (default) or `auth`. |
+| `id` | string | Optional. 15 characters from `a-z0-9`. Generated when left out. |
+| `fields` | array | Optional. [Field definitions](/docs/guides/collections#field-types). System fields are added for you. Without fields, `created` and `updated` are added. |
+| `indexes` | array | Optional. `{ name, fields, unique?, type? }`, where `fields` are field ids. |
+| `listRule`, `viewRule`, `createRule`, `updateRule`, `deleteRule` | string or null | Optional. [Rules](/docs/guides/rules). Default `null` (superusers only). |
+| `authRule`, `manageRule` | string or null | Optional, auth collections. Defaults `""` and `null`. |
+| `identityFields` | string[] | Optional, auth collections. Fields to sign in with. Default `["email"]`. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The created collection, with every default filled in.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{
+  "status": 400,
+  "message": "Failed to validate the collection.",
+  "data": {
+    "name": { "code": "validation_not_unique", "message": "Another collection has this name." }
+  }
+}
+```
+A rule that does not compile is reported the same way, under its key with
+the code `validation_invalid_rule`.
+
+</TabItem>
+</Tabs>
+
+## Update a collection
+
+Applies a new definition. Settings you leave out keep their current value.
+Fields are matched by `id`: send the existing fields (with their ids) along
+with new ones, since a field missing from `fields` is dropped with its data.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const posts = await superuser.collections.getOne("posts");
+await superuser.collections.update("posts", {
+  fields: [...posts.fields, { name: "summary", type: "text" }],
+  listRule: "published = true",
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X PATCH https://app.example/api/nextbase/collections/posts \
+  -H 'authorization: Bearer <superuser token>' \
+  -H 'content-type: application/json' \
+  -d '{"listRule":"published = true"}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+PATCH /collections/{collection}
+```
+
+**Body:** any of the fields accepted on create.
+
+**Responses:** `200` with the updated collection, or `400` with field errors.
+A change that conflicts with existing data, such as a unique index over
+duplicate values, is a `400`, and nothing is changed.
+
+## Delete a collection
+
+Deletes the collection, its table and all of its records. A collection that
+other collections' relation fields point at cannot be deleted.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await superuser.collections.delete("posts");
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/collections/posts \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /collections/{collection}
+```
+
+**Responses:** `204` with no body, `400` when it cannot be deleted, `404`
+when it does not exist.

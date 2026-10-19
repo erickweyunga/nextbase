@@ -25,8 +25,7 @@ actually deployed, including serverless platforms.
 
 ### Non-goals for v1
 
-Realtime subscriptions, OAuth2, OTP and MFA, view collections, server-side hooks, a batch API, image
-thumbnails, backups, a request-log UI, multi-tenancy, the Edge runtime, and databases other than
+Realtime subscriptions, OAuth2, OTP and MFA, server-side hooks, image thumbnails, backups, a request-log UI, multi-tenancy, the Edge runtime, and databases other than
 Postgres. The design leaves room for each, but none of them shape v1 code.
 
 ### Platform choices
@@ -57,7 +56,12 @@ new NextBase(options) ──► router ──► body limits ──► principal
 
 ### 2.1 Package layout
 
-All runtime code lives in `@nextbase/nextbase`, split by entry point:
+Runtime code is published as four packages, versioned together (a Changesets `fixed` group):
+`@nextbase/client` (the SDK and the wire types), `@nextbase/server` (which depends on the client),
+and the adapters `@nextbase/next` and `@nextbase/react`, which take the core packages, `next` and
+`react` as peer dependencies. The server is framework-agnostic: `handle(request)` takes a
+web-standard `Request` and returns a `Response`, and the in-process client takes any cookie store
+with `get` and `set`. Paths below are within those packages.
 
 | Module                 | Responsibility                                               |
 | ---------------------- | ------------------------------------------------------------ |
@@ -69,6 +73,8 @@ All runtime code lives in `@nextbase/nextbase`, split by entry point:
 | `server/auth/`         | Tokens, password hashing, auth flows, cookies, mail          |
 | `server/files/`        | Upload pipeline, storage drivers, file serving               |
 | `client/`              | SDK, auth store, `filter()` helper                           |
+| `next/`                | Next.js adapter: `newNextHandler()`, `serverClient()` reading `cookies()` |
+| `react/`               | React bindings: `NextBaseProvider`, `useSession()`, `useNextBase()` |
 | `shared/`              | Wire types shared by server and client                       |
 
 The admin UI stays in the private `@nextbase/admin` package and is embedded at build time.
@@ -91,7 +97,7 @@ The admin UI stays in the private `@nextbase/admin` package and is embedded at b
 ```ts
 // lib/nextbase.ts
 import "server-only";
-import { NextBase, s3Storage } from "@nextbase/nextbase/server";
+import { NextBase, s3Storage } from "@nextbase/server";
 
 export const nextbase = new NextBase({
   database: process.env.DATABASE_URL, // or a pg-compatible Pool
@@ -104,9 +110,12 @@ export const nextbase = new NextBase({
 | ---------------- | ---------------------------------------- | -------------------------------------------------------- |
 | `database`       | `process.env.DATABASE_URL`               | Connection string, or a `pg.Pool`-compatible object (for example `@neondatabase/serverless`). |
 | `storage`        | `localStorage({ dir: ".nextbase/storage" })` | Logs a warning at startup if local storage is used on a known serverless platform. |
-| `mail`           | none                                     | Without it, endpoints that send mail return 400 `mail_not_configured`. In development, messages are logged instead. |
+| `mail`           | none                                     | `{ from, send(message), appUrl, templates? }`. Without it, endpoints that send mail return 400 `mail_not_configured` in production; in development, messages are logged instead (section 7.4). |
+| `waitUntil`      | Vercel's `waitUntil`                     | Keeps background work, such as sending mail, alive after the response on serverless platforms. |
 | `basePath`       | `/api/nextbase`                          | Already implemented.                                     |
-| `trustedOrigins` | the request's own origin                 | Extra origins allowed to make cookie-authenticated writes (section 7.6). |
+| `trustedOrigins` | none                                     | Other hosts allowed to make cookie-authenticated writes, as in Next.js's `serverActions.allowedOrigins`: `app.example.com`, `*.example.com` (one label), `**.example.com` (section 7.6). |
+| `trustProxy`     | `false`                                  | Take the request's host from `X-Forwarded-Host`, set by a proxy you run (section 7.6). |
+| `statementTimeout` | `8000` ms                              | How long a records API statement may run (section 5.3). `0` turns it off. |
 
 There are no other knobs. Values such as token lifetimes and size limits are per-collection
 settings edited in the admin UI, not code configuration.
@@ -121,14 +130,14 @@ No ORM is used. Collections are defined at runtime, so a static schema tool like
 cannot describe them. SQL goes through the private `@nextbase/dbx` package, a Postgres-only query
 builder: named `{:name}` parameters numbered as `$n`, identifier quoting, composable condition expressions,
 SELECT/DML/DDL builders, record-level insert/update/delete and transactions. It is bundled into
-`@nextbase/nextbase`. Names are validated against the name regex before they reach it, and values
+`@nextbase/server`. Names are validated against the name regex before they reach it, and values
 are never interpolated into SQL text.
 
 ## 3. Database layout
 
 All NextBase objects live in a dedicated Postgres schema, `nextbase`, so they never collide with an
 app's own tables in `public`. System tables start with `_`. Collection names cannot, so the two
-never clash. Postgres 15 or newer is required, with `DateStyle` ISO and
+never clash. Postgres 16 or newer is required (checked at startup), with `DateStyle` ISO and
 `standard_conforming_strings` on (both defaults); startup refuses other settings with instructions.
 
 ```sql
@@ -204,6 +213,7 @@ arrives.
 | ------ | ----------------------------------------------------------------------------- |
 | `base` | `id`, plus `created` and `updated` (added by default, removable)               |
 | `auth` | the base fields, plus `email`, `emailVisibility`, `verified`, `password`, `tokenKey` |
+| `view` | none: every field comes from the query's columns (section 4.10)                |
 
 `_superusers` is a system auth collection created by the first migration. All of its rules are
 `null`, so only superusers can manage it. It cannot be deleted or renamed.
@@ -347,6 +357,57 @@ long-lived servers can add `LISTEN` as an optimization on top.
 This is the v1 path from a dev schema to production. Generated migration files are a later
 addition.
 
+### 4.10 View collections
+
+A view collection's records are the rows of a SQL query over other collections, such as posts
+with their comment counts. It is listed, viewed and filtered like any collection, under its list
+and view rules, and is read-only: its create, update and delete rules must be `null`, and writes
+are refused even for superusers.
+
+```json
+{ "name": "post_stats", "type": "view", "listRule": "",
+  "viewQuery": "SELECT p.id, p.title, count(c.id) AS comments FROM posts p LEFT JOIN comments c ON c.post = p.id GROUP BY p.id" }
+```
+
+- **Storage:** a Postgres view, `nextbase.<name>`. Unqualified names in the query resolve to
+  collection tables. The query needs a text `id` column; its ids can be any text.
+- **Fields:** derived from the query's columns: text, number, bool, date (`timestamp` and `date`
+  are read as UTC) and json. Every column is wrapped in a cast to its field's storage type. Other
+  types are refused with a hint to cast them. Field ids stay stable across query changes for
+  columns with the same name. Columns can be NULL, so filters treat every view field as nullable.
+  Views have no indexes, and relations cannot point at a view.
+- **What a view may read:** Postgres decides, through privileges, rather than NextBase inspecting
+  the query. View collections run as a dedicated role with least privilege, the approach
+  [PostgREST](https://docs.postgrest.org/en/v14/explanations/db_authz.html) documents for exposing
+  views:
+  - The role, `nextbase_views_<random>` (roles belong to the whole cluster), is created with the
+    first view and stored in `_meta.view_role`. It is `NOLOGIN NOINHERIT`, granted to NextBase's
+    user so NextBase can `SET ROLE` to it.
+  - It holds `USAGE` on the schema and `SELECT` on base collection tables and on auth collection
+    tables minus `password` and `tokenKey` (column privileges). Grants are refreshed after every
+    schema change, so new fields are granted and secrets never are. It has nothing on system
+    tables, other schemas, or privileged functions, which Postgres reserves for superusers and
+    roles such as `pg_read_server_files`.
+  - It owns the views, so Postgres checks their tables against its privileges, and creating,
+    renaming and dropping them runs as it (holding `CREATE` on the schema only meanwhile).
+  - Every read of a view runs as it too (`SET LOCAL ROLE` in a transaction, which is safe behind
+    transaction poolers), because [functions in a view run with the privileges of whoever queries
+    it](https://www.postgresql.org/docs/current/sql-createview.html). For the same reason rules
+    cannot read views through `@collection`.
+  - Saving a view reads it once (`LIMIT 0`) as the role, so most privilege problems are a 400 at
+    save time; a function that fails only when evaluated (such as `query_to_xml` over `_meta`) fails
+    the read with a 500 that leaks nothing and is logged.
+  - Creating the role needs the `CREATEROLE` attribute, which Neon's owner role and the RDS/Aurora
+    `postgres` user have. Without it, creating a view is a 400 explaining how an administrator can
+    create the role; everything else works.
+
+  A view sees what the role can: emails of auth collections are readable, and a view does not
+  apply `emailVisibility`. Catalogs readable by everyone, such as `pg_class`, are readable too.
+- **Schema changes:** a new query is checked under a scratch name, then applied with
+  `CREATE OR REPLACE VIEW`, so views reading this one survive when its columns stay compatible.
+  Renaming a collection or field a view reads keeps the view working; dropping or retyping it, or
+  deleting a view other views read, is refused with a 400 naming the dependency.
+
 ## 5. HTTP API
 
 All paths are relative to `basePath`. Requests and responses are JSON unless noted.
@@ -358,6 +419,7 @@ All paths are relative to `basePath`. Requests and responses are JSON unless not
 | GET    | `/health`                                     | anyone                               |
 | GET    | `/_`, `/_/`                                   | anyone (admin UI shell)              |
 | GET    | `/setup`                                      | anyone (reports whether setup is needed) |
+| POST   | `/batch`                                      | each write's own rule                |
 | POST   | `/setup`                                      | holder of the setup token            |
 | GET/POST | `/collections`                              | superuser                            |
 | GET/PATCH/DELETE | `/collections/{nameOrId}`           | superuser                            |
@@ -370,8 +432,12 @@ All paths are relative to `basePath`. Requests and responses are JSON unless not
 | DELETE | `/collections/{c}/records/{id}`               | delete rule                          |
 | GET    | `/collections/{c}/auth-methods`               | anyone                               |
 | POST   | `/collections/{c}/auth-with-password`         | anyone                               |
+| POST   | `/collections/{c}/sign-up`                    | create rule                          |
 | POST   | `/collections/{c}/auth-refresh`               | the authenticated record             |
-| POST   | `/collections/{c}/auth-logout`                | anyone (clears the session cookie)   |
+| GET    | `/session`                                    | anyone (the caller's session, or null) |
+| DELETE | `/session`                                    | anyone (logs out, removes the cookie) |
+| GET    | `/sessions`                                   | any signed-in record (its sessions)  |
+| DELETE | `/sessions/{id}`                              | any signed-in record (its own sessions) |
 | POST   | `/collections/{c}/request-verification`       | anyone                               |
 | POST   | `/collections/{c}/confirm-verification`       | token holder                         |
 | POST   | `/collections/{c}/request-password-reset`     | anyone                               |
@@ -397,7 +463,16 @@ Every error uses one shape:
     looked up by index name.
   - `23503` (foreign key violation) → 400 on the relation field.
   - Anything else → 500 with a generic message. The detail is logged server-side.
-- Malformed JSON, an unsupported content type, or a body over the size limit → 400 or 413.
+- Malformed JSON → 400, an unsupported content type → 415, a body over the size limit → 413.
+- Serialization failures and deadlocks (`40001`, `40P01`) → 409, which the Postgres docs say a
+  retry of the whole transaction fixes. A missing table or column (`42P01`, `42703`) → 409 only
+  when a concurrent schema change happened since the request read the schema; otherwise it is a
+  bug, logged as a 500.
+- A path that exists answers other methods with 405 and an `Allow` header (RFC 9110). A 401
+  carries `WWW-Authenticate: Bearer`.
+- Every API response carries `Cache-Control: no-store`, since responses depend on the caller,
+  including through the session cookie that shared caches do not account for, and
+  `X-Content-Type-Options: nosniff` (OWASP REST Security Cheat Sheet).
 
 ### 5.3 Request pipeline
 
@@ -409,6 +484,19 @@ Every error uses one shape:
 4. Check the schema version (section 4.8).
 5. Run the handler, inside a transaction for writes.
 6. Serialize records (section 6.6) and map errors.
+
+**Statement timeout.** A records API request (list, view, create, update, delete, batch) runs in
+one transaction that starts with `set_config('statement_timeout', <ms>, true)`, which is
+`SET LOCAL`: Postgres stops any of its statements that run past `statementTimeout` (default 8
+seconds, the default [Supabase documents](https://supabase.com/docs/guides/database/postgres/timeouts)
+for signed-in API requests), so an expensive client filter cannot hold the database. A
+transaction-scoped setting works through transaction poolers, which reject session settings and
+the startup parameter node-postgres would send for its own `statement_timeout`
+([PgBouncer](https://www.pgbouncer.org/config.html) accepts only parameters it tracks). Writes run
+as savepoints inside it. A stopped statement (`57014`) is a 500, as
+[PostgREST](https://docs.postgrest.org/en/v14/references/errors.html) answers it, and is logged.
+Schema changes and migrations are not limited: DDL on large tables can take long.
+
 
 ## 6. Records
 
@@ -454,6 +542,14 @@ Every error uses one shape:
     existing tokens.
 - **Write responses:** a create or update returns the record if the caller passes the view rule,
   otherwise `204 No Content`.
+- **Batch:** `POST /batch` with `{ "requests": [{ "method": "POST", "url": "/collections/orders/records", "body": {...} }, ...] }`
+  runs up to 50 creates (POST), updates (PATCH) and deletes (DELETE) in one transaction, each with
+  its own rules, in order, so later writes see earlier ones (an order created first passes its
+  items' create rule). Urls are records paths below the base path and may carry `expand` and
+  `fields`. It returns one `{ status, body }` per write, or a 400 naming the first failed write,
+  with its field errors at `data.requests.<index>`; then nothing was saved. Each write runs in a
+  savepoint of the batch's transaction, so the same code serves single and batched writes. The SDK
+  queues writes with `nb.createBatch().collection("orders").create({...}).send()`.
 
 ### 6.3 Filter language
 
@@ -508,6 +604,10 @@ Semantics:
 
   This deliberately differs from vacuous truth. Under vacuous truth, a rule like
   `allowed.id = @request.auth.id` would grant access to everyone when `allowed` is empty.
+- **Both sides multi-valued** (`tags ?= wanted`, `reviewers ?= team.members`): one subquery walks
+  both sides and compares every pair of values. `?op` holds when some pair matches; a plain `op`
+  when both sides are non-empty and every pair matches. Relation paths on both sides work the same
+  way, each with its own view rule in client filters.
 - **Back-relations:** `comments_via_post` walks from a post to the comments whose `post` field
   points at it, and is always multi-valued. `comments_via_post:length` counts them.
 - **`@collection`:** each `@collection.<name>` (or `@collection.<name>:<alias>`) is one row variable
@@ -516,6 +616,10 @@ Semantics:
   membership row matches both. An empty collection contributes a row of NULLs. Rules only.
 - **JSON:** `meta.address.city` reads a value by key (keys are bound parameters). It is compared
   as the type of the other side; a value of another JSON type, or a missing key, reads as NULL.
+  Compared with a date (a date field or a macro such as `@now`), a JSON string is parsed by
+  `nextbase.parse_timestamptz`, which accepts ISO 8601 only (no zone means UTC) and returns NULL
+  for anything else, including impossible dates, instead of failing the query. A string literal is
+  text, so `meta.due < "2026-01-01"` compares text.
 - **Unauthenticated callers:** `@request.auth.*` resolves to blank values, so `@request.auth.id != ""`
   is the idiomatic "signed in" check.
 - **Limits:** 3500 characters, 200 comparisons, nesting depth 6, relation path depth 6.
@@ -591,17 +695,46 @@ related records per record, always as an array.
 - Hashes are stored in PHC format (`$scrypt$ln=14,r=8,p=5$<salt>$<hash>`), so parameters can be
   raised later: hashes with old parameters are rehashed on successful login.
 - Comparison is constant-time.
+- Following [NIST SP 800-63B rev 4](https://pages.nist.gov/800-63-4/sp800-63b.html): passwords
+  are normalized with NFC before hashing, lengths count Unicode code points, and the default
+  minimum is 15 characters, since NextBase has no second factor.
 - When the identity is unknown, a dummy hash is still verified, so response timing does not reveal
   which accounts exist.
 
-### 7.2 Tokens
+### 7.2 Sessions and tokens
 
-Tokens are HS256 JWTs, created and verified with `jose`. JWT verification is security-critical and
-`jose` is audited and dependency-free.
+Signing in creates a **session**: a row in `_sessions`, like a server-side session store, rather
+than a self-contained JWT. A JWT cannot be revoked before it expires, so logging out would only
+forget it on the client.
+
+- **Token:** 32 random bytes, base64url. Only its SHA-256 hash is stored, so a database leak hands
+  out no live sessions. The token is shown once, at sign-in.
+- **Lookup:** every authenticated request finds the session by token hash (unique index), then
+  loads the record.
+- **Lifetime:** `options.tokens.auth.duration`, by default 7 days (superusers: 1 day). A session in
+  use is extended to the full duration once it is a day old (or half its duration, if shorter), so
+  active users stay signed in at the cost of at most one write per session per day. However active,
+  a session ends 30 days after sign-in: OWASP requires "an absolute timeout, regardless of session
+  activity", and NIST SP 800-63B rev 4 sets 30 days as the longest reauthentication interval at
+  AAL1. Only HTTP requests extend sessions, since only their responses can renew the cookie too
+  (section 7.6).
+- **Revocation:**
+  - Logging out deletes the session. `GET /sessions` lists a record's sessions, and
+    `DELETE /sessions/{id}` ends one, such as a lost device.
+  - Each session stores `key_hash = sha256(record.tokenKey + ":" + tokens.auth.secret)`, checked on
+    every lookup. Regenerating the record's `tokenKey` (password or email change) or rotating the
+    collection's auth secret therefore ends sessions without any bookkeeping, and so does a deleted
+    record whose id is reused.
+  - On a password or email change, the record's other sessions are deleted, and the caller's own
+    session, if it is that record's, is re-keyed so it stays signed in.
+  - A cookie sign-in ends the session in the cookie it replaces.
+  - Expired sessions are deleted when new ones are created.
+
+Other token types stay HS256 JWTs, created and verified with `jose`, because they travel in links
+and need no lookup:
 
 | Type                | Claims                                   | Default lifetime |
 | ------------------- | ---------------------------------------- | ---------------- |
-| `auth`              | `id`, `collectionId`, `refreshable`      | 7 days (superusers: 1 day) |
 | `verification`      | `id`, `collectionId`, `email`            | 3 days |
 | `passwordReset`     | `id`, `collectionId`, `email`            | 30 minutes |
 | `emailChange`       | `id`, `collectionId`, `email`, `newEmail`| 30 minutes |
@@ -609,23 +742,17 @@ Tokens are HS256 JWTs, created and verified with `jose`. JWT verification is sec
 
 - **Signing key:** `record.tokenKey + collection.options.tokens[type].secret`. Secrets are 50
   random characters generated when the collection is created, and the admin UI can rotate them.
-- **Revocation:**
-  - Rotating a collection secret revokes all tokens of that type for the collection.
-  - Regenerating a record's `tokenKey` revokes all of that record's tokens. This happens on
-    password change, email change and password reset, which also makes reset and email-change
-    tokens single-use.
-- **Verification steps:**
-  1. Decode without trusting the token, to read `id` and `collectionId`.
-  2. Load the record.
-  3. Derive the key.
-  4. Verify with `algorithms: ["HS256"]` pinned.
-  5. Check the `type` claim, `exp`, and that `collectionId` is an auth collection.
+- **Revocation:** rotating a collection secret revokes all tokens of that type. Regenerating a
+  record's `tokenKey` revokes all of that record's tokens, which also makes reset and email-change
+  tokens single-use.
+- **Verification:** `algorithms: ["HS256"]` pinned, and the `type` claim and `exp` checked.
 
 ### 7.3 Transport
 
-- Clients send `Authorization: Bearer <token>`.
-- Alternatively, the HttpOnly session cookie described in section 7.6.
+- Clients send `Authorization: Bearer <token>`, or the HttpOnly session cookie (section 7.6).
 - If both are present, the header wins.
+- An invalid Bearer token is a 401, so API clients notice. An invalid cookie is removed and the
+  request continues anonymously, so a revoked session never breaks public pages.
 
 ### 7.4 Flows
 
@@ -634,25 +761,65 @@ Tokens are HS256 JWTs, created and verified with `jose`. JWT verification is sec
   - `identity` is matched against `options.identityFields`, which defaults to `["email"]`. Other
     identity fields must be text fields with a unique index.
   - Checks the authRule.
-  - Returns `{ token, record }`.
-- **auth-refresh:** requires a refreshable auth token, re-checks the authRule, and returns a new
-  token and the fresh record.
-- **request-verification, request-password-reset**
-  - Always return 204, whether or not the email exists.
-  - Mail is sent after the response is decided, so timing does not depend on whether a record was
-    found.
-- **confirm-password-reset:** sets the password, regenerates `tokenKey`, and marks the record as
-  verified, since the user proved control of the email address.
-- **request-email-change, confirm-email-change**
-  - The confirm step requires the current password.
-  - It checks the new email is still free, then updates the email and regenerates `tokenKey`.
-- **Email templates:** subject and body templates are per-collection options. Links point at a
-  configurable app URL, with `{TOKEN}` substituted into it.
+  - Creates a session and returns `{ token, record }`, or with `{ cookie: true }` sets the session
+    cookie and returns `{ record }`.
+- **sign-up:** creates the record under the create rule, then signs it in, in one request: the
+  same `{ token, record }` (or cookie) as auth-with-password. The id is chosen before the insert,
+  so the record can be signed in even when the caller may not view it. When the authRule does not
+  let it sign in yet, such as before verifying its email, the account stays created and the answer
+  is 202 Accepted with no session.
+- **auth-refresh:** re-checks the authRule, extends the session to its full lifetime, and returns
+  the fresh record. A Bearer caller also gets its token back; a cookie caller gets a renewed cookie
+  and never the token.
+- **session:** `GET /session` returns the caller's session and record, or `null`. `DELETE /session`
+  logs out: it deletes the session and removes the cookie.
+- **auth-methods:** `GET` answers `{ password: { enabled, identityFields } }`, for a login page.
+
+The email flows follow the
+[OWASP Forgot Password Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html):
+
+- **request-verification, request-password-reset, request-email-change** answer 204 whether or not
+  the account exists. Mail is sent in the background after the response is decided, kept alive
+  past it by `waitUntil` (Vercel's by default, a no-op elsewhere; `after` from `next/server` works
+  too), so timing does not reveal accounts. Each address gets at most 10 emails per 15 minutes,
+  counted like login attempts, so no one can flood an inbox. request-email-change needs the
+  signed-in record; whether another record has the new address is checked on confirming, so the
+  request reveals nothing.
+- **Tokens** are the JWTs of section 7.2, of type `verification`, `passwordReset` or
+  `emailChange`, signed with the record's `tokenKey` and the collection's secret for that type,
+  and carrying the email they were issued for: a token for an address the record no longer has is
+  rejected. A reset or email change rotates `tokenKey`, which makes its token single-use and ends
+  every session.
+- **confirm-verification** marks the record verified; confirming again is harmless.
+- **confirm-password-reset** sets the password under the field's usual rules, marks the record
+  verified (the user proved control of the address), ends every session, clears its login
+  lockout, both the per-account and per-identity counts (OWASP: no lockout changes before a valid
+  token, and recovery should end a lockout), and emails a "password changed" notice. It does not
+  sign the user in.
+- **confirm-email-change** needs the current password, counted against the account's login limit,
+  then moves the record to the new address (a unique violation is a 400), marks it verified, ends
+  every session and tells the old address.
+- **Links** come from `mail.appUrl` (`/verify-email`, `/reset-password`, `/confirm-email-change`,
+  each with `?token=`), never from the Host header, which an attacker can set to steal reset
+  tokens. `appUrl` must be HTTPS, except on localhost.
+- **Messages** have default subjects and texts; `mail.templates` replaces any of them, getting the
+  collection, recipient, link and token. Templates are code, in the `mail` option, rather than
+  per-collection settings: there is no admin UI to edit them yet.
+- **Without `mail`**, these endpoints answer 400 `mail_not_configured` in production; in
+  development the messages, tokens included, are logged instead.
 
 ### 7.5 Brute-force protection
 
-Failed password attempts are counted per collection and identity in `_auth_attempts`, using a fixed
-15-minute window. After 10 failures, attempts return 429 until the window ends.
+Password attempts are counted in `_auth_attempts`, in a fixed 15-minute window, both per typed
+identity (which may match no account) and per account, so several identity fields do not multiply
+the limit. Each attempt is counted before the password is checked, in one atomic
+`INSERT ... ON CONFLICT DO UPDATE ... RETURNING`, so parallel guesses cannot all pass a check made
+before any is counted; a correct password clears the counts. Over 10 attempts, requests get 429
+with `Retry-After` set to the seconds left in the window.
+
+The `oldPassword` of a password change goes through the same per-account count. It is checked
+after the update rule passed, so a caller the rule rejects can neither guess it nor lock the
+account, and counted outside the update's transaction, so a rejected change still counts.
 
 This works across serverless instances without trusting client-IP headers. The cost is that an
 attacker can temporarily lock out one known account. IP-level limits belong at the edge (platform
@@ -660,26 +827,49 @@ firewall or proxy), and the docs will say so. This trade-off is listed as an ope
 
 ### 7.6 Session cookies (Next.js integration)
 
-Server components need the user's identity without client-side token plumbing. When a login call
-asks for a session (`{ session: true }` in the body), the response also sets the session cookie:
+The browser sends cookies with every request, including page loads; it never sends a token kept in
+`localStorage`. A cookie is what lets server components, server actions and `proxy.ts` know the
+user, and an HttpOnly cookie is also out of reach of injected scripts. Signing in with
+`{ cookie: true }` sets:
 
 ```
-nextbase_auth=<token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=<token lifetime>
+__Host-nextbase_session=<token>; Path=/; Max-Age=<seconds left>; HttpOnly; SameSite=Lax; Secure
 ```
 
-- `Secure` is omitted only for `http://localhost`.
-- `auth-refresh` re-issues the cookie and `auth-logout` clears it.
+- `Secure` is set when the request is HTTPS or `NODE_ENV` is `production`, so `next dev` on plain
+  HTTP works. With it comes the `__Host-` prefix, which browsers accept only on a Secure,
+  host-only cookie on `Path=/`, so a sibling subdomain cannot set or shadow it (OWASP Session
+  Management Cheat Sheet). Plain HTTP uses `nextbase_session`.
+- A request that extends a cookie session renews the cookie's `Max-Age`. Logging out, revoking the
+  current session, or presenting an invalid cookie removes it.
 
 Cookie authentication opens a CSRF surface, which is closed as follows:
 
-- `SameSite=Lax` blocks the cookie on cross-site sub-requests.
-- Any POST, PATCH or DELETE request that authenticates via the cookie (no `Authorization` header)
-  must carry an `Origin` header equal to the request's origin or listed in `trustedOrigins`.
-  Otherwise it gets 403.
-- GET handlers have no side effects.
+- `SameSite=Lax` keeps the cookie off cross-site sub-requests.
+- Any write (non-GET) that authenticates through the cookie is checked as the
+  [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+  describes: by `Sec-Fetch-Site` where the browser sends it (`same-origin` and `none` pass;
+  `same-site` and `cross-site` get 403), and otherwise by an `Origin` header that must name the
+  request's host or one in `trustedOrigins`, or it gets 403. Hosts are compared rather than
+  full origins, as Next.js does for server actions, because proxies often change the scheme the
+  app sees.
+- The request's host is `Host`, which platforms such as Vercel
+  [set to the domain the client used](https://vercel.com/docs/headers/request-headers).
+  `X-Forwarded-Host` is read only with `trustProxy`, since OWASP says to use it "only from trusted
+  proxies".
+- A cookie sign-in is checked the same way, so another site cannot sign the browser in to an
+  account of its choosing.
+- GET handlers have no side effects. In-process requests from `client()` are server code and are
+  not checked.
 
-Server components cannot set cookies, so tokens are refreshed by the browser SDK or by the app's
-own server actions. A 7-day lifetime makes this a non-issue in practice.
+[Next.js does not support setting cookies while rendering server components](https://nextjs.org/docs/app/api-reference/functions/cookies).
+So in-process requests from `client()` neither extend sessions nor remove a stale cookie; only HTTP
+requests do, where the response renews the cookie in step with the database. Signing in and out
+in server actions and route handlers writes the cookie through the store's `set`.
+
+A GET request may renew the cookie and the session's expiry. Next.js calls setting cookies on GET
+an escape hatch that needs auditing; here the renewal is idempotent and only extends the caller's
+own session, and responses carry no CORS headers, so other origins cannot read them.
 
 ### 7.7 First superuser
 
@@ -801,11 +991,11 @@ The invariant: every filename stored in the database exists in storage.
 ## 10. Client SDK
 
 ```ts
-import { NextBaseClient } from "@nextbase/nextbase/client";
+import { NextBaseClient } from "@nextbase/client";
 
 const nb = new NextBaseClient(); // baseUrl defaults to "/api/nextbase"
 
-await nb.collection("users").authWithPassword("a@b.co", "secret");
+await nb.collection("users").signInWithPassword("a@b.co", "secret");
 const page = await nb.collection<Post>("posts").getList(1, 20, {
   filter: nb.filter("published = true && title ~ {:q}", { q }),
   sort: "-created",
@@ -818,8 +1008,11 @@ nb.authStore.onChange((token, record) => {});
 - **Records:** `getList`, `getFullList` (batches of up to 1000), `getFirstListItem` (a 404 when
   nothing matches), `getOne`, `create`, `update` and `delete`. `create` and `update` return `null`
   when the write succeeded but the caller may not view the result (the server's 204).
-- **Auth:** `authWithPassword` and `authRefresh` save the token and record in the auth store. The
-  remaining flows of section 7.4 are added with them.
+- **Auth:** `signUp` creates an account and signs it in, in one request (null when the authRule does not let it sign in yet). `signInWithPassword` and `refreshSession` save the token and record in the auth store; with
+  `{ cookie: true }` the session lives in the HttpOnly cookie and the store keeps only the record.
+  `getSession()` returns the current session (and updates the store), `signOut()` ends it, and
+  `listSessions()` and `revokeSession(id)` manage the record's devices. The remaining flows of
+  section 7.4 are added with them.
 - **Collections:** `nb.collections` wraps the superuser-only collections API. `setupStatus()` and
   `setup()` drive first-run setup.
 - **Options:** every method takes fetch's own options (`signal`, `cache`, and Next.js's `next`),
@@ -835,7 +1028,8 @@ nb.authStore.onChange((token, record) => {});
     `storage` event.
   - A 401 to a request sent with the stored token clears it, since the server no longer accepts it.
   - Updating the signed-in record refreshes it in the store; deleting it signs out.
-  - `isValid` checks the token's expiry claim, not its signature.
+  - `isValid` means the client holds a token or a cookie session's record; the server decides, and
+    a 401 clears the store.
 - **Types:** collections are typed with generics in v1. The collection model's types are exported
   from `shared/`, where the server's own definitions live. Generating record types from the live
   schema is a later addition.
@@ -843,8 +1037,11 @@ nb.authStore.onChange((token, record) => {});
 ### 10.1 Server-side use
 
 ```ts
-// Server component or server action: anonymous, or a user once signed in or given a token.
-const nb = nextbase.client();
+// Server component or server action: acts as the user of the session cookie.
+// serverClient (from @nextbase/next) reads Next.js's cookies(); elsewhere, pass any
+// cookie store: nextbase.client({ cookies }).
+const nb = await serverClient(nextbase);
+const session = await nb.getSession();
 
 // Trusted server code: acts as a superuser. Never expose it to user input.
 const admin = nextbase.client({ superuser: true });
@@ -853,12 +1050,42 @@ const admin = nextbase.client({ superuser: true });
 `nextbase.client()` returns the same SDK, wired to an in-process `fetch` and a memory-only auth
 store. Requests go through the full pipeline (routing, validation, rules, serialization) without a
 network hop, so server-side access gets exactly the same authorization as HTTP access. Create one
-per request: a signed-in client must never be shared between users. With session cookies,
-`nextbase.client({ cookies: await cookies() })` will act as the signed-in user.
+per request: a signed-in client must never be shared between users. In server actions and route
+handlers, `signInWithPassword(..., { cookie: true })` and `signOut()` write the cookie through the
+store's `set`; in server components, where Next.js forbids it, renewals are skipped.
+
+**Protecting pages.** `nextbase.getSession(request)` returns the session of a request's cookie
+or Bearer token, checked against the database, or `null`, without extending it, for `proxy.ts` to
+redirect signed-out visitors before a page renders (proxy runs on the Node.js runtime in Next.js
+16, so a database check is possible). `hasSessionCookie(request)` is the cookie-only check the
+[Next.js authentication guide](https://nextjs.org/docs/app/guides/authentication) recommends for
+proxy, which runs on every matched request, prefetches included. Either way proxy is a redirect,
+not the security boundary: the guide says proxy "should not be your only line of defense" and
+that checks belong "as close as possible to your data source", and server actions are POSTs to
+the page route, so a matcher change can skip them. NextBase's collection rules are that boundary
+for every read and write through `client()` or the API, so pages need no auth checks of their own.
 
 The superuser principal is passed through an internal `dispatch(request, principal)` that HTTP
 cannot reach. `handle(request)` always derives the principal from the request's own credentials.
 In-process requests never log the setup token, which names a URL to call.
+
+## 10.2 CLI
+
+`npx nextbase` (the package's `bin`) runs on Node's own `util.parseArgs` and `process.loadEnvFile`,
+with no dependencies:
+
+| Command | Does |
+| --- | --- |
+| `migrate` | Creates or upgrades NextBase's tables, for deploy scripts. |
+| `superuser --email E` | Adds a superuser through `createSuperuser`. The password is read without echo (raw-mode stdin and keypress events, documented Node APIs), asked twice, or taken from `NEXTBASE_SUPERUSER_PASSWORD` in scripts. Replaces finding the setup token in the logs for operators with a shell. |
+| `typegen [--out F]` | Writes a record type per collection and a `Collections` map. Hidden fields are left out; view columns are nullable. |
+
+`DATABASE_URL` comes from the environment, then `.env.local`, then `.env` (`loadEnvFile` keeps
+variables already set, so loading in that order gives that precedence, as in Next.js), or from
+`--database`. The CLI uses a pool of its own and ends it, so the process exits promptly.
+
+`NextBaseClient<Schema>` takes the generated `Collections`: `collection("posts")` is then typed
+by name, and other names, or an explicit `collection<T>(name)`, fall back as before.
 
 ## 11. Security summary
 
@@ -891,7 +1118,7 @@ In-process requests never log the setup token, which names a URL to call.
     relations and cascades, auth flows, files with a temporary local storage directory.
 - **A rule matrix suite:** for each action and rule shape, test anonymous, owner, other user and
   superuser access, asserting status codes and visible rows.
-- **CI:** gets a Postgres 17 service container.
+- **CI:** runs against Postgres 16, the oldest supported version, and 18, the newest.
 
 ## 13. Implementation plan
 

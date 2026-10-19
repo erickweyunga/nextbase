@@ -1,0 +1,333 @@
+---
+title: Auth
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Auth
+
+Sign in to an [auth collection](/docs/guides/auth) and manage sessions. To
+sign up, [create a record](/docs/api/records#create-a-record) in the auth
+collection.
+
+## Sign in with a password
+
+Checks the password and the collection's `authRule`, then starts a session.
+Every failure returns the same error, so responses never reveal which emails
+exist. Ten failures for one account within 15 minutes block it for the rest
+of that window.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+// Bearer token, kept by the SDK's auth store:
+await nb.collection("users").signInWithPassword("ann@example.com", "a long password");
+
+// Or an HttpOnly session cookie:
+await nb.collection("users").signInWithPassword("ann@example.com", "a long password", {
+  cookie: true,
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections/users/auth-with-password \
+  -H 'content-type: application/json' \
+  -d '{"identity":"ann@example.com","password":"a long password"}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /collections/{collection}/auth-with-password
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `identity` | string | Required. The email (matched regardless of case), or another identity field. |
+| `password` | string | Required. |
+| `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token. The request must then send an `Origin` header naming this site. |
+
+**Query parameters:** `expand` and `fields`, applied to `record`.
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "token": "yK2v0Xo8...43 characters",
+  "record": {
+    "collectionId": "c9d8e7f6a5b4c3d",
+    "collectionName": "users",
+    "id": "u7v8w9x0y1z2a3b",
+    "email": "ann@example.com",
+    "emailVisibility": false,
+    "verified": false,
+    "name": "Ann"
+  }
+}
+```
+With `cookie: true`, `token` is left out and the response sets:
+
+```http
+Set-Cookie: nextbase_session=<token>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax; Secure
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to authenticate.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "This account does not meet the requirements to sign in.", "data": {} }
+```
+The password matched, but the `authRule` did not.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many failed attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Refresh
+
+Extends the current session to its full lifetime and returns the record,
+re-checking the `authRule`. A cookie session gets a renewed cookie and never
+the token.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.collection("users").refreshSession();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections/users/auth-refresh \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /collections/{collection}/auth-refresh
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+`{ "token": "...", "record": { ... } }`, without `token` for cookie sessions.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to this collection to refresh.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Get the current session
+
+Returns the caller's session and record, or `null` when signed out.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const session = await nb.getSession();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl https://app.example/api/nextbase/session -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /session
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "id": "s1t2u3v4w5x6y7z",
+  "created": "2026-10-19T09:30:00.000Z",
+  "expires": "2026-10-26T09:30:00.000Z",
+  "userAgent": "Mozilla/5.0 ...",
+  "current": true,
+  "record": { "collectionName": "users", "id": "u7v8w9x0y1z2a3b", "email": "ann@example.com" }
+}
+```
+`null` when signed out.
+
+</TabItem>
+</Tabs>
+
+## Sign out
+
+Ends the current session, so its token stops working, and removes the session
+cookie.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.signOut();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/session -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /session
+```
+
+**Responses:** `204` with no body, also when there was no session.
+
+## List sessions
+
+Lists the signed-in record's live sessions, newest first: one per device or
+client.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const sessions = await nb.listSessions();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl https://app.example/api/nextbase/sessions -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /sessions
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "items": [
+    {
+      "id": "s1t2u3v4w5x6y7z",
+      "created": "2026-10-19T09:30:00.000Z",
+      "expires": "2026-10-26T09:30:00.000Z",
+      "userAgent": "Mozilla/5.0 ...",
+      "current": true
+    }
+  ]
+}
+```
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to manage sessions.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Revoke a session
+
+Ends one of the signed-in record's sessions, such as a lost device. Revoking
+the current cookie session also removes the cookie.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.revokeSession("s1t2u3v4w5x6y7z");
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/sessions/s1t2u3v4w5x6y7z \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /sessions/{id}
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to manage sessions.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Session not found.", "data": {} }
+```
+Also returned for another record's session.
+
+</TabItem>
+</Tabs>

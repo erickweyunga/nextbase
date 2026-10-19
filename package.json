@@ -17,7 +17,7 @@
     "check": "biome check . && turbo run typecheck test build check:package && knip",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build --filter=@nextbase/nextbase && changeset publish"
+    "release": "turbo run build --filter='./packages/*' && changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

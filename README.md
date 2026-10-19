@@ -9,15 +9,18 @@ at Postgres, and your app serves a complete backend at `/api/nextbase`.
 
 **One package. One application. One deployment.**
 
-> Early development. See [`packages/nextbase`](packages/nextbase) for usage.
+> Early development. See [`packages/nextbase-server`](packages/nextbase-server) for usage.
 
 ## Repository layout
 
 | Path | What it is |
 | --- | --- |
-| `packages/nextbase` | `@nextbase/nextbase`, the only published package (`/server` and `/client` entry points) |
-| `packages/admin` | Private admin UI, built to one HTML file and embedded into the server bundle |
-| `packages/dbx` | Private Postgres query builder and data access layer, bundled into the server |
+| `packages/nextbase-server` | `@nextbase/server`: the backend and the `nextbase` CLI, for any framework that speaks web-standard `Request`/`Response` |
+| `packages/nextbase-client` | `@nextbase/client`: the SDK and the wire types shared with the server |
+| `packages/nextbase-next` | `@nextbase/next`: route handlers and a server client for Next.js |
+| `packages/nextbase-react` | `@nextbase/react`: provider and hooks |
+| `packages/nextbase-admin` | Private admin UI, built to one HTML file and embedded into the server bundle |
+| `packages/nextbase-dbx` | Private Postgres query builder and data access layer, bundled into the server |
 | `examples/next-app` | Next.js app wired to the package; used for manual and end-to-end testing |
 
 ## Development
@@ -32,5 +35,6 @@ pnpm format     # apply Biome formatting and import sorting
 ```
 
 Releases use [Changesets](https://github.com/changesets/changesets): run
-`pnpm changeset` in any PR that changes `@nextbase/nextbase`. Merging to `main`
+`pnpm changeset` in any PR that changes a published package. The four are versioned together (a
+Changesets `fixed` group). Merging to `main`
 opens a "Version packages" PR; merging that publishes to npm.

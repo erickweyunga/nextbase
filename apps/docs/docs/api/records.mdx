@@ -1,0 +1,388 @@
+---
+title: Records
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Records
+
+Read and write the records of a collection. Every action is checked against
+the collection's [rules](/docs/guides/rules); superusers bypass them.
+
+## List records
+
+Returns a page of records. Records the `listRule` does not match are left out.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const page = await nb.collection("posts").getList(1, 20, {
+  filter: nb.filter("published = true && title ~ {:q}", { q: "next" }),
+  sort: "-created",
+  expand: "author",
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -G https://app.example/api/nextbase/collections/posts/records \
+  --data-urlencode 'filter=published = true && title ~ "next"' \
+  --data-urlencode 'sort=-created' \
+  --data-urlencode 'expand=author'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /collections/{collection}/records
+```
+
+**Path parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `collection` | string | Collection name or id |
+
+**Query parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `page` | number | Optional. Page number, from 1. Default `1`. |
+| `perPage` | number | Optional. Records per page, 1 to 1000. Default `30`. |
+| `filter` | string | Optional. A [filter](/docs/guides/filters). |
+| `sort` | string | Optional. Comma-separated fields, `-` for descending, e.g. `-created,title`. Default `-created` when the collection has that field. |
+| `expand` | string | Optional. Relations to load, e.g. `author,comments_via_post.author`. Up to 6 levels. |
+| `fields` | string | Optional. Fields to return, e.g. `id,title,expand.author.name`. |
+| `skipTotal` | boolean | Optional. `true` skips counting; totals are then `-1`. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "page": 1,
+  "perPage": 20,
+  "totalItems": 2,
+  "totalPages": 1,
+  "items": [
+    {
+      "collectionId": "c1a2b3c4d5e6f7g",
+      "collectionName": "posts",
+      "id": "k3j2h1g9xa0b1c2",
+      "title": "Next.js tips",
+      "published": true,
+      "author": "u7v8w9x0y1z2a3b",
+      "created": "2026-10-19T09:30:00.000Z",
+      "expand": {
+        "author": { "collectionName": "users", "id": "u7v8w9x0y1z2a3b", "name": "Ann" }
+      }
+    }
+  ]
+}
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Invalid filter: Unknown field \"titel\".", "data": {} }
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Only superusers can perform this action.", "data": {} }
+```
+Returned when `listRule` is `null`.
+
+</TabItem>
+</Tabs>
+
+## View a record
+
+Returns one record. A record the `viewRule` does not match is a 404.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const post = await nb.collection("posts").getOne("k3j2h1g9xa0b1c2", {
+  expand: "author",
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl 'https://app.example/api/nextbase/collections/posts/records/k3j2h1g9xa0b1c2?expand=author'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /collections/{collection}/records/{id}
+```
+
+**Path parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `collection` | string | Collection name or id |
+| `id` | string | Record id |
+
+**Query parameters:** `expand` and `fields`, as for [listing](#list-records).
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "collectionId": "c1a2b3c4d5e6f7g",
+  "collectionName": "posts",
+  "id": "k3j2h1g9xa0b1c2",
+  "title": "Next.js tips",
+  "published": true,
+  "created": "2026-10-19T09:30:00.000Z"
+}
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Only superusers can perform this action.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Record not found.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Create a record
+
+Creates a record. The `createRule` is checked against the new record before
+it is inserted.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const post = await nb.collection("posts").create({
+  title: "Hello",
+  author: "u7v8w9x0y1z2a3b",
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections/posts/records \
+  -H 'authorization: Bearer <token>' \
+  -H 'content-type: application/json' \
+  -d '{"title":"Hello","author":"u7v8w9x0y1z2a3b"}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /collections/{collection}/records
+```
+
+**Body:** a JSON object of field values. `id` is optional: 15 characters from
+`a-z0-9`, generated when left out. For auth collections, also send `password`
+and `passwordConfirm`.
+
+**Query parameters:** `expand` and `fields`, applied to the returned record.
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The created record, as for [viewing](#view-a-record).
+
+</TabItem>
+<TabItem value="204" label="204">
+
+No body: the record was created, but the `viewRule` does not let the caller
+see it. The SDK returns `null`.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{
+  "status": 400,
+  "message": "Failed to create the record.",
+  "data": {
+    "title": { "code": "validation_required", "message": "Cannot be blank." },
+    "author": { "code": "validation_missing_relation", "message": "No users record with id u7v8w9x0y1z2a3b." }
+  }
+}
+```
+Also returned, with no field errors, when the `createRule` does not match.
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Only superusers can perform this action.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Update a record
+
+Changes the fields you send. A record the `updateRule` does not match is a
+404, and the rule is checked before validation, so its errors never reveal a
+record the caller cannot change.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.collection("posts").update("k3j2h1g9xa0b1c2", {
+  title: "Hello again",
+  "views+": 1,
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X PATCH https://app.example/api/nextbase/collections/posts/records/k3j2h1g9xa0b1c2 \
+  -H 'authorization: Bearer <token>' \
+  -H 'content-type: application/json' \
+  -d '{"title":"Hello again","views+":1}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+PATCH /collections/{collection}/records/{id}
+```
+
+**Body:** a JSON object of field values, and these modifiers:
+
+| Key | Field types | Effect |
+| --- | ----------- | ------ |
+| `field+` | number | adds the value |
+| `field-` | number | subtracts the value |
+| `field+` | multiple select or relation | appends values |
+| `+field` | multiple select or relation | prepends values |
+| `field-` | multiple select or relation | removes values |
+
+For auth collections, changing `password` needs `passwordConfirm` and
+`oldPassword` (unless the caller is a superuser or matches the `manageRule`).
+A password change signs out the record's other sessions.
+
+**Query parameters:** `expand` and `fields`, applied to the returned record.
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The updated record.
+
+</TabItem>
+<TabItem value="204" label="204">
+
+No body: the update succeeded, but the caller can no longer view the record.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{
+  "status": 400,
+  "message": "Failed to update the record.",
+  "data": {
+    "servings": { "code": "validation_out_of_range", "message": "Must be between 1 and ∞." }
+  }
+}
+```
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Record not found.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Delete a record
+
+Deletes a record and, through relation fields, deletes or clears the records
+that point at it (see [Relations](/docs/guides/collections#relations)).
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.collection("posts").delete("k3j2h1g9xa0b1c2");
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/collections/posts/records/k3j2h1g9xa0b1c2 \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /collections/{collection}/records/{id}
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The last superuser cannot be deleted.", "data": {} }
+```
+Also returned when clearing a reference would leave a required field empty.
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Record not found.", "data": {} }
+```
+
+</TabItem>
+</Tabs>

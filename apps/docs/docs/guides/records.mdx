@@ -1,0 +1,151 @@
+---
+title: Working with records
+---
+
+# Working with records
+
+Every collection has REST API endpoints at
+`/api/nextbase/collections/{collection}/records`. The SDK wraps it:
+
+```ts
+const posts = nb.collection<Post>("posts");
+```
+
+Each call is checked against the collection's [rules](/docs/guides/rules).
+
+## List
+
+```ts
+const page = await posts.getList(1, 20, {
+  filter: nb.filter("published = true && title ~ {:q}", { q }),
+  sort: "-created,title",
+  expand: "author",
+  fields: "id,title,expand.author.name",
+});
+// { page: 1, perPage: 20, totalItems: 57, totalPages: 3, items: [...] }
+```
+
+- `perPage` is at most 1000.
+- `sort` takes fields with an optional `-` for descending. Without it, records
+  are sorted by `-created` when the collection has that field.
+- `skipTotal: true` skips counting, which is faster on large tables;
+  `totalItems` and `totalPages` are then `-1`.
+- `getFullList(options)` fetches every match in batches.
+- `getFirstListItem(filter)` returns the first match, or throws a 404.
+
+## View
+
+```ts
+const post = await posts.getOne(id, { expand: "author" });
+```
+
+A record the caller may not view is a 404, the same as one that does not
+exist.
+
+## Create
+
+```ts
+const post = await posts.create({ title: "Hello", author: userId });
+```
+
+All validation errors come back at once, keyed by field:
+
+```json
+{
+  "status": 400,
+  "message": "Failed to create the record.",
+  "data": {
+    "title": { "code": "validation_required", "message": "Cannot be blank." }
+  }
+}
+```
+
+`create` returns `null` when the record was created but the view rule does not
+let the caller see it.
+
+## Update
+
+```ts
+await posts.update(id, { title: "Hello again" });
+```
+
+Only the fields you send change. Modifiers update a value in place, safely
+under concurrent requests:
+
+| Key | Field types | Effect |
+| --- | ----------- | ------ |
+| `views+` | number | add the value |
+| `views-` | number | subtract the value |
+| `tags+` | multiple select or relation | append values |
+| `+tags` | multiple select or relation | prepend values |
+| `tags-` | multiple select or relation | remove values |
+
+```ts
+await posts.update(id, { "views+": 1, "tags+": ["featured"] });
+```
+
+## Delete
+
+```ts
+await posts.delete(id);
+```
+
+Records related through relation fields are deleted, cleared or protected as
+described in [Relations](/docs/guides/collections#relations).
+
+## Expand relations
+
+`expand` loads related records into `expand`, up to 6 levels deep:
+
+```ts
+await posts.getOne(id, { expand: "author,comments_via_post.author" });
+```
+
+```json
+{
+  "id": "...",
+  "title": "Hello",
+  "author": "u1",
+  "expand": {
+    "author": { "id": "u1", "name": "Ann" },
+    "comments_via_post": [
+      { "id": "c1", "text": "Nice", "expand": { "author": { "id": "u2", "name": "Bo" } } }
+    ]
+  }
+}
+```
+
+- A single relation expands to a record. A multiple relation, or a relation
+  followed backwards such as `comments_via_post`, expands to an array; the
+  backwards case lists up to 1000 records.
+- Each expanded record must pass its own collection's view rule; others are
+  left out.
+
+## Choose fields
+
+`fields` keeps only the listed fields, including inside `expand`:
+
+```ts
+await posts.getList(1, 20, { fields: "id,title,expand.author.name" });
+```
+
+## What a record looks like
+
+```json
+{
+  "collectionId": "c1a2b3c4d5e6f7g",
+  "collectionName": "posts",
+  "id": "k3j2h1g9xa0b1c2",
+  "title": "Hello",
+  "created": "2026-10-19T09:30:00.000Z"
+}
+```
+
+Hidden fields, `password` and `tokenKey` are never returned. An auth record's
+`email` is returned only to the record itself, to superusers, or when its
+`emailVisibility` is true.
+
+## Next steps
+
+- [Filter language](/docs/guides/filters)
+- [REST API reference: records](/docs/api/records)

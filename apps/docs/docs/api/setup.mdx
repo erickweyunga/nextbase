@@ -1,0 +1,111 @@
+---
+title: Setup and health
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Setup and health
+
+## Health check
+
+Answers without touching the database, for load balancers and uptime
+monitors. `HEAD` works too.
+
+```http
+GET /health
+```
+
+```json
+{ "status": "ok" }
+```
+
+SDK: `await nb.health()`.
+
+## Setup status
+
+Whether the first superuser still has to be created.
+
+```http
+GET /setup
+```
+
+```json
+{ "required": true }
+```
+
+SDK: `await nb.setupStatus()`.
+
+## Create the first superuser
+
+While no superuser exists, the server log prints a one-time setup token,
+valid for one hour, at most once a minute. Send it with the superuser's
+credentials. Once a superuser exists, this endpoint returns `404`.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.setup({
+  token: "<token from the server log>",
+  email: "you@example.com",
+  password: "a long password",
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/setup \
+  -H 'content-type: application/json' \
+  -d '{"token":"<token from the server log>","email":"you@example.com","password":"a long password"}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /setup
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. The setup token from the server log. |
+| `email` | string | Required. |
+| `password` | string | Required. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The new superuser record. Sign in with
+`nb.collection("_superusers").signInWithPassword(email, password)`.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to create the superuser.", "data": { "password": { "code": "validation_length_out_of_range", "message": "..." } } }
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "The setup token is invalid or has expired. Check the server logs for a new one.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Not found.", "data": {} }
+```
+A superuser already exists.
+
+</TabItem>
+</Tabs>

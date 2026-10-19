@@ -1,0 +1,59 @@
+{
+  "name": "@nextbase/next",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "description": "NextBase for Next.js: route handlers and a server client that reads the session cookie.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erickweyunga/nextbase.git",
+    "directory": "packages/nextbase-next"
+  },
+  "keywords": [
+    "nextjs",
+    "backend",
+    "auth"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc",
+    "check:package": "publint --strict && attw --pack --profile esm-only",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@nextbase/client": "workspace:^",
+    "@nextbase/server": "workspace:^",
+    "next": ">=16"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "catalog:",
+    "@nextbase/client": "workspace:*",
+    "@nextbase/server": "workspace:*",
+    "@types/node": "catalog:",
+    "next": "catalog:",
+    "publint": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
