@@ -360,6 +360,8 @@ export const ROUTES: readonly Route[] = [
       const provider = oauth2.provider(params[1] as string);
       const query = new URL(request.url).searchParams;
       const redirect = checkRedirect(query.get("redirect"));
+      const errorRedirect =
+        checkRedirect(query.get("errorRedirect"), "errorRedirect") || redirect;
       let linkRecordId: string | null = null;
       if (query.get("link") === "true") {
         // Linking adds a way into the signed-in account, so only this site
@@ -377,6 +379,7 @@ export const ROUTES: readonly Route[] = [
         collection,
         provider,
         redirect,
+        errorRedirect,
         linkRecordId,
       });
       return new Response(null, {
@@ -394,17 +397,19 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, db, schema, principal, mailer, oauth2 } = context;
       let redirect = "";
+      let errorRedirect = "";
       const back = (error?: string): Response => {
+        const to = error === undefined ? redirect : errorRedirect;
         const response = new Response(null, {
           status: 302,
-          headers: [["location", oauth2.returnUrl(redirect, error)]],
+          headers: [["location", oauth2.returnUrl(to, error)]],
         });
         response.headers.append("set-cookie", setStateCookie(request));
         return response;
       };
       try {
         const state = await oauth2.consumeState(db, request);
-        redirect = state.redirect;
+        ({ redirect, errorRedirect } = state);
         const provider = oauth2.provider(state.provider);
         const collection = authCollection(schema, state.collectionId);
         // A link is for the record that started it, still signed in here.

@@ -7,6 +7,9 @@
         "@easyops-cn/docusaurus-theme-docusaurus-search-local"
       ],
       "entry": ["src/fonts.ts"]
+    },
+    "examples/next-app": {
+      "ignoreBinaries": ["openssl"]
     }
   }
 }

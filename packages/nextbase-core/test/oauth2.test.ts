@@ -375,6 +375,7 @@ describe("OAuth2 sign-in", () => {
       "idp",
       { sub: "u5" },
       {
+        query: "?redirect=/home&errorRedirect=%2Fsign-in%3Fnext%3D%2Fhome",
         tamper: (callback, cookie) => {
           const denied = new URL(callback);
           denied.searchParams.delete("code");
@@ -382,6 +383,9 @@ describe("OAuth2 sign-in", () => {
           return [denied, cookie];
         },
       },
+    );
+    expect(response.headers.get("location")).toBe(
+      `${origin}/sign-in?next=%2Fhome&error=oauth2_denied`,
     );
     expect(errorOf(response)).toBe("oauth2_denied");
   });

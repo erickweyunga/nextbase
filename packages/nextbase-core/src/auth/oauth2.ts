@@ -48,6 +48,8 @@ export interface OAuth2State {
   nonce: string;
   /** Path on the app to return to, or "" for the app URL itself. */
   redirect: string;
+  /** Path to return to with `?error=` when the sign-in fails. */
+  errorRedirect: string;
   /** Set when a signed-in record links an account instead of signing in. */
   linkRecordId: string | null;
 }
@@ -141,11 +143,13 @@ export class OAuth2 {
       collection,
       provider,
       redirect,
+      errorRedirect,
       linkRecordId,
     }: {
       collection: AuthCollection;
       provider: Provider;
       redirect: string;
+      errorRedirect: string;
       linkRecordId: string | null;
     },
   ): Promise<{ location: string; state: string }> {
@@ -162,9 +166,10 @@ export class OAuth2 {
     await q
       .newQuery(
         `INSERT INTO {{${table("_oauth2_states")}}}
-           (id, collection_id, provider, code_verifier, nonce, redirect, link_record_id, expires)
+           (id, collection_id, provider, code_verifier, nonce, redirect, error_redirect,
+            link_record_id, expires)
          VALUES ({:id}, {:collectionId}, {:provider}, {:codeVerifier}, {:nonce}, {:redirect},
-                 {:linkRecordId}, now() + make_interval(secs => ${STATE_MAX_AGE}))`,
+                 {:errorRedirect}, {:linkRecordId}, now() + make_interval(secs => ${STATE_MAX_AGE}))`,
       )
       .bind({
         id: stateHash(state),
@@ -173,6 +178,7 @@ export class OAuth2 {
         codeVerifier,
         nonce,
         redirect,
+        errorRedirect,
         linkRecordId,
       })
       .execute();
@@ -210,7 +216,7 @@ export class OAuth2 {
          WHERE id = {:id} AND expires > now()
          RETURNING collection_id AS "collectionId", provider,
            code_verifier AS "codeVerifier", nonce, redirect,
-           link_record_id AS "linkRecordId"`,
+           error_redirect AS "errorRedirect", link_record_id AS "linkRecordId"`,
       )
       .bind({ id: stateHash(returned) })
       .all<OAuth2State>();
@@ -273,7 +279,10 @@ export class OAuth2 {
  * never another site, so the sign-in cannot be an open redirect (OWASP
  * Unvalidated Redirects and Forwards Cheat Sheet).
  */
-export function checkRedirect(value: string | null): string {
+export function checkRedirect(
+  value: string | null,
+  param = "redirect",
+): string {
   if (value === null || value === "") return "";
   // `//host` and `/\host` are protocol-relative URLs to another site.
   if (
@@ -283,8 +292,8 @@ export function checkRedirect(value: string | null): string {
     value.length > MAX_REDIRECT ||
     hasNul(value)
   ) {
-    throw new ApiError(400, "redirect must be a path on the app.", {
-      redirect: {
+    throw new ApiError(400, `${param} must be a path on the app.`, {
+      [param]: {
         code: "validation_invalid_redirect",
         message: "Must be a path, such as /dashboard.",
       },

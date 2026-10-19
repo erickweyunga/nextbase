@@ -37,6 +37,11 @@ export interface FullListOptions extends ListOptions {
 export interface OAuth2Options {
   /** Path on your app to return to afterwards, such as `/dashboard`. */
   redirect?: string;
+  /**
+   * Path to return to with `?error=` when the sign-in fails, such as
+   * `/sign-in`. Defaults to `redirect`.
+   */
+  errorRedirect?: string;
   /** Link the provider to the signed-in account instead of signing in. */
   link?: boolean;
 }
@@ -221,6 +226,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
       `/collections/${encodeURIComponent(this.#collection)}/auth-with-oauth2/${encodeURIComponent(provider)}`,
       {
         redirect: options.redirect,
+        errorRedirect: options.errorRedirect,
         ...(options.link && { link: true }),
       },
     );

@@ -381,6 +381,9 @@ importers:
       '@types/react-dom':
         specifier: 'catalog:'
         version: 19.3.0(@types/react@19.3.0)
+      jose:
+        specifier: 'catalog:'
+        version: 6.2.12
       pg:
         specifier: 'catalog:'
         version: 8.23.1

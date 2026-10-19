@@ -155,6 +155,7 @@ const MIGRATIONS: readonly Migration[] = [
           code_verifier  text NOT NULL,
           nonce          text NOT NULL,
           redirect       text NOT NULL,
+          error_redirect text NOT NULL,
           link_record_id text,
           expires        timestamptz NOT NULL
         )`);

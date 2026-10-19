@@ -59,7 +59,8 @@ the request.
 ## Sign in
 
 Send the browser to the provider. It comes back to `redirect`, a path on your
-app, signed in with a session cookie:
+app, signed in with a session cookie, or to `errorRedirect` when the sign-in
+fails:
 
 ```tsx
 "use client";
@@ -72,7 +73,10 @@ export function SignInWithGoogle() {
     <button
       type="button"
       onClick={() =>
-        nb.collection("users").signInWithOAuth2("google", { redirect: "/dashboard" })
+        nb.collection("users").signInWithOAuth2("google", {
+          redirect: "/dashboard",
+          errorRedirect: "/sign-in",
+        })
       }
     >
       Continue with Google
@@ -91,7 +95,9 @@ const { oauth2 } = await nb.collection("users").listAuthMethods();
 
 ## When a sign-in fails
 
-The browser comes back to `redirect` with `?error=` naming what went wrong:
+The browser comes back to `errorRedirect`, or `redirect` without it, with
+`?error=` naming what went wrong. Point `errorRedirect` at a page that does not
+need a session, such as your sign-in page, so the error is not lost on the way:
 
 | Error | Meaning |
 | ----- | ------- |

@@ -111,7 +111,8 @@ The password matched, but the `authRule` did not.
 
 Redirects the browser to an [OAuth2 provider](/docs/guides/auth/oauth2). The
 provider sends it back to the callback below, which signs it in and redirects
-to `redirect` on your app. Open it as a page, not with `fetch`.
+to `redirect` on your app, or to `errorRedirect` with `?error=`. Open it as a
+page, not with `fetch`.
 
 <Tabs groupId="client">
 <TabItem value="sdk" label="SDK">
@@ -144,6 +145,7 @@ GET /collections/{collection}/auth-with-oauth2/{provider}
 | Param | Type | Description |
 | ----- | ---- | ----------- |
 | `redirect` | string | Optional. A path on your app to return to, such as `/dashboard`. Defaults to `appUrl`. |
+| `errorRedirect` | string | Optional. A path to return to with `?error=` when the sign-in fails, such as `/sign-in`. Defaults to `redirect`. |
 | `link` | boolean | Optional. `true` links the provider to the signed-in record instead of signing in. Needs a session cookie, and must come from this site. |
 
 **Responses**
@@ -177,7 +179,7 @@ Also returned for the superusers collection.
 Where providers send the browser back: register
 `{appUrl}{basePath}/oauth2-callback` at each provider. It finishes the
 sign-in, sets the session cookie and redirects to the sign-in's `redirect`,
-or, when it fails, to the same place with `?error=` (see
+or, when it fails, to its `errorRedirect` with `?error=` (see
 [when a sign-in fails](/docs/guides/auth/oauth2#when-a-sign-in-fails)).
 
 ```http
