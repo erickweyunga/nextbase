@@ -65,6 +65,7 @@ describe("email verification, password reset and email change", () => {
       await nextbase.client().collection("users").listAuthMethods(),
     ).toEqual({
       password: { enabled: true, identityFields: ["email"] },
+      oauth2: { enabled: false, providers: [] },
     });
     await admin.collections.create({
       name: "closed",

@@ -83,4 +83,24 @@ export interface AuthMethods {
     /** Fields the identity may be, such as `email` or `username`. */
     identityFields: string[];
   };
+  oauth2: {
+    /** False without providers, for superusers, or when nobody signs in. */
+    enabled: boolean;
+    providers: AuthProvider[];
+  };
+}
+
+/** An OAuth2 provider a sign-in page can offer. */
+export interface AuthProvider {
+  /** As in the server's `oauth2` option, such as `google`. */
+  name: string;
+  /** For sign-in buttons, such as `Google`. */
+  displayName: string;
+}
+
+/** A provider account linked to an auth record. */
+export interface ExternalAuthModel {
+  id: string;
+  provider: string;
+  created: string;
 }

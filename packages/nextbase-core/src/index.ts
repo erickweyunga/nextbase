@@ -10,7 +10,9 @@ import {
 } from "@nextbasejs/client";
 import { DB, type Pool } from "@nextbasejs/dbx";
 import { ROUTES } from "./api/routes.ts";
+import { checkAppUrl } from "./app-url.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
+import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
 import { type Principal, resolvePrincipal } from "./auth/principal.ts";
 import {
   bearerToken,
@@ -53,8 +55,10 @@ const SETUP_LOG_INTERVAL_MS = 60_000;
 export type {
   ApiErrorBody,
   AuthMethods,
+  AuthProvider,
   CurrentSession,
   ErrorData,
+  ExternalAuthModel,
   FieldError,
   HealthResponse,
 } from "@nextbasejs/client";
@@ -66,6 +70,7 @@ export type {
   MailOptions,
   MailTemplate,
 } from "./auth/mail.ts";
+export type { OAuth2Options, OAuth2ProviderOptions } from "./auth/oauth2.ts";
 
 /**
  * Whether a request carries a session cookie, without checking it: for an
@@ -106,11 +111,24 @@ export interface NextBaseOptions {
    */
   trustProxy?: boolean;
   /**
+   * Your app's URL, such as `https://example.com`, which email links and
+   * OAuth2 redirects are built from. Never taken from the request's Host
+   * header, which an attacker can set. HTTPS, except on localhost.
+   */
+  appUrl?: string;
+  /**
    * Sends verification, password reset and email change emails. Without it,
    * those endpoints answer 400 in production; in development the emails
    * are logged.
    */
   mail?: MailOptions;
+  /**
+   * Sign-in with OAuth2 providers, by name: `google` and `github`, or any
+   * OpenID Connect provider with its `issuer`. Each needs your app's URL in
+   * `appUrl`; register `{appUrl origin}{basePath}/oauth2-callback` at the
+   * provider as the redirect URI.
+   */
+  oauth2?: OAuth2Options;
   /**
    * Keeps background work, such as sending email after the response, alive
    * on serverless platforms. Defaults to Vercel's waitUntil, which does
@@ -156,6 +174,7 @@ export class NextBase {
   readonly #statementTimeout: number;
   readonly #origins: OriginPolicy;
   readonly #mailer: Mailer;
+  readonly #oauth2: OAuth2;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -168,7 +187,17 @@ export class NextBase {
       "",
     );
     this.#database = options.database;
-    this.#mailer = new Mailer(options.mail, options.waitUntil);
+    const appUrl =
+      options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
+    this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
+    this.#oauth2 = new OAuth2(
+      options.oauth2,
+      appUrl ??
+        (options.mail?.appUrl === undefined
+          ? undefined
+          : checkAppUrl(options.mail.appUrl, "mail.appUrl")),
+      this.#basePath,
+    );
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -386,6 +415,7 @@ export class NextBase {
             statementTimeout: this.#statementTimeout,
             origins: this.#origins,
             mailer: this.#mailer,
+            oauth2: this.#oauth2,
           });
         } catch (error) {
           const code = (error as { code?: unknown }).code as string;
@@ -397,7 +427,16 @@ export class NextBase {
           return errorResponse(error, raced);
         }
       })();
-      if (setCookie) response.headers.append("set-cookie", setCookie);
+      // Renewing the caller's session must not override a sign-in or
+      // sign-out of this response, which already set the cookie.
+      const setsSession = response.headers
+        .getSetCookie()
+        .some((c) =>
+          Object.values(SESSION_COOKIES).some((n) => c.startsWith(`${n}=`)),
+        );
+      if (setCookie && !setsSession) {
+        response.headers.append("set-cookie", setCookie);
+      }
       return api(response);
     }
 

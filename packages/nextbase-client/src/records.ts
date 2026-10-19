@@ -3,6 +3,7 @@ import type { NextBaseClient, SendOptions } from "./index.ts";
 import type {
   AuthMethods,
   AuthResponse,
+  ExternalAuthModel,
   ListResult,
   RecordModel,
 } from "./shared/api.ts";
@@ -31,6 +32,13 @@ export interface ListOptions extends RecordOptions {
 export interface FullListOptions extends ListOptions {
   /** Records fetched per request. Defaults to 1000, the server's maximum. */
   batch?: number;
+}
+
+export interface OAuth2Options {
+  /** Path on your app to return to afterwards, such as `/dashboard`. */
+  redirect?: string;
+  /** Link the provider to the signed-in account instead of signing in. */
+  link?: boolean;
 }
 
 const MAX_PER_PAGE = 1000;
@@ -199,6 +207,57 @@ export class RecordService<T extends RecordModel = RecordModel> {
         ...options,
         method: "POST",
       }),
+    );
+  }
+
+  /**
+   * The URL that signs in with an OAuth2 provider, such as `google`: open it
+   * in the browser, as a link or a redirect. The server sends the browser
+   * to the provider and back to `redirect` signed in with a session cookie,
+   * or with `?error=` naming what went wrong.
+   */
+  oauth2Url(provider: string, options: OAuth2Options = {}): string {
+    return this.#client.buildUrl(
+      `/collections/${encodeURIComponent(this.#collection)}/auth-with-oauth2/${encodeURIComponent(provider)}`,
+      {
+        redirect: options.redirect,
+        ...(options.link && { link: true }),
+      },
+    );
+  }
+
+  /** Signs in with an OAuth2 provider by sending the browser to {@link oauth2Url}. */
+  signInWithOAuth2(provider: string, options: OAuth2Options = {}): void {
+    if (typeof location === "undefined") {
+      throw new Error(
+        "signInWithOAuth2 works in the browser; use oauth2Url elsewhere.",
+      );
+    }
+    location.assign(this.oauth2Url(provider, options));
+  }
+
+  /** The OAuth2 providers linked to a record: the signed-in record's own, or any for superusers. */
+  async listExternalAuths(
+    recordId: string,
+    options?: SendOptions,
+  ): Promise<ExternalAuthModel[]> {
+    return (
+      await this.#send<{ items: ExternalAuthModel[] }>(
+        `/records/${encodeURIComponent(recordId)}/external-auths`,
+        options,
+      )
+    ).items;
+  }
+
+  /** Unlinks an OAuth2 provider from a record. */
+  async unlinkExternalAuth(
+    recordId: string,
+    provider: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#send(
+      `/records/${encodeURIComponent(recordId)}/external-auths/${encodeURIComponent(provider)}`,
+      { ...options, method: "DELETE" },
     );
   }
 

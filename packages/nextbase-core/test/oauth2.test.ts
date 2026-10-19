@@ -1,0 +1,587 @@
+import { createHash, randomBytes } from "node:crypto";
+import type { NextBaseClient } from "@nextbasejs/client";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { type MailMessage, NextBase } from "../src/index.ts";
+import { call, origin } from "./http.ts";
+import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+
+const ISSUER = "https://idp.example.com";
+const CALLBACK = `${origin}/api/nextbase/oauth2-callback`;
+const PASSWORD = "password 123 456";
+
+/** The account a fake provider signs in, and how it answers. */
+interface Account {
+  sub: string;
+  email?: string;
+  emailVerified?: boolean;
+  /** Overrides the nonce in the ID token. */
+  nonce?: string;
+}
+
+interface Grant {
+  challenge: string;
+  nonce: string | null;
+  account: Account;
+}
+
+describe("OAuth2 sign-in", () => {
+  let t: TestDatabase;
+  let nextbase: NextBase;
+  let admin: NextBaseClient;
+  const sent: MailMessage[] = [];
+  const pending: Promise<unknown>[] = [];
+  const grants = new Map<string, Grant>();
+  let keys: Awaited<ReturnType<typeof generateKeyPair>>;
+
+  /** A fake OpenID Connect provider and GitHub, behind fetch. */
+  const provider = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.href === `${ISSUER}/.well-known/openid-configuration`) {
+      return Response.json({
+        issuer: ISSUER,
+        authorization_endpoint: `${ISSUER}/authorize`,
+        token_endpoint: `${ISSUER}/token`,
+        jwks_uri: `${ISSUER}/jwks`,
+        response_types_supported: ["code"],
+        subject_types_supported: ["public"],
+        id_token_signing_alg_values_supported: ["RS256"],
+        code_challenge_methods_supported: ["S256"],
+      });
+    }
+    if (url.href === `${ISSUER}/jwks`) {
+      return Response.json({ keys: [await exportJWK(keys.publicKey)] });
+    }
+    const tokenEndpoint =
+      url.href === `${ISSUER}/token` ||
+      url.href === "https://github.com/login/oauth/access_token";
+    if (tokenEndpoint && request.method === "POST") {
+      const body = new URLSearchParams(await request.text());
+      const grant = grants.get(body.get("code") ?? "");
+      grants.delete(body.get("code") ?? "");
+      const verifier = createHash("sha256")
+        .update(body.get("code_verifier") ?? "")
+        .digest("base64url");
+      if (
+        !grant ||
+        verifier !== grant.challenge ||
+        body.get("redirect_uri") !== CALLBACK ||
+        body.get("client_secret") !== "secret"
+      ) {
+        return Response.json({ error: "invalid_grant" }, { status: 400 });
+      }
+      const accessToken = `at-${grant.account.sub}`;
+      if (url.hostname === "github.com") {
+        return Response.json({
+          access_token: accessToken,
+          token_type: "bearer",
+          scope: "read:user,user:email",
+        });
+      }
+      const idToken = await new SignJWT({
+        ...(grant.account.email !== undefined && {
+          email: grant.account.email,
+          email_verified: grant.account.emailVerified ?? false,
+        }),
+        nonce: grant.account.nonce ?? grant.nonce,
+      })
+        .setProtectedHeader({ alg: "RS256" })
+        .setIssuer(ISSUER)
+        .setSubject(grant.account.sub)
+        .setAudience("client")
+        .setIssuedAt()
+        .setExpirationTime("5m")
+        .sign(keys.privateKey);
+      return Response.json({
+        access_token: accessToken,
+        token_type: "Bearer",
+        id_token: idToken,
+      });
+    }
+    if (url.hostname === "api.github.com") {
+      const sub = (request.headers.get("authorization") ?? "").replace(
+        "Bearer at-",
+        "",
+      );
+      if (url.pathname === "/user") return Response.json({ id: Number(sub) });
+      if (url.pathname === "/user/emails") {
+        return Response.json([
+          { email: `old${sub}@example.com`, primary: false, verified: true },
+          { email: `gh${sub}@example.com`, primary: true, verified: true },
+        ]);
+      }
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  const raw = (
+    method: string,
+    path: string,
+    headers: Record<string, string> = {},
+  ): Promise<Response> =>
+    nextbase.handle(
+      new Request(
+        path.startsWith("http") ? path : `${origin}/api/nextbase${path}`,
+        {
+          method,
+          headers,
+        },
+      ),
+    );
+
+  const cookieOf = (response: Response, name: string): string | undefined =>
+    response.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0] as string)
+      .find((c) => c.startsWith(`${name}=`) && c !== `${name}=`);
+
+  /**
+   * Starts a sign-in, lets the fake provider approve `account`, and returns
+   * the callback's response.
+   */
+  const signIn = async (
+    providerName: string,
+    account: Account,
+    {
+      query = "",
+      cookie,
+      tamper,
+      signedOut = false,
+    }: {
+      query?: string;
+      /** The session cookie to start with. */
+      cookie?: string;
+      tamper?: (callback: URL, stateCookie: string) => [URL, string];
+      /** Return from the provider without the session cookie. */
+      signedOut?: boolean;
+    } = {},
+  ): Promise<Response> => {
+    const start = await raw(
+      "GET",
+      `/collections/users/auth-with-oauth2/${providerName}${query}`,
+      {
+        ...(cookie && { cookie, "sec-fetch-site": "same-origin" }),
+      },
+    );
+    expect(start.status).toBe(302);
+    const authorize = new URL(start.headers.get("location") ?? "");
+    expect(authorize.searchParams.get("redirect_uri")).toBe(CALLBACK);
+    expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+    const code = randomBytes(16).toString("hex");
+    grants.set(code, {
+      challenge: authorize.searchParams.get("code_challenge") ?? "",
+      nonce: authorize.searchParams.get("nonce"),
+      account,
+    });
+    let callback = new URL(CALLBACK);
+    callback.searchParams.set("code", code);
+    callback.searchParams.set(
+      "state",
+      authorize.searchParams.get("state") ?? "",
+    );
+    let stateCookie = cookieOf(start, "nextbase_oauth2") ?? "";
+    if (tamper) [callback, stateCookie] = tamper(callback, stateCookie);
+    return raw("GET", callback.href, {
+      cookie: [stateCookie, signedOut ? undefined : cookie]
+        .filter(Boolean)
+        .join("; "),
+    });
+  };
+
+  const errorOf = (response: Response): string | null =>
+    new URL(response.headers.get("location") ?? "").searchParams.get("error");
+
+  /** The session a successful sign-in set, as a cookie header. */
+  const sessionOf = (response: Response): string => {
+    expect(response.status).toBe(302);
+    expect(errorOf(response)).toBeNull();
+    const cookie = cookieOf(response, "nextbase_session");
+    expect(cookie).toBeDefined();
+    return cookie as string;
+  };
+
+  const whoami = async (cookie: string): Promise<Record<string, unknown>> => {
+    const response = await raw("GET", "/session", { cookie });
+    expect(response.status).toBe(200);
+    return ((await response.json()) as { record: Record<string, unknown> })
+      .record;
+  };
+
+  /** Creates an account with a password and signs it in with a token. */
+  const passwordAccount = async (email: string) => {
+    const users = nextbase.client().collection("users");
+    await users.create({
+      email,
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    return users.signInWithPassword(email, PASSWORD);
+  };
+
+  /** Signs in with a cookie, as a browser would, and returns the cookie. */
+  const cookieSignIn = async (email: string): Promise<string> => {
+    const response = await nextbase.handle(
+      new Request(
+        `${origin}/api/nextbase/collections/users/auth-with-password`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", origin },
+          body: JSON.stringify({
+            identity: email,
+            password: PASSWORD,
+            cookie: true,
+          }),
+        },
+      ),
+    );
+    return cookieOf(response, "nextbase_session") as string;
+  };
+
+  const findUser = async (email: string) =>
+    admin
+      .collection("users")
+      .getFirstListItem(`email = "${email}"`)
+      .catch(() => undefined);
+
+  beforeAll(async () => {
+    keys = await generateKeyPair("RS256");
+    vi.stubGlobal("fetch", provider);
+    t = await createTestDatabase();
+    nextbase = new NextBase({
+      database: t.pool,
+      appUrl: origin,
+      oauth2: {
+        idp: { issuer: ISSUER, clientId: "client", clientSecret: "secret" },
+        github: { clientId: "client", clientSecret: "secret" },
+      },
+      mail: {
+        from: "app@example.com",
+        send: async (message) => {
+          sent.push(message);
+        },
+      },
+      waitUntil: (promise) => pending.push(promise),
+    });
+    admin = nextbase.client({ superuser: true });
+    await admin.collections.create({
+      name: "users",
+      type: "auth",
+      createRule: "",
+      viewRule: "id = @request.auth.id",
+    });
+  });
+  afterAll(async () => {
+    vi.unstubAllGlobals();
+    await t.close();
+  });
+
+  it("lists the providers a sign-in page can offer", async () => {
+    const methods = await nextbase
+      .client()
+      .collection("users")
+      .listAuthMethods();
+    expect(methods.oauth2).toEqual({
+      enabled: true,
+      providers: [
+        { name: "idp", displayName: "idp" },
+        { name: "github", displayName: "GitHub" },
+      ],
+    });
+    const superusers = await nextbase
+      .client()
+      .collection("_superusers")
+      .listAuthMethods();
+    expect(superusers.oauth2).toEqual({ enabled: false, providers: [] });
+  });
+
+  it("signs up a new account, verified when the provider verified its email", async () => {
+    const response = await signIn(
+      "idp",
+      { sub: "u1", email: "ada@example.com", emailVerified: true },
+      { query: "?redirect=/home" },
+    );
+    expect(response.headers.get("location")).toBe(`${origin}/home`);
+    const record = await whoami(sessionOf(response));
+    expect(record).toMatchObject({ email: "ada@example.com", verified: true });
+  });
+
+  it("signs the same provider account in to the same record, even after an email change there", async () => {
+    const first = await whoami(
+      sessionOf(await signIn("idp", { sub: "u2", email: "bo@example.com" })),
+    );
+    expect(first.verified).toBe(false);
+    const again = await whoami(
+      sessionOf(
+        await signIn("idp", { sub: "u2", email: "bo.new@example.com" }),
+      ),
+    );
+    expect(again.id).toBe(first.id);
+    expect(again.email).toBe("bo@example.com");
+  });
+
+  it("signs in with GitHub through its API and primary email", async () => {
+    const record = await whoami(
+      sessionOf(await signIn("github", { sub: "42" })),
+    );
+    expect(record).toMatchObject({ email: "gh42@example.com", verified: true });
+  });
+
+  it("rejects a callback without this browser's state cookie, or a second time", async () => {
+    const stolen = await signIn(
+      "idp",
+      { sub: "u3", email: "cy@example.com" },
+      { tamper: (callback) => [callback, ""] },
+    );
+    expect(errorOf(stolen)).toBe("oauth2_failed");
+    expect(cookieOf(stolen, "nextbase_session")).toBeUndefined();
+
+    let replay: [URL, string] | undefined;
+    const used = await signIn(
+      "idp",
+      { sub: "u3", email: "cy@example.com" },
+      {
+        tamper: (callback, cookie) => {
+          replay = [callback, cookie];
+          return [callback, cookie];
+        },
+      },
+    );
+    sessionOf(used);
+    const [callback, cookie] = replay as [URL, string];
+    const again = await raw("GET", callback.href, { cookie });
+    expect(errorOf(again)).toBe("oauth2_failed");
+  });
+
+  it("rejects an ID token issued for another sign-in", async () => {
+    // Logged, as any unexpected failure of a provider is.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await signIn("idp", {
+      sub: "u4",
+      email: "di@example.com",
+      nonce: "another",
+    });
+    expect(errorOf(response)).toBe("oauth2_failed");
+    expect(await findUser("di@example.com")).toBeUndefined();
+    expect(String(logged.mock.calls[0]?.[1])).toMatch(/nonce/);
+    logged.mockRestore();
+  });
+
+  it("reports a sign-in the user cancelled at the provider", async () => {
+    const response = await signIn(
+      "idp",
+      { sub: "u5" },
+      {
+        tamper: (callback, cookie) => {
+          const denied = new URL(callback);
+          denied.searchParams.delete("code");
+          denied.searchParams.set("error", "access_denied");
+          return [denied, cookie];
+        },
+      },
+    );
+    expect(errorOf(response)).toBe("oauth2_denied");
+  });
+
+  it("links an existing account by email only when both sides verified it", async () => {
+    const users = admin.collection("users");
+    const existing = await users.create({
+      email: "eve@example.com",
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    if (!existing) throw new Error("A superuser views every record.");
+    // NextBase never verified the address: whoever owns the provider account
+    // may not own this one.
+    expect(
+      errorOf(
+        await signIn("idp", {
+          sub: "u6",
+          email: "EVE@example.com",
+          emailVerified: true,
+        }),
+      ),
+    ).toBe("account_exists");
+
+    await users.update(existing.id, { verified: true });
+    // The provider did not verify it.
+    expect(
+      errorOf(await signIn("idp", { sub: "u6", email: "eve@example.com" })),
+    ).toBe("account_exists");
+
+    const record = await whoami(
+      sessionOf(
+        await signIn("idp", {
+          sub: "u6",
+          email: "eve@example.com",
+          emailVerified: true,
+        }),
+      ),
+    );
+    expect(record.id).toBe(existing.id);
+    await Promise.all(pending.splice(0));
+    expect(sent.at(-1)).toMatchObject({
+      to: "eve@example.com",
+      subject: "A new way to sign in was added",
+    });
+  });
+
+  it("links and unlinks a provider for the signed-in account", async () => {
+    const { token, record } = await passwordAccount("fay@example.com");
+    const linked = await signIn(
+      "github",
+      { sub: "77" },
+      {
+        query: "?link=true&redirect=/settings",
+        cookie: await cookieSignIn("fay@example.com"),
+      },
+    );
+    expect(linked.headers.get("location")).toBe(`${origin}/settings`);
+    // Linking keeps the current session.
+    expect(cookieOf(linked, "nextbase_session")).toBeUndefined();
+
+    const path = `/collections/users/records/${record.id}/external-auths`;
+    const list = await call(nextbase, "GET", path, { token });
+    expect(list.status).toBe(200);
+    expect(list.body.items).toEqual([
+      expect.objectContaining({ provider: "github" }),
+    ]);
+    // GitHub now signs in to this account, though its email is another.
+    const viaGithub = await whoami(
+      sessionOf(await signIn("github", { sub: "77" })),
+    );
+    expect(viaGithub.id).toBe(record.id);
+
+    // Someone else may neither see nor remove the link.
+    const { token: other } = await passwordAccount("gus@example.com");
+    expect((await call(nextbase, "GET", path, { token: other })).status).toBe(
+      404,
+    );
+    const unlink = `${path}/github`;
+    expect(
+      (await call(nextbase, "DELETE", unlink, { token: other })).status,
+    ).toBe(404);
+    expect((await call(nextbase, "DELETE", unlink, { token })).status).toBe(
+      204,
+    );
+    expect((await call(nextbase, "DELETE", unlink, { token })).status).toBe(
+      404,
+    );
+  });
+
+  it("refuses to link a provider account another record already has", async () => {
+    await signIn("idp", { sub: "u8", email: "hal@example.com" });
+    await passwordAccount("ivy@example.com");
+    const response = await signIn(
+      "idp",
+      { sub: "u8" },
+      { query: "?link=true", cookie: await cookieSignIn("ivy@example.com") },
+    );
+    expect(errorOf(response)).toBe("already_linked");
+  });
+
+  it("links only to the account still signed in on the browser", async () => {
+    await passwordAccount("joy@example.com");
+    const cookie = await cookieSignIn("joy@example.com");
+    const response = await signIn(
+      "idp",
+      { sub: "u13" },
+      {
+        query: "?link=true",
+        cookie,
+        // Signed out between starting and finishing.
+        signedOut: true,
+      },
+    );
+    expect(errorOf(response)).toBe("oauth2_failed");
+  });
+
+  it("does not start a link for a signed-out caller or from another site", async () => {
+    const signedOut = await raw(
+      "GET",
+      "/collections/users/auth-with-oauth2/idp?link=true",
+      { "sec-fetch-site": "same-origin" },
+    );
+    expect(signedOut.status).toBe(401);
+    const crossSite = await raw(
+      "GET",
+      "/collections/users/auth-with-oauth2/idp?link=true",
+      { "sec-fetch-site": "cross-site" },
+    );
+    expect(crossSite.status).toBe(403);
+  });
+
+  it("only returns to paths on the app", async () => {
+    for (const redirect of [
+      "//evil.example",
+      "https://evil.example/",
+      "/\\evil.example",
+      "evil",
+    ]) {
+      const response = await raw(
+        "GET",
+        `/collections/users/auth-with-oauth2/idp?redirect=${encodeURIComponent(redirect)}`,
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("lets a deleted account's provider account sign up again", async () => {
+    const first = await whoami(
+      sessionOf(await signIn("idp", { sub: "u9", email: "jo@example.com" })),
+    );
+    await admin.collection("users").delete(first.id as string);
+    const again = await whoami(
+      sessionOf(await signIn("idp", { sub: "u9", email: "jo@example.com" })),
+    );
+    expect(again.id).not.toBe(first.id);
+  });
+
+  it("follows the create rule and the auth rule", async () => {
+    await admin.collections.update("users", { createRule: null });
+    expect(
+      errorOf(await signIn("idp", { sub: "u10", email: "kim@example.com" })),
+    ).toBe("sign_up_disabled");
+    await admin.collections.update("users", {
+      createRule: "",
+      authRule: "verified = true",
+    });
+    expect(
+      errorOf(await signIn("idp", { sub: "u11", email: "lee@example.com" })),
+    ).toBe("sign_in_forbidden");
+    await admin.collections.update("users", { authRule: "" });
+  });
+
+  it("needs a provider that shares an email to sign up", async () => {
+    expect(errorOf(await signIn("idp", { sub: "u12" }))).toBe("email_required");
+  });
+
+  it("is not offered to superusers or for unknown providers", async () => {
+    expect(
+      (await raw("GET", "/collections/_superusers/auth-with-oauth2/idp"))
+        .status,
+    ).toBe(400);
+    expect(
+      (await raw("GET", "/collections/users/auth-with-oauth2/nope")).status,
+    ).toBe(404);
+  });
+
+  it("needs the app URL to build redirects", () => {
+    expect(
+      () =>
+        new NextBase({
+          oauth2: { google: { clientId: "a", clientSecret: "b" } },
+        }),
+    ).toThrow(/appUrl/);
+    expect(
+      () =>
+        new NextBase({
+          appUrl: origin,
+          oauth2: { custom: { clientId: "a", clientSecret: "b" } },
+        }),
+    ).toThrow(/issuer/);
+  });
+});

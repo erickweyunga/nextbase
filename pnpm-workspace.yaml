@@ -27,6 +27,7 @@ catalog:
   jose: ^6.2.11
   knip: ^6.41.0
   next: ^16.4.2
+  oauth4webapi: ^3.8.8
   pg: ^8.23.1
   prism-react-renderer: ^2.4.1
   publint: ^0.3.25

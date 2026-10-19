@@ -5,6 +5,11 @@ import type {
 } from "@nextbasejs/client";
 import { type DB, hash, type Tx } from "@nextbasejs/dbx";
 import {
+  accountFor,
+  listExternalAuths,
+  unlinkExternalAuth,
+} from "../auth/external-auths.ts";
+import {
   confirmEmailChange,
   confirmPasswordReset,
   confirmVerification,
@@ -15,6 +20,12 @@ import {
 } from "../auth/flows.ts";
 import { authWithPassword, checkAuthRule } from "../auth/login.ts";
 import type { Mailer } from "../auth/mail.ts";
+import {
+  checkRedirect,
+  type OAuth2,
+  OAuth2Error,
+  setStateCookie,
+} from "../auth/oauth2.ts";
 import { type Principal, requireSuperuser } from "../auth/principal.ts";
 import {
   bearerToken,
@@ -64,6 +75,7 @@ interface Context {
   /** Which other sites may write through the session cookie. */
   origins: OriginPolicy;
   mailer: Mailer;
+  oauth2: OAuth2;
 }
 
 interface Route {
@@ -74,9 +86,13 @@ interface Route {
 }
 
 const segment = "([^/]+)";
+const SUPERUSERS = "_superusers";
 
 const records = new RegExp(`^/collections/${segment}/records$`);
 const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
+const externalAuths = new RegExp(
+  `^/collections/${segment}/records/${segment}/external-auths$`,
+);
 
 export const ROUTES: readonly Route[] = [
   {
@@ -316,14 +332,161 @@ export const ROUTES: readonly Route[] = [
   {
     method: "GET",
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
-    async handler({ params, schema }) {
+    async handler({ params, schema, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
+      const providers = collection.id === SUPERUSERS ? [] : oauth2.list();
       return Response.json({
         password: {
           enabled: collection.authRule !== null,
           identityFields: collection.identityFields,
         },
+        oauth2: {
+          enabled: collection.authRule !== null && providers.length > 0,
+          providers,
+        },
       } satisfies AuthMethods);
+    },
+  },
+  {
+    method: "GET",
+    pattern: new RegExp(
+      `^/collections/${segment}/auth-with-oauth2/${segment}$`,
+    ),
+    async handler({ request, params, db, schema, principal, origins, oauth2 }) {
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, "Superusers sign in with their password.");
+      }
+      const provider = oauth2.provider(params[1] as string);
+      const query = new URL(request.url).searchParams;
+      const redirect = checkRedirect(query.get("redirect"));
+      let linkRecordId: string | null = null;
+      if (query.get("link") === "true") {
+        // Linking adds a way into the signed-in account, so only this site
+        // may start it.
+        checkSameOrigin(request, origins);
+        if (!principal.record || principal.collection?.id !== collection.id) {
+          throw new ApiError(
+            401,
+            "Sign in to this collection to link a provider.",
+          );
+        }
+        linkRecordId = principal.record.id as string;
+      }
+      const { location, state } = await oauth2.start(db, {
+        collection,
+        provider,
+        redirect,
+        linkRecordId,
+      });
+      return new Response(null, {
+        status: 302,
+        headers: [
+          ["location", location],
+          ["set-cookie", setStateCookie(request, state)],
+        ],
+      });
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/oauth2-callback$/,
+    async handler(context) {
+      const { request, db, schema, principal, mailer, oauth2 } = context;
+      let redirect = "";
+      const back = (error?: string): Response => {
+        const response = new Response(null, {
+          status: 302,
+          headers: [["location", oauth2.returnUrl(redirect, error)]],
+        });
+        response.headers.append("set-cookie", setStateCookie(request));
+        return response;
+      };
+      try {
+        const state = await oauth2.consumeState(db, request);
+        redirect = state.redirect;
+        const provider = oauth2.provider(state.provider);
+        const collection = authCollection(schema, state.collectionId);
+        // A link is for the record that started it, still signed in here.
+        if (
+          state.linkRecordId !== null &&
+          principal.record?.id !== state.linkRecordId
+        ) {
+          throw new OAuth2Error(
+            "oauth2_failed",
+            "Sign in again to link this provider.",
+          );
+        }
+        const identity = await oauth2.identify(provider, state, request);
+        const { record, linkedTo } = await accountFor(
+          { db, schema },
+          collection,
+          provider.name,
+          identity,
+          state.linkRecordId,
+        );
+        if (linkedTo !== undefined) {
+          mailer.send("oauth2Linked", collection.name, linkedTo, {
+            provider: provider.displayName,
+          });
+        }
+        if (state.linkRecordId !== null) return back();
+        try {
+          await checkAuthRule(db, schema, collection, record.id as string);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 403) {
+            throw new OAuth2Error("sign_in_forbidden", error.message);
+          }
+          throw error;
+        }
+        // As on any cookie sign-in, the session in the cookie is replaced.
+        if (principal.viaCookie && principal.session) {
+          await deleteSession(db, principal.session);
+        }
+        const { token, session } = await createSession(
+          db,
+          collection,
+          record,
+          request.headers.get("user-agent") ?? "",
+        );
+        const response = back();
+        response.headers.append(
+          "set-cookie",
+          setSessionCookie(request, { token, expires: session.expires }),
+        );
+        return response;
+      } catch (error) {
+        if (error instanceof OAuth2Error) return back(error.code);
+        console.error("[nextbase] an OAuth2 sign-in failed:", error);
+        return back("oauth2_failed");
+      }
+    },
+  },
+  {
+    method: "GET",
+    pattern: externalAuths,
+    async handler({ params, db, schema, principal }) {
+      const { collection, id } = ownRecord(schema, principal, params);
+      return Response.json({
+        items: await listExternalAuths(db, collection.id, id),
+      });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: new RegExp(
+      `^/collections/${segment}/records/${segment}/external-auths/${segment}$`,
+    ),
+    async handler({ params, db, schema, principal }) {
+      const { collection, id } = ownRecord(schema, principal, params);
+      const unlinked = await unlinkExternalAuth(
+        db,
+        collection.id,
+        id,
+        params[2] as string,
+      );
+      if (!unlinked) throw new ApiError(404, "The provider is not linked.");
+      return new Response(null, { status: 204 });
     },
   },
   ...flow("request-verification", (ctx, collection, input) =>
@@ -718,6 +881,28 @@ function requireSession(principal: Principal): Session {
   if (!principal.session)
     throw new ApiError(401, "Sign in to manage sessions.");
   return principal.session;
+}
+
+/**
+ * The auth record of a path, which only the record itself and superusers
+ * may manage. Anyone else gets 404, so it reveals no records.
+ */
+function ownRecord(
+  schema: Schema,
+  principal: Principal,
+  params: string[],
+): { collection: AuthCollection; id: string } {
+  const collection = authCollection(schema, params[0] as string);
+  const id = params[1] as string;
+  if (!principal.superuser && !principal.record) {
+    throw new ApiError(401, "Sign in to manage linked providers.");
+  }
+  const own =
+    principal.collection?.id === collection.id && principal.record?.id === id;
+  if (!principal.superuser && !own) {
+    throw new ApiError(404, "Record not found.");
+  }
+  return { collection, id };
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {
