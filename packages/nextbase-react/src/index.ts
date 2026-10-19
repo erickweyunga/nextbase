@@ -1,5 +1,3 @@
-"use client";
-
 import {
   type ClientOptions,
   type CurrentSession,
