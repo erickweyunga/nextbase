@@ -9,7 +9,7 @@ import {
   NextBaseClient,
 } from "@nextbasejs/client";
 import { DB, type Pool } from "@nextbasejs/dbx";
-import { ROUTES } from "./api/routes.ts";
+import { type Context, ROUTES } from "./api/routes.ts";
 import { checkAppUrl } from "./app-url.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
 import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
@@ -125,8 +125,9 @@ export interface NextBaseOptions {
   /**
    * Sign-in with OAuth2 providers, by name: `google` and `github`, or any
    * OpenID Connect provider with its `issuer`. Each needs your app's URL in
-   * `appUrl`; register `{appUrl origin}{basePath}/oauth2-callback` at the
-   * provider as the redirect URI.
+   * `appUrl`; register `{appUrl origin}{basePath}/callback/{name}`, such as
+   * `https://example.com/api/nextbase/callback/google`, at the provider as
+   * the redirect URI.
    */
   oauth2?: OAuth2Options;
   /**
@@ -405,7 +406,9 @@ export class NextBase {
           if (http && verb !== "GET" && caller.viaCookie) {
             checkSameOrigin(request, this.#origins);
           }
-          return await handler({
+          // Sent only once the request succeeded: a failed one has rolled back.
+          const pendingMail: Context["pendingMail"] = [];
+          const response = await handler({
             request,
             params,
             db,
@@ -416,7 +419,12 @@ export class NextBase {
             origins: this.#origins,
             mailer: this.#mailer,
             oauth2: this.#oauth2,
+            pendingMail,
           });
+          for (const mail of pendingMail) {
+            this.#mailer.send(mail.kind, mail.collection, mail.to);
+          }
+          return response;
         } catch (error) {
           const code = (error as { code?: unknown }).code as string;
           const raced =

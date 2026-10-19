@@ -97,7 +97,7 @@ const signal = (): AbortSignal => AbortSignal.timeout(TIMEOUT_MS);
 export class OAuth2 {
   readonly #providers = new Map<string, Provider>();
   readonly #appUrl: URL | undefined;
-  readonly #callbackUrl: string | undefined;
+  readonly #callbackBase: string | undefined;
 
   constructor(
     options: OAuth2Options | undefined,
@@ -115,8 +115,17 @@ export class OAuth2 {
     this.#appUrl = appUrl;
     // Registered at each provider as the redirect URI. On the app URL's
     // origin, never the request's Host, which an attacker can set.
-    this.#callbackUrl =
-      appUrl && new URL(`${basePath}/oauth2-callback`, appUrl.origin).href;
+    this.#callbackBase =
+      appUrl && new URL(`${basePath}/callback/`, appUrl.origin).href;
+  }
+
+  /**
+   * Where `provider` sends the browser back, registered there as the
+   * redirect URI. One per provider, so a callback names the provider it came
+   * from (RFC 9700 4.4.2 mix-up defense).
+   */
+  callbackUrl(provider: Provider): string {
+    return `${this.#callbackBase as string}${provider.name}`;
   }
 
   /** The providers a sign-in page can offer. */
@@ -125,6 +134,11 @@ export class OAuth2 {
       name,
       displayName,
     }));
+  }
+
+  /** A provider's display name, or `name` for one no longer configured. */
+  displayName(name: string): string {
+    return this.#providers.get(name)?.displayName ?? name;
   }
 
   provider(name: string): Provider {
@@ -184,7 +198,7 @@ export class OAuth2 {
       .execute();
     const url = new URL(server.authorization_endpoint as string);
     url.searchParams.set("client_id", provider.client.client_id);
-    url.searchParams.set("redirect_uri", this.#callbackUrl as string);
+    url.searchParams.set("redirect_uri", this.callbackUrl(provider));
     url.searchParams.set("response_type", "code");
     url.searchParams.set("scope", provider.scope);
     url.searchParams.set("state", state);
@@ -249,7 +263,7 @@ export class OAuth2 {
       provider.client,
       provider.clientAuth,
       callback,
-      this.#callbackUrl as string,
+      this.callbackUrl(provider),
       state.codeVerifier,
       { signal },
     );

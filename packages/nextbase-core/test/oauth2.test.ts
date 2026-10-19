@@ -7,7 +7,9 @@ import { call, origin } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
 
 const ISSUER = "https://idp.example.com";
-const CALLBACK = `${origin}/api/nextbase/oauth2-callback`;
+/** Where a provider sends the browser back. */
+const callbackOf = (provider: string): string =>
+  `${origin}/api/nextbase/callback/${provider}`;
 const PASSWORD = "password 123 456";
 
 /** The account a fake provider signs in, and how it answers. */
@@ -21,6 +23,7 @@ interface Account {
 
 interface Grant {
   challenge: string;
+  redirectUri: string;
   nonce: string | null;
   account: Account;
 }
@@ -69,7 +72,7 @@ describe("OAuth2 sign-in", () => {
       if (
         !grant ||
         verifier !== grant.challenge ||
-        body.get("redirect_uri") !== CALLBACK ||
+        body.get("redirect_uri") !== grant.redirectUri ||
         body.get("client_secret") !== "secret"
       ) {
         return Response.json({ error: "invalid_grant" }, { status: 400 });
@@ -169,15 +172,17 @@ describe("OAuth2 sign-in", () => {
     );
     expect(start.status).toBe(302);
     const authorize = new URL(start.headers.get("location") ?? "");
-    expect(authorize.searchParams.get("redirect_uri")).toBe(CALLBACK);
+    const redirectUri = authorize.searchParams.get("redirect_uri") ?? "";
+    expect(redirectUri).toBe(callbackOf(providerName));
     expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
     const code = randomBytes(16).toString("hex");
     grants.set(code, {
       challenge: authorize.searchParams.get("code_challenge") ?? "",
+      redirectUri,
       nonce: authorize.searchParams.get("nonce"),
       account,
     });
-    let callback = new URL(CALLBACK);
+    let callback = new URL(redirectUri);
     callback.searchParams.set("code", code);
     callback.searchParams.set(
       "state",
@@ -356,6 +361,21 @@ describe("OAuth2 sign-in", () => {
     expect(errorOf(again)).toBe("oauth2_failed");
   });
 
+  it("rejects a sign-in returning to another provider's callback", async () => {
+    const response = await signIn(
+      "idp",
+      { sub: "u14", email: "max@example.com" },
+      {
+        tamper: (callback, cookie) => [
+          new URL(`${callbackOf("github")}${callback.search}`),
+          cookie,
+        ],
+      },
+    );
+    expect(errorOf(response)).toBe("oauth2_failed");
+    expect(await findUser("max@example.com")).toBeUndefined();
+  });
+
   it("rejects an ID token issued for another sign-in", async () => {
     // Logged, as any unexpected failure of a provider is.
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -471,6 +491,12 @@ describe("OAuth2 sign-in", () => {
     expect((await call(nextbase, "DELETE", unlink, { token })).status).toBe(
       204,
     );
+    await Promise.all(pending.splice(0));
+    expect(sent.at(-1)).toMatchObject({
+      to: "fay@example.com",
+      subject: "A way to sign in was removed",
+    });
+    expect(sent.at(-1)?.text).toContain("GitHub");
     expect((await call(nextbase, "DELETE", unlink, { token })).status).toBe(
       404,
     );
@@ -531,6 +557,29 @@ describe("OAuth2 sign-in", () => {
       );
       expect(response.status).toBe(400);
     }
+  });
+
+  it("lets an account created through a provider set a password by resetting it", async () => {
+    const created = await whoami(
+      sessionOf(
+        await signIn("idp", {
+          sub: "u15",
+          email: "ned@example.com",
+          emailVerified: true,
+        }),
+      ),
+    );
+    const users = nextbase.client().collection("users");
+    await users.requestPasswordReset("ned@example.com");
+    await Promise.all(pending.splice(0));
+    const message = sent.filter((m) => m.to === "ned@example.com").at(-1);
+    const token = /token=([\w.-]+)/.exec(message?.text ?? "")?.[1] ?? "";
+    await users.confirmPasswordReset(token, PASSWORD, PASSWORD);
+    const { record } = await users.signInWithPassword(
+      "ned@example.com",
+      PASSWORD,
+    );
+    expect(record.id).toBe(created.id);
   });
 
   it("lets a deleted account's provider account sign up again", async () => {

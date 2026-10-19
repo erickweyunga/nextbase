@@ -71,8 +71,9 @@ export async function signOut() {
 ## Lifetime and revocation
 
 - Sessions last 7 days (superusers: 1 day) and are extended while in use.
-- `nb.listSessions()` lists the user's devices, and `nb.revokeSession(id)`
-  signs one out.
+- `nb.listSessions()` lists the user's devices, `nb.revokeSession(id)` signs
+  one out, and `nb.revokeOtherSessions()` signs out every device but this one.
+- Deleting an account ends all of its sessions.
 - Changing a password ends every other session. Rotating the collection's auth
   secret ends all of its sessions.
 
