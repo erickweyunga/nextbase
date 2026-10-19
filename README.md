@@ -17,7 +17,7 @@ React.
 
 **One package. One application. One deployment.**
 
-> Early development. Documentation: [nextbase.dev](https://nextbase.dev).
+> Early development. Documentation: [nextbase.goomzo.com](https://nextbase.goomzo.com).
 
 ## Development
 
