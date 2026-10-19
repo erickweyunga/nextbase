@@ -1,6 +1,10 @@
 import type { NextBaseClient } from "@nextbasejs/client";
+import type {
+  NextBase,
+  RouteHandler,
+  ServerClientOptions,
+} from "@nextbasejs/core";
 import { cookies } from "next/headers";
-import type { NextBase, RouteHandler, ServerClientOptions } from "nextbasejs";
 
 /** The route handler exports of `app/api/nextbase/[...path]/route.ts`. */
 export interface NextRouteHandlers {

@@ -9,7 +9,7 @@
   "fixed": [
     [
       "@nextbasejs/client",
-      "nextbasejs",
+      "@nextbasejs/core",
       "@nextbasejs/next",
       "@nextbasejs/react"
     ]

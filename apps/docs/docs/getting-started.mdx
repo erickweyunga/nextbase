@@ -24,13 +24,13 @@ database with your existing tables.
 ## 1. Install
 
 ```sh
-npm i nextbasejs @nextbasejs/client @nextbasejs/next
+npm i @nextbasejs/core @nextbasejs/client @nextbasejs/next
 ```
 
 ## 2. Create the instance
 
 ```ts title="lib/nextbase.ts"
-import { NextBase } from "nextbasejs";
+import { NextBase } from "@nextbasejs/core";
 
 // Reads DATABASE_URL. Connects lazily, so `next build` needs no database.
 export const nextbase = new NextBase();

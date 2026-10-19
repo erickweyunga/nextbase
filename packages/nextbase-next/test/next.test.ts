@@ -1,4 +1,4 @@
-import { NextBase } from "nextbasejs";
+import { NextBase } from "@nextbasejs/core";
 import { describe, expect, it } from "vitest";
 import { newNextHandler } from "../src/index.ts";
 

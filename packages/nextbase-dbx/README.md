@@ -1,6 +1,6 @@
 # @nextbasejs/dbx
 
-Postgres query builder and data access on a [node-postgres](https://node-postgres.com) pool. It is a private package, bundled into `nextbasejs`.
+Postgres query builder and data access on a [node-postgres](https://node-postgres.com) pool. It is a private package, bundled into `@nextbasejs/core`.
 
 - SQL with named `{:name}` placeholders and quoted `{{table}}` and `[[column]]` names
 - A SELECT builder, insert, upsert, update and delete, and record CRUD by primary key

@@ -15,7 +15,7 @@ revoke.
 As a superuser, for example from a one-time script:
 
 ```ts title="scripts/setup-auth.ts"
-import { NextBase } from "nextbasejs";
+import { NextBase } from "@nextbasejs/core";
 
 const superuser = new NextBase().client({ superuser: true });
 

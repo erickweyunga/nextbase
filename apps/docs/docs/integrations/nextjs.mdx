@@ -210,7 +210,7 @@ the session for real in each page.
 database query:
 
 ```ts title="proxy.ts"
-import { hasSessionCookie } from "nextbasejs";
+import { hasSessionCookie } from "@nextbasejs/core";
 import { type NextRequest, NextResponse } from "next/server";
 
 export function proxy(request: NextRequest) {

@@ -1,5 +1,5 @@
 {
-  "name": "nextbasejs",
+  "name": "@nextbasejs/core",
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/erickweyunga/nextbase.git",
-    "directory": "packages/nextbase-server"
+    "directory": "packages/nextbase-core"
   },
   "keywords": [
     "backend",

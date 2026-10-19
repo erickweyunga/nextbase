@@ -14,7 +14,7 @@
     "@nextbasejs/client": "workspace:*",
     "@nextbasejs/next": "workspace:*",
     "@nextbasejs/react": "workspace:*",
-    "nextbasejs": "workspace:*",
+    "@nextbasejs/core": "workspace:*",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

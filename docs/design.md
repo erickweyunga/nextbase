@@ -57,7 +57,7 @@ new NextBase(options) ──► router ──► body limits ──► principal
 ### 2.1 Package layout
 
 Runtime code is published as four packages, versioned together (a Changesets `fixed` group):
-`@nextbasejs/client` (the SDK and the wire types), `nextbasejs` (which depends on the client),
+`@nextbasejs/client` (the SDK and the wire types), `@nextbasejs/core` (which depends on the client),
 and the adapters `@nextbasejs/next` and `@nextbasejs/react`, which take the core packages, `next` and
 `react` as peer dependencies. The server is framework-agnostic: `handle(request)` takes a
 web-standard `Request` and returns a `Response`, and the in-process client takes any cookie store
@@ -97,7 +97,7 @@ The admin UI stays in the private `@nextbasejs/admin` package and is embedded at
 ```ts
 // lib/nextbase.ts
 import "server-only";
-import { NextBase, s3Storage } from "nextbasejs";
+import { NextBase, s3Storage } from "@nextbasejs/core";
 
 export const nextbase = new NextBase({
   database: process.env.DATABASE_URL, // or a pg-compatible Pool
@@ -130,7 +130,7 @@ No ORM is used. Collections are defined at runtime, so a static schema tool like
 cannot describe them. SQL goes through the private `@nextbasejs/dbx` package, a Postgres-only query
 builder: named `{:name}` parameters numbered as `$n`, identifier quoting, composable condition expressions,
 SELECT/DML/DDL builders, record-level insert/update/delete and transactions. It is bundled into
-`nextbasejs`. Names are validated against the name regex before they reach it, and values
+`@nextbasejs/core`. Names are validated against the name regex before they reach it, and values
 are never interpolated into SQL text.
 
 ## 3. Database layout

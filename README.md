@@ -9,13 +9,13 @@ at Postgres, and your app serves a complete backend at `/api/nextbase`.
 
 **One package. One application. One deployment.**
 
-> Early development. See [`packages/nextbase-server`](packages/nextbase-server) for usage.
+> Early development. Documentation: [nextbase.dev](https://nextbase.dev).
 
 ## Repository layout
 
 | Path | What it is |
 | --- | --- |
-| `packages/nextbase-server` | `nextbasejs`: the backend and the `nextbase` CLI, for any framework that speaks web-standard `Request`/`Response` |
+| `packages/nextbase-core` | `@nextbasejs/core`: the backend and the `nextbase` CLI, for any framework that speaks web-standard `Request`/`Response` |
 | `packages/nextbase-client` | `@nextbasejs/client`: the SDK and the wire types shared with the server |
 | `packages/nextbase-next` | `@nextbasejs/next`: route handlers and a server client for Next.js |
 | `packages/nextbase-react` | `@nextbasejs/react`: provider and hooks |

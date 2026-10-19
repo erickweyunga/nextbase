@@ -40,13 +40,13 @@
   },
   "peerDependencies": {
     "@nextbasejs/client": "workspace:^",
-    "nextbasejs": "workspace:^",
+    "@nextbasejs/core": "workspace:^",
     "next": ">=16"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
     "@nextbasejs/client": "workspace:*",
-    "nextbasejs": "workspace:*",
+    "@nextbasejs/core": "workspace:*",
     "@types/node": "catalog:",
     "next": "catalog:",
     "publint": "catalog:",
