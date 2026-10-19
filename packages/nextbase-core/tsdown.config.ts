@@ -9,8 +9,13 @@ const config: UserConfig = defineConfig({
     cli: "src/cli/index.ts",
   },
   format: "esm",
-  platform: "neutral",
+  // The server and the CLI run on Node, so node: imports are built-ins.
+  platform: "node",
+  // The package is "type": "module", so .js is already ESM; keep the paths
+  // that package.json exports.
+  fixedExtension: false,
   dts: true,
+  failOnWarn: true,
   plugins: [
     {
       // Inlines `import x from "file?raw"` as a string, matching Vite/Vitest
