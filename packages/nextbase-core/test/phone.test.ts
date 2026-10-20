@@ -69,7 +69,7 @@ describe("phone sign-in", () => {
     await admin.collections.create({
       name: "users",
       type: "auth",
-      phoneAuth: true,
+      phoneSignIn: true,
       identityFields: ["email", "phone"],
       createRule: "",
       listRule: "",
@@ -99,7 +99,7 @@ describe("phone sign-in", () => {
       phone: "+255712345678",
       phoneVerified: true,
       email: "",
-      verified: false,
+      emailVerified: false,
     });
     expect(token).not.toBe("");
     // The text says what the code is for, and nothing else.
@@ -171,9 +171,7 @@ describe("phone sign-in", () => {
 
   it("sends no code where it cannot be used, answering the same", async () => {
     // No account has this phone, so a password reset code would be useless.
-    await users().requestPhoneCode("+255713000006", {
-      purpose: "passwordReset",
-    });
+    await users().requestPasswordResetByPhone("+255713000006");
     expect(await textsTo("+255713000006")).toEqual([]);
     // Nobody may sign up to a collection with a null create rule.
     await admin.collections.update("users", { createRule: null });
@@ -185,7 +183,7 @@ describe("phone sign-in", () => {
   it("resets a password with a code, ending every session, then signs in by phone and password", async () => {
     const phone = "+255713000004";
     const { nb } = await signIn(phone);
-    await users().requestPhoneCode(phone, { purpose: "passwordReset" });
+    await users().requestPasswordResetByPhone(phone);
     const code = await codeFor(phone);
     expect((await textsTo(phone)).at(-1)?.text).toMatch(/password reset/);
     await users().confirmPasswordResetByPhone(phone, code, PASSWORD, PASSWORD);
@@ -353,7 +351,7 @@ describe("phone sign-in", () => {
       await t.pool.query(
         `UPDATE nextbase._collections
          SET fields = (SELECT jsonb_agg(f) FROM jsonb_array_elements(fields) f WHERE f->>'id' NOT IN ('_phone', '_phoneVerified')),
-             options = options - 'phoneAuth'
+             options = options - 'phoneSignIn'
          WHERE id = $1`,
         [id],
       );
@@ -372,11 +370,11 @@ describe("phone sign-in", () => {
       "id",
       "email",
       "emailVisibility",
-      "verified",
+      "emailVerified",
       "phone",
       "phoneVerified",
     ]);
-    expect(collection).toMatchObject({ phoneAuth: false });
+    expect(collection).toMatchObject({ phoneSignIn: false });
     const reply = await call(
       upgraded,
       "GET",

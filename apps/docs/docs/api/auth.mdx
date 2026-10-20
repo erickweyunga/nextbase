@@ -71,7 +71,9 @@ POST /collections/{collection}/auth-with-password
     "id": "u7v8w9x0y1z2a3b",
     "email": "ann@example.com",
     "emailVisibility": false,
-    "verified": false,
+    "emailVerified": false,
+    "phone": "",
+    "phoneVerified": false,
     "name": "Ann"
   }
 }
@@ -187,7 +189,7 @@ or, when it fails, to its `errorRedirect` with `?error=` (see
 GET /callback/{provider}
 ```
 
-## List linked providers
+## List linked accounts
 
 The OAuth2 providers linked to a record. Only the record itself and
 superusers may list them.
@@ -196,14 +198,14 @@ superusers may list them.
 <TabItem value="sdk" label="SDK">
 
 ```ts
-const linked = await nb.collection("users").listExternalAuths("u7v8w9x0y1z2a3b");
+const linked = await nb.collection("users").listLinkedAccounts("u7v8w9x0y1z2a3b");
 ```
 
 </TabItem>
 <TabItem value="curl" label="curl">
 
 ```sh
-curl https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/external-auths \
+curl https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/linked-accounts \
   -H 'authorization: Bearer <token>'
 ```
 
@@ -211,7 +213,7 @@ curl https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/
 </Tabs>
 
 ```http
-GET /collections/{collection}/records/{id}/external-auths
+GET /collections/{collection}/records/{id}/linked-accounts
 ```
 
 **Responses**
@@ -231,7 +233,7 @@ GET /collections/{collection}/records/{id}/external-auths
 <TabItem value="401" label="401">
 
 ```json
-{ "status": 401, "message": "Sign in to manage linked providers.", "data": {} }
+{ "status": 401, "message": "Sign in to manage linked accounts.", "data": {} }
 ```
 
 </TabItem>
@@ -251,14 +253,14 @@ Also returned for another user's record.
 <TabItem value="sdk" label="SDK">
 
 ```ts
-await nb.collection("users").unlinkExternalAuth("u7v8w9x0y1z2a3b", "github");
+await nb.collection("users").unlinkAccount("u7v8w9x0y1z2a3b", "github");
 ```
 
 </TabItem>
 <TabItem value="curl" label="curl">
 
 ```sh
-curl -X DELETE https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/external-auths/github \
+curl -X DELETE https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/linked-accounts/github \
   -H 'authorization: Bearer <token>'
 ```
 
@@ -266,7 +268,7 @@ curl -X DELETE https://app.example/api/nextbase/collections/users/records/u7v8w9
 </Tabs>
 
 ```http
-DELETE /collections/{collection}/records/{id}/external-auths/{provider}
+DELETE /collections/{collection}/records/{id}/linked-accounts/{provider}
 ```
 
 **Responses**
@@ -288,11 +290,10 @@ No body.
 
 ## Request a phone code
 
-Texts a six-digit code for signing in or resetting a password, to a collection with [phone sign-in](/docs/guides/auth/phone). Answers 204 whether or not the number has an account. At most 5 texts per number per hour.
+Texts a six-digit sign-in code, to a collection with [phone sign-in](/docs/guides/auth/phone). A new number can then sign up. Answers 204 whether or not the number has an account. At most 5 texts per number per hour.
 
 ```ts
 await nb.collection("users").requestPhoneCode("+255712345678");
-await nb.collection("users").requestPhoneCode("+255712345678", { purpose: "passwordReset" });
 ```
 
 ```http
@@ -304,7 +305,6 @@ POST /collections/{collection}/request-phone-code
 | Param | Type | Description |
 | ----- | ---- | ----------- |
 | `phone` | string | Required. In international format, such as `+255712345678`. |
-| `purpose` | string | Optional. `signIn` (default) or `passwordReset`. |
 
 **Responses**
 
@@ -375,9 +375,29 @@ POST /collections/{collection}/auth-with-phone-code
 </TabItem>
 </Tabs>
 
+## Request a password reset by phone
+
+Texts a six-digit password reset code, if the number is an account's verified phone. Answers 204 either way, and shares the limit of 5 texts per number per hour.
+
+```ts
+await nb.collection("users").requestPasswordResetByPhone("+255712345678");
+```
+
+```http
+POST /collections/{collection}/request-password-reset-by-phone
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+
+**Responses:** the same as [requesting a phone code](#request-a-phone-code).
+
 ## Reset a password by phone
 
-Sets a new password with a code from a `passwordReset` request to the account's verified phone. Every session of the account ends.
+Sets a new password with a code from a password reset request to the account's verified phone. Every session of the account ends.
 
 ```ts
 await nb.collection("users").confirmPasswordResetByPhone("+255712345678", "123456", "a new password", "a new password");

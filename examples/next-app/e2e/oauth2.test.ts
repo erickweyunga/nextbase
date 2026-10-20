@@ -276,7 +276,7 @@ describe("OAuth2 in the example app", () => {
     // What the Unlink button sends.
     const me = await (await browser.fetch("/api/nextbase/session")).json();
     const unlink = await browser.fetch(
-      `/api/nextbase/collections/users/records/${me.record.id}/external-auths/oidc`,
+      `/api/nextbase/collections/users/records/${me.record.id}/linked-accounts/oidc`,
       { method: "DELETE" },
     );
     expect(unlink.status).toBe(204);

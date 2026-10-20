@@ -23,7 +23,7 @@ interface CollectionRow {
 
 type AuthOptions = Pick<
   AuthCollection,
-  "authRule" | "manageRule" | "identityFields" | "phoneAuth" | "tokens"
+  "authRule" | "manageRule" | "identityFields" | "phoneSignIn" | "tokens"
 >;
 
 type ViewOptions = Pick<ViewCollection, "viewQuery">;
@@ -49,7 +49,7 @@ export async function saveCollectionRow(
           authRule: collection.authRule,
           manageRule: collection.manageRule,
           identityFields: collection.identityFields,
-          phoneAuth: collection.phoneAuth,
+          phoneSignIn: collection.phoneSignIn,
           tokens: collection.tokens,
         }
       : collection.type === "view"
@@ -113,7 +113,7 @@ function fromRow(row: CollectionRow): Collection {
     ...base,
     type: "auth",
     // Collections stored before phone sign-in existed.
-    phoneAuth: false,
+    phoneSignIn: false,
     ...(row.options as Partial<AuthOptions>),
   } as AuthCollection;
 }

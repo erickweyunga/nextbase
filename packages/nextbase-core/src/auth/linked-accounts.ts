@@ -1,4 +1,4 @@
-import type { AuthCollection, ExternalAuthModel } from "@nextbasejs/client";
+import type { AuthCollection, LinkedAccountModel } from "@nextbasejs/client";
 import {
   type Builder,
   type DB,
@@ -67,7 +67,7 @@ export async function accountFor(
     }
     const existing = await findByEmail(tx, collection, identity.email);
     if (existing) {
-      if (!identity.emailVerified || existing.verified !== true) {
+      if (!identity.emailVerified || existing.emailVerified !== true) {
         throw new OAuth2Error(
           "account_exists",
           "An account with this email exists. Sign in to it, then link this provider.",
@@ -87,14 +87,14 @@ export async function accountFor(
 }
 
 /** The providers linked to a record, oldest first. */
-export async function listExternalAuths(
+export async function listLinkedAccounts(
   q: Builder,
   collectionId: string,
   recordId: string,
-): Promise<ExternalAuthModel[]> {
+): Promise<LinkedAccountModel[]> {
   const rows = await q
     .newQuery(
-      `SELECT id, provider, created FROM {{${table("_external_auths")}}}
+      `SELECT id, provider, created FROM {{${table("_linked_accounts")}}}
        WHERE collection_id = {:collectionId} AND record_id = {:recordId}
        ORDER BY created, id`,
     )
@@ -104,7 +104,7 @@ export async function listExternalAuths(
 }
 
 /** Unlinks a provider from a record. Returns whether it was linked. */
-export async function unlinkExternalAuth(
+export async function unlinkAccount(
   q: Builder,
   collectionId: string,
   recordId: string,
@@ -112,7 +112,7 @@ export async function unlinkExternalAuth(
 ): Promise<boolean> {
   const deleted = await q
     .newQuery(
-      `DELETE FROM {{${table("_external_auths")}}}
+      `DELETE FROM {{${table("_linked_accounts")}}}
        WHERE collection_id = {:collectionId} AND record_id = {:recordId}
          AND provider = {:provider}
        RETURNING id`,
@@ -130,7 +130,7 @@ async function findLinked(
 ): Promise<Row | undefined> {
   const [recordId] = await q
     .newQuery(
-      `SELECT record_id FROM {{${table("_external_auths")}}}
+      `SELECT record_id FROM {{${table("_linked_accounts")}}}
        WHERE collection_id = {:collectionId} AND provider = {:provider}
          AND provider_id = {:providerId}`,
     )
@@ -169,7 +169,7 @@ async function link(
 ): Promise<void> {
   const inserted = await q
     .newQuery(
-      `INSERT INTO {{${table("_external_auths")}}}
+      `INSERT INTO {{${table("_linked_accounts")}}}
          (id, collection_id, record_id, provider, provider_id)
        VALUES ({:id}, {:collectionId}, {:recordId}, {:provider}, {:providerId})
        ON CONFLICT DO NOTHING
@@ -225,7 +225,7 @@ async function signUp(
         { ...records, principal: { superuser: true } },
         collection,
         id,
-        { verified: true },
+        { emailVerified: true },
         new URLSearchParams(),
       );
     }

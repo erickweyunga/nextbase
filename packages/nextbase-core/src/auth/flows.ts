@@ -30,7 +30,7 @@ export interface FlowContext {
   schema: Schema;
   mailer: Mailer;
   /** Reject new passwords found in data breaches. */
-  breachedPasswords: boolean;
+  rejectBreachedPasswords: boolean;
 }
 
 const invalidToken = (): ApiError =>
@@ -42,7 +42,7 @@ const invalidToken = (): ApiError =>
   });
 
 /** Sends a verification link to `email`, if it belongs to an unverified record. */
-export async function requestVerification(
+export async function requestEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
   email: unknown,
@@ -51,7 +51,7 @@ export async function requestVerification(
   ctx.mailer.check();
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
-  if (!record || record.verified === true) return;
+  if (!record || record.emailVerified === true) return;
   ctx.mailer.send("verification", collection.name, record.email as string, {
     token: await token(collection, record, "verification", {
       email: record.email,
@@ -60,7 +60,7 @@ export async function requestVerification(
 }
 
 /** Marks the record of a verification token as verified. */
-export async function confirmVerification(
+export async function confirmEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
   token: unknown,
@@ -73,8 +73,8 @@ export async function confirmVerification(
   );
   // A token for an address the record no longer has proves nothing.
   if (claims.email !== record.email) throw invalidToken();
-  if (record.verified === true) return;
-  await privilegedUpdate(ctx, collection, record, { verified: true });
+  if (record.emailVerified === true) return;
+  await privilegedUpdate(ctx, collection, record, { emailVerified: true });
 }
 
 /** Sends a password reset link to `email`, if it belongs to a record. */
@@ -116,7 +116,7 @@ export async function confirmPasswordReset(
   await privilegedUpdate(ctx, collection, record, {
     password: input.password,
     passwordConfirm: input.passwordConfirm,
-    verified: true,
+    emailVerified: true,
   });
   // Ends a lockout, counted per account and per identity it signs in with.
   await clearAttempts(ctx.db, [
@@ -197,7 +197,7 @@ export async function confirmEmailChange(
   await clearAttempts(ctx.db, keys);
   await privilegedUpdate(ctx, collection, record, {
     email: claims.newEmail,
-    verified: true,
+    emailVerified: true,
   });
   ctx.mailer.send("emailChanged", collection.name, record.email as string);
 }
@@ -293,7 +293,7 @@ async function privilegedUpdate(
       schema: ctx.schema,
       principal: { superuser: true },
       request: { method: "PATCH", query: {}, headers: {}, body: input },
-      breachedPasswords: ctx.breachedPasswords,
+      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
     },
     collection,
     record.id as string,

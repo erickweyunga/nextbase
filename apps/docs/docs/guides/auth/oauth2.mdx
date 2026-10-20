@@ -136,10 +136,7 @@ A signed-in user can link a provider to their account. The sign-in session
 stays as it is:
 
 ```ts
-nb.collection("users").signInWithOAuth2("github", {
-  link: true,
-  redirect: "/settings",
-});
+nb.collection("users").linkOAuth2("github", { redirect: "/settings" });
 ```
 
 List and unlink a user's providers. Linking or unlinking emails the account,
@@ -147,9 +144,9 @@ so its owner hears of a change they did not make:
 
 ```ts
 const users = nb.collection("users");
-const linked = await users.listExternalAuths(user.id);
+const linked = await users.listLinkedAccounts(user.id);
 // [{ id: "...", provider: "github", created: "2026-10-19T12:00:00.000Z" }]
-await users.unlinkExternalAuth(user.id, "github");
+await users.unlinkAccount(user.id, "github");
 ```
 
 ## Protections

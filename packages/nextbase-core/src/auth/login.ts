@@ -33,7 +33,7 @@ const MAX_PASSWORD_INPUT = 1024;
 /**
  * Checks that a record may log in: `null` disables logins, `""` allows every
  * record, and any other authRule is a condition the record must meet, such as
- * `verified = true`. Called only after the password matched, so the 403 tells
+ * `emailVerified = true`. Called only after the password matched, so the 403 tells
  * nothing to someone without it.
  */
 export async function checkAuthRule(

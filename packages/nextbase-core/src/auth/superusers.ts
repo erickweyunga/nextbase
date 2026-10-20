@@ -114,7 +114,7 @@ export async function insertSuperuser(
     id: randomString(15, LOWER_ALPHANUMERIC),
     email: (email as string).trim(),
     emailVisibility: false,
-    verified: true,
+    emailVerified: true,
     password: await hashPassword(password as string),
     tokenKey: randomString(50, ALPHANUMERIC),
   };

@@ -34,7 +34,7 @@ export interface PhoneContext {
   schema: Schema;
   sms: Sms;
   mailer: Mailer;
-  breachedPasswords: boolean;
+  rejectBreachedPasswords: boolean;
 }
 
 /** Why a code was sent, which only that use accepts. */
@@ -52,26 +52,38 @@ const invalidCode = (): ApiError =>
   });
 
 /**
- * Texts a code for signing in or resetting a password, when it can be used:
- * to a phone of an existing record, or, for signing in, to a new phone the
- * collection lets sign up. Answers the same either way.
+ * Texts a sign-in code, when it can be used: to a phone of an existing
+ * record, or to a new phone the collection lets sign up. Answers the same
+ * either way.
  */
-export async function requestPhoneCode(
+export function requestPhoneCode(
   ctx: PhoneContext,
   collection: AuthCollection,
-  input: Record<string, unknown>,
+  phone: unknown,
+): Promise<void> {
+  return sendCode(ctx, collection, phone, "signIn");
+}
+
+/**
+ * Texts a password reset code, when `phone` is the verified phone of a
+ * record. Answers the same either way.
+ */
+export function requestPasswordResetByPhone(
+  ctx: PhoneContext,
+  collection: AuthCollection,
+  phone: unknown,
+): Promise<void> {
+  return sendCode(ctx, collection, phone, "passwordReset");
+}
+
+async function sendCode(
+  ctx: PhoneContext,
+  collection: AuthCollection,
+  phoneInput: unknown,
+  purpose: "signIn" | "passwordReset",
 ): Promise<void> {
   checkEnabled(collection);
-  const purpose = input.purpose ?? "signIn";
-  if (purpose !== "signIn" && purpose !== "passwordReset") {
-    throw new ApiError(400, "Failed to send the code.", {
-      purpose: {
-        code: "validation_invalid_value",
-        message: "Must be signIn or passwordReset.",
-      },
-    });
-  }
-  const phone = checkPhone(input.phone);
+  const phone = checkPhone(phoneInput);
   ctx.sms.check(phone);
   await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
   const record = await findByPhone(ctx.db, collection, phone);
@@ -245,7 +257,7 @@ async function findByPhone(
 }
 
 function checkEnabled(collection: AuthCollection): void {
-  if (!collection.phoneAuth || collection.id === "_superusers") {
+  if (!collection.phoneSignIn || collection.id === "_superusers") {
     throw new ApiError(
       400,
       "Phone sign-in is not enabled for this collection.",
@@ -413,6 +425,6 @@ function recordsContext(
     schema: ctx.schema,
     principal: { ...principal, superuser: true },
     request: { method: "PATCH", query: {}, headers: {}, body },
-    breachedPasswords: ctx.breachedPasswords,
+    rejectBreachedPasswords: ctx.rejectBreachedPasswords,
   };
 }

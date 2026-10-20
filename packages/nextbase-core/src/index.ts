@@ -59,9 +59,9 @@ export type {
   AuthProvider,
   CurrentSession,
   ErrorData,
-  ExternalAuthModel,
   FieldError,
   HealthResponse,
+  LinkedAccountModel,
 } from "@nextbasejs/client";
 export type { Pool } from "@nextbasejs/dbx";
 export type {
@@ -131,7 +131,7 @@ export interface NextBaseOptions {
    */
   mail?: MailOptions;
   /**
-   * Sends the codes of phone sign-in, for auth collections with `phoneAuth`.
+   * Sends the codes of phone sign-in, for auth collections with `phoneSignIn`.
    * Without it, phone endpoints answer 400 in production; in development
    * the texts are logged.
    */
@@ -142,7 +142,7 @@ export interface NextBaseOptions {
    * first 5 characters of the password's SHA-1 are sent. When the service
    * cannot be reached, passwords are accepted. Off by default.
    */
-  breachedPasswords?: boolean;
+  rejectBreachedPasswords?: boolean;
   /**
    * Sign-in with OAuth2 providers, by name: `google` and `github`, or any
    * OpenID Connect provider with its `issuer`. Each needs your app's URL in
@@ -198,7 +198,7 @@ export class NextBase {
   readonly #mailer: Mailer;
   readonly #oauth2: OAuth2;
   readonly #sms: Sms;
-  readonly #breachedPasswords: boolean;
+  readonly #rejectBreachedPasswords: boolean;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -211,7 +211,7 @@ export class NextBase {
       "",
     );
     this.#database = options.database;
-    this.#breachedPasswords = options.breachedPasswords ?? false;
+    this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
@@ -445,7 +445,7 @@ export class NextBase {
             mailer: this.#mailer,
             sms: this.#sms,
             oauth2: this.#oauth2,
-            breachedPasswords: this.#breachedPasswords,
+            rejectBreachedPasswords: this.#rejectBreachedPasswords,
             pendingMail,
           });
           for (const mail of pendingMail) {

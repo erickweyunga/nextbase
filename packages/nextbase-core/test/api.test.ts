@@ -82,7 +82,7 @@ describe("HTTP API", () => {
       expect(created.body).toMatchObject({
         collectionName: "_superusers",
         email: "admin@example.com",
-        verified: true,
+        emailVerified: true,
       });
       expect(created.body).not.toHaveProperty("password");
       expect(created.body).not.toHaveProperty("tokenKey");

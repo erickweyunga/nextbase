@@ -311,14 +311,17 @@ describe("OAuth2 sign-in", () => {
     );
     expect(response.headers.get("location")).toBe(`${origin}/home`);
     const record = await whoami(sessionOf(response));
-    expect(record).toMatchObject({ email: "ada@example.com", verified: true });
+    expect(record).toMatchObject({
+      email: "ada@example.com",
+      emailVerified: true,
+    });
   });
 
   it("signs the same provider account in to the same record, even after an email change there", async () => {
     const first = await whoami(
       sessionOf(await signIn("idp", { sub: "u2", email: "bo@example.com" })),
     );
-    expect(first.verified).toBe(false);
+    expect(first.emailVerified).toBe(false);
     const again = await whoami(
       sessionOf(
         await signIn("idp", { sub: "u2", email: "bo.new@example.com" }),
@@ -332,7 +335,10 @@ describe("OAuth2 sign-in", () => {
     const record = await whoami(
       sessionOf(await signIn("github", { sub: "42" })),
     );
-    expect(record).toMatchObject({ email: "gh42@example.com", verified: true });
+    expect(record).toMatchObject({
+      email: "gh42@example.com",
+      emailVerified: true,
+    });
   });
 
   it("rejects a callback without this browser's state cookie, or a second time", async () => {
@@ -430,7 +436,7 @@ describe("OAuth2 sign-in", () => {
       ),
     ).toBe("account_exists");
 
-    await users.update(existing.id, { verified: true });
+    await users.update(existing.id, { emailVerified: true });
     // The provider did not verify it.
     expect(
       errorOf(await signIn("idp", { sub: "u6", email: "eve@example.com" })),
@@ -467,7 +473,7 @@ describe("OAuth2 sign-in", () => {
     // Linking keeps the current session.
     expect(cookieOf(linked, "nextbase_session")).toBeUndefined();
 
-    const path = `/collections/users/records/${record.id}/external-auths`;
+    const path = `/collections/users/records/${record.id}/linked-accounts`;
     const list = await call(nextbase, "GET", path, { token });
     expect(list.status).toBe(200);
     expect(list.body.items).toEqual([
@@ -600,7 +606,7 @@ describe("OAuth2 sign-in", () => {
     ).toBe("sign_up_disabled");
     await admin.collections.update("users", {
       createRule: "",
-      authRule: "verified = true",
+      authRule: "emailVerified = true",
     });
     expect(
       errorOf(await signIn("idp", { sub: "u11", email: "lee@example.com" })),
