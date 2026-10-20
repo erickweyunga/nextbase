@@ -19,7 +19,7 @@ export default async function Dashboard({
   const collection = String(record.collectionName);
   const users = nb.collection(collection);
   const [linked, methods] = await Promise.all([
-    users.listExternalAuths(record.id),
+    users.listLinkedAccounts(record.id),
     users.listAuthMethods(),
   ]);
   const unlinked = methods.oauth2.providers.filter(

@@ -1,8 +1,10 @@
+import type { Collection } from "@nextbasejs/client";
 import type { DB, Tx } from "@nextbasejs/dbx";
 import { ALPHANUMERIC, randomString } from "../random.ts";
 import { superusersCollection } from "../schema/collection.ts";
-import { saveCollectionRow } from "../schema/store.ts";
+import { loadCollections, saveCollectionRow } from "../schema/store.ts";
 import { createCollectionTable } from "../schema/sync.ts";
+import { renameRuleField } from "./rename-rule-field.ts";
 import { lockSchema, SCHEMA, table } from "./system.ts";
 
 /** Postgres 16: pg_input_is_valid, and the CREATEROLE rules view roles rely on. */
@@ -162,7 +164,7 @@ const MIGRATIONS: readonly Migration[] = [
       // Provider accounts linked to auth records: at most one per provider
       // and record, and each provider account to one record.
       await exec(`
-        CREATE TABLE {{${table("_external_auths")}}} (
+        CREATE TABLE {{${table("_linked_accounts")}}} (
           id            text PRIMARY KEY,
           collection_id text NOT NULL,
           record_id     text NOT NULL,
@@ -195,7 +197,7 @@ const MIGRATIONS: readonly Migration[] = [
         )
         .execute();
       // Auth collections gain the phone and phoneVerified system fields, after
-      // verified, and the phoneAuth option, off. Collections created since
+      // verified, and the phoneSignIn option, off. Collections created since
       // already have them.
       const collections = await tx
         .newQuery(
@@ -242,7 +244,7 @@ const MIGRATIONS: readonly Migration[] = [
         await tx
           .newQuery(
             `UPDATE {{${table("_collections")}}}
-             SET fields = {:fields}::jsonb, options = options || '{"phoneAuth": false}'::jsonb
+             SET fields = {:fields}::jsonb, options = options || '{"phoneSignIn": false}'::jsonb
              WHERE id = {:id}`,
           )
           .bind({ id, fields: JSON.stringify(fields) })
@@ -256,6 +258,55 @@ const MIGRATIONS: readonly Migration[] = [
           )
           .execute();
       }
+    },
+  },
+  {
+    name: "0007_email_verified",
+    async up(tx) {
+      // An auth collection's `verified` becomes `emailVerified`, beside
+      // `phoneVerified`. The field keeps its id, so indexes on it stay; rules
+      // that refer to it are rewritten (see rename-rule-field.ts).
+      const collections = await loadCollections(tx);
+      const auth = collections.filter(
+        (c) =>
+          c.type === "auth" &&
+          c.fields.some((f) => f.id === "_verified" && f.name === "verified"),
+      );
+      if (auth.length === 0) return;
+      const rename = (rule: string | null, c: Collection): string | null =>
+        rule === null
+          ? null
+          : renameRuleField(rule, c, collections, "verified", "emailVerified");
+      for (const c of collections) {
+        const renamed = {
+          ...c,
+          listRule: rename(c.listRule, c),
+          viewRule: rename(c.viewRule, c),
+          createRule: rename(c.createRule, c),
+          updateRule: rename(c.updateRule, c),
+          deleteRule: rename(c.deleteRule, c),
+          ...(c.type === "auth" && {
+            authRule: rename(c.authRule, c),
+            manageRule: rename(c.manageRule, c),
+            fields: c.fields.map((f) =>
+              f.id === "_verified" ? { ...f, name: "emailVerified" } : f,
+            ),
+          }),
+        } as Collection;
+        if (auth.includes(c)) {
+          await tx
+            .newQuery(
+              `ALTER TABLE {{${table(c.name)}}} RENAME COLUMN "verified" TO "emailVerified"`,
+            )
+            .execute();
+        }
+        await saveCollectionRow(tx, renamed);
+      }
+      await tx
+        .newQuery(
+          `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+        )
+        .execute();
     },
   },
 ];

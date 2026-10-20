@@ -61,7 +61,7 @@ describe("breached password check", () => {
     t = await createTestDatabase();
     nextbase = new NextBase({
       database: t.pool,
-      breachedPasswords: true,
+      rejectBreachedPasswords: true,
       mail: {
         from: "app@example.com",
         appUrl: "https://app.example.com",

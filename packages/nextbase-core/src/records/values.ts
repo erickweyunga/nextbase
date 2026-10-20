@@ -16,7 +16,7 @@ export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
   email: "Only superusers can change emails directly.",
-  verified: "Only superusers can verify records.",
+  emailVerified: "Only superusers can verify emails.",
   phone: "Only superusers can change phones directly; verify one with a code.",
   phoneVerified: "Only superusers can verify phones.",
 };
@@ -198,7 +198,7 @@ export async function prepareWrite(
     // With phone sign-in, a record may have a phone instead of an email.
     const phoneInstead =
       collection.type === "auth" &&
-      collection.phoneAuth &&
+      collection.phoneSignIn &&
       field.system &&
       field.name === "email" &&
       !isBlank(row.phone);

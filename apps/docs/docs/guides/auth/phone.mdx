@@ -11,12 +11,12 @@ or change their number, and reset their password by SMS.
 
 ## Set up
 
-1. Turn on `phoneAuth` for the auth collection. To also sign in with phone
+1. Turn on `phoneSignIn` for the auth collection. To also sign in with phone
    and password, add `phone` to its identity fields:
 
    ```ts
    await superuser.collections.update("users", {
-     phoneAuth: true,
+     phoneSignIn: true,
      identityFields: ["email", "phone"],
    });
    ```
@@ -85,7 +85,7 @@ await users.signInWithPassword("+255712345678", "a long password", {
 For accounts with a verified phone:
 
 ```ts
-await users.requestPhoneCode("+255712345678", { purpose: "passwordReset" });
+await users.requestPasswordResetByPhone("+255712345678");
 await users.confirmPasswordResetByPhone(
   "+255712345678",
   "123456",
@@ -115,7 +115,7 @@ so nobody can register someone else's number with a password they know.
 
 ## Email or phone
 
-In a collection with `phoneAuth`, a record needs an email or a phone. In other
+In a collection with `phoneSignIn`, a record needs an email or a phone. In other
 collections the email stays required. Email features, such as verification
 emails, simply skip records without one.
 

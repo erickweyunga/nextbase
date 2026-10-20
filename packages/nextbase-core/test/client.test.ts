@@ -507,7 +507,7 @@ describe("the SDK against a real instance", () => {
       name: "members",
       type: "auth",
       createRule: "",
-      authRule: "verified = true",
+      authRule: "emailVerified = true",
     });
     const nb = nextbase.client();
     expect(
@@ -523,7 +523,7 @@ describe("the SDK against a real instance", () => {
         await admin
           .collection("members")
           .getFirstListItem('email = "vic@example.com"')
-      ).verified,
+      ).emailVerified,
     ).toBe(false);
 
     // A collection without public sign-up refuses it.

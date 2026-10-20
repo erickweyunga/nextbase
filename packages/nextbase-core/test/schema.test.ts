@@ -84,7 +84,7 @@ describe("creating collections", () => {
       "id",
       "email",
       "emailVisibility",
-      "verified",
+      "emailVerified",
       "phone",
       "phoneVerified",
       "password",
@@ -419,7 +419,7 @@ describe("updating collections", () => {
     expect(fieldNames(updated)).toEqual([
       "id",
       "emailVisibility",
-      "verified",
+      "emailVerified",
       "phone",
       "phoneVerified",
       "password",
@@ -454,7 +454,7 @@ describe("updating collections", () => {
       errorsOf(
         {
           fields: [{ id: "nick000000", name: "nick", type: "text" }],
-          identityFields: ["email", "nick", "verified"],
+          identityFields: ["email", "nick", "emailVerified"],
           tokens: { auth: { duration: 0 }, file: { secret: "short" } },
         },
         { existing: users, others: [] },

@@ -5,19 +5,19 @@ import type {
 } from "@nextbasejs/client";
 import { type DB, hash, type Tx } from "@nextbasejs/dbx";
 import {
-  accountFor,
-  listExternalAuths,
-  unlinkExternalAuth,
-} from "../auth/external-auths.ts";
-import {
   confirmEmailChange,
+  confirmEmailVerification,
   confirmPasswordReset,
-  confirmVerification,
   type FlowContext,
   requestEmailChange,
+  requestEmailVerification,
   requestPasswordReset,
-  requestVerification,
 } from "../auth/flows.ts";
+import {
+  accountFor,
+  listLinkedAccounts,
+  unlinkAccount,
+} from "../auth/linked-accounts.ts";
 import { authWithPassword, checkAuthRule } from "../auth/login.ts";
 import type { Mailer } from "../auth/mail.ts";
 import {
@@ -31,6 +31,7 @@ import {
   confirmPasswordResetByPhone,
   confirmPhoneVerification,
   type PhoneContext,
+  requestPasswordResetByPhone,
   requestPhoneCode,
   requestPhoneVerification,
 } from "../auth/phone.ts";
@@ -88,7 +89,7 @@ export interface Context {
   sms: Sms;
   oauth2: OAuth2;
   /** Reject new passwords found in data breaches. */
-  breachedPasswords: boolean;
+  rejectBreachedPasswords: boolean;
   /** Emails to send once the request has succeeded. */
   pendingMail: Parameters<NonNullable<RecordsContext["notify"]>>[0][];
 }
@@ -105,8 +106,8 @@ const SUPERUSERS = "_superusers";
 
 const records = new RegExp(`^/collections/${segment}/records$`);
 const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
-const externalAuths = new RegExp(
-  `^/collections/${segment}/records/${segment}/external-auths$`,
+const linkedAccounts = new RegExp(
+  `^/collections/${segment}/records/${segment}/linked-accounts$`,
 );
 
 export const ROUTES: readonly Route[] = [
@@ -362,14 +363,17 @@ export const ROUTES: readonly Route[] = [
         phone: {
           enabled:
             collection.authRule !== null &&
-            collection.phoneAuth &&
+            collection.phoneSignIn &&
             collection.id !== SUPERUSERS,
         },
       } satisfies AuthMethods);
     },
   },
   ...phoneFlow("request-phone-code", (ctx, collection, input) =>
-    requestPhoneCode(ctx, collection, input),
+    requestPhoneCode(ctx, collection, input.phone),
+  ),
+  ...phoneFlow("request-password-reset-by-phone", (ctx, collection, input) =>
+    requestPasswordResetByPhone(ctx, collection, input.phone),
   ),
   ...phoneFlow("confirm-password-reset-by-phone", (ctx, collection, input) =>
     confirmPasswordResetByPhone(ctx, collection, input),
@@ -540,22 +544,22 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: "GET",
-    pattern: externalAuths,
+    pattern: linkedAccounts,
     async handler({ params, db, schema, principal }) {
       const { collection, id } = ownRecord(schema, principal, params);
       return Response.json({
-        items: await listExternalAuths(db, collection.id, id),
+        items: await listLinkedAccounts(db, collection.id, id),
       });
     },
   },
   {
     method: "DELETE",
     pattern: new RegExp(
-      `^/collections/${segment}/records/${segment}/external-auths/${segment}$`,
+      `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
     async handler({ params, db, schema, principal, mailer, oauth2 }) {
       const { collection, id } = ownRecord(schema, principal, params);
-      const unlinked = await unlinkExternalAuth(
+      const unlinked = await unlinkAccount(
         db,
         collection.id,
         id,
@@ -575,11 +579,11 @@ export const ROUTES: readonly Route[] = [
       return new Response(null, { status: 204 });
     },
   },
-  ...flow("request-verification", (ctx, collection, input) =>
-    requestVerification(ctx, collection, input.email),
+  ...flow("request-email-verification", (ctx, collection, input) =>
+    requestEmailVerification(ctx, collection, input.email),
   ),
-  ...flow("confirm-verification", (ctx, collection, input) =>
-    confirmVerification(ctx, collection, input.token),
+  ...flow("confirm-email-verification", (ctx, collection, input) =>
+    confirmEmailVerification(ctx, collection, input.token),
   ),
   ...flow("request-password-reset", (ctx, collection, input) =>
     requestPasswordReset(ctx, collection, input.email),
@@ -775,7 +779,7 @@ function recordsContext(
     pool: context.db,
     schema,
     principal,
-    breachedPasswords: context.breachedPasswords,
+    rejectBreachedPasswords: context.rejectBreachedPasswords,
     notify: (mail) => context.pendingMail.push(mail),
     request: {
       method,
@@ -919,9 +923,9 @@ function flow(
         const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
         const input = await readJsonObject(request);
-        const { breachedPasswords } = context;
+        const { rejectBreachedPasswords } = context;
         await run(
-          { db, schema, mailer, breachedPasswords },
+          { db, schema, mailer, rejectBreachedPasswords },
           collection,
           input,
           principal,
@@ -965,9 +969,9 @@ function phoneContext({
   schema,
   sms,
   mailer,
-  breachedPasswords,
+  rejectBreachedPasswords,
 }: Context): PhoneContext {
-  return { db, schema, sms, mailer, breachedPasswords };
+  return { db, schema, sms, mailer, rejectBreachedPasswords };
 }
 
 /**
@@ -1036,7 +1040,7 @@ function ownRecord(
   const collection = authCollection(schema, params[0] as string);
   const id = params[1] as string;
   if (!principal.superuser && !principal.record) {
-    throw new ApiError(401, "Sign in to manage linked providers.");
+    throw new ApiError(401, "Sign in to manage linked accounts.");
   }
   const own =
     principal.collection?.id === collection.id && principal.record?.id === id;

@@ -152,7 +152,7 @@ export function parseCollection(
       authRule: parseRule(r, "authRule", previous, ""),
       manageRule: parseRule(r, "manageRule", previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
-      phoneAuth: r.boolean("phoneAuth", previous?.phoneAuth ?? false),
+      phoneSignIn: r.boolean("phoneSignIn", previous?.phoneSignIn ?? false),
       tokens: parseTokens(r, previous?.tokens),
     };
   }
@@ -180,7 +180,7 @@ export function superusersCollection(): AuthCollection {
     authRule: "",
     manageRule: null,
     identityFields: ["email"],
-    phoneAuth: false,
+    phoneSignIn: false,
     tokens,
   };
 }
@@ -290,8 +290,8 @@ function systemFields(type: Collection["type"]): Field[] {
     primaryKey: true,
   };
   if (type === "base") return [id];
-  const flag = (name: string): Field => ({
-    id: `_${name}`,
+  const flag = (name: string, id = `_${name}`): Field => ({
+    id,
     name,
     type: "bool",
     system: true,
@@ -311,7 +311,8 @@ function systemFields(type: Collection["type"]): Field[] {
       exceptDomains: [],
     },
     flag("emailVisibility"),
-    flag("verified"),
+    // Its id predates the rename from `verified`; ids never change.
+    flag("emailVerified", "_verified"),
     {
       id: "_phone",
       name: "phone",

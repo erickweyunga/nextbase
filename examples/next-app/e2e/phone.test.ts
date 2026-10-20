@@ -62,7 +62,7 @@ beforeAll(async () => {
   const users = await admin.send("POST", "/collections", {
     name: "users",
     type: "auth",
-    phoneAuth: true,
+    phoneSignIn: true,
     createRule: "",
     viewRule: "id = @request.auth.id",
   });

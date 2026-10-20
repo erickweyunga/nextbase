@@ -21,7 +21,7 @@ export function UnlinkButton({
   const unlink = () =>
     startTransition(async () => {
       try {
-        await nb.collection(collection).unlinkExternalAuth(recordId, provider);
+        await nb.collection(collection).unlinkAccount(recordId, provider);
         setError(null);
         router.refresh();
       } catch (cause) {

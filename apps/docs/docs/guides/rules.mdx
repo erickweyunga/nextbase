@@ -91,7 +91,7 @@ To compare two different rows of the same collection, give each an alias:
 **Only verified users**, on any rule:
 
 ```txt
-@request.auth.verified = true
+@request.auth.emailVerified = true
 ```
 
 **Published, or yours:**
@@ -105,7 +105,7 @@ published = true || author = @request.auth.id
 Auth collections have two more:
 
 - `authRule` decides who may sign in. `""` (the default) allows every record,
-  `null` disables sign-in, and a filter such as `verified = true` must match.
+  `null` disables sign-in, and a filter such as `emailVerified = true` must match.
 - `manageRule` lets matching callers change other records' email, password
   and verified flag. By default only superusers can.
 

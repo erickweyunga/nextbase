@@ -103,7 +103,7 @@ export interface AuthProvider {
 }
 
 /** A provider account linked to an auth record. */
-export interface ExternalAuthModel {
+export interface LinkedAccountModel {
   id: string;
   provider: string;
   created: string;

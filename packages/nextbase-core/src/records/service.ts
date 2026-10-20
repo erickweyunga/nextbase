@@ -37,7 +37,7 @@ export interface RecordsContext {
   principal: Principal;
   request: RequestInfo;
   /** Reject new passwords found in data breaches (see auth/breached.ts). */
-  breachedPasswords?: boolean;
+  rejectBreachedPasswords?: boolean;
   /** Protected auth fields NextBase itself sets in this write (see values.ts). */
   vouched?: ReadonlySet<string>;
   /**
@@ -298,7 +298,7 @@ async function checkNewPassword(
   collection: Collection,
   input: Record<string, unknown>,
 ): Promise<void> {
-  if (!ctx.breachedPasswords || collection.type !== "auth") return;
+  if (!ctx.rejectBreachedPasswords || collection.type !== "auth") return;
   const field = collection.fields.find((f) => f.type === "password");
   const password = field && input[field.name];
   if (typeof password === "string") await checkBreached(password);
@@ -596,7 +596,7 @@ async function deleteWithReferences(
   await tx.delete(table(collection.name), hash({ id })).execute();
   // Its sessions end, and its linked provider accounts may sign up again.
   if (collection.type === "auth") {
-    for (const name of ["_sessions", "_external_auths"]) {
+    for (const name of ["_sessions", "_linked_accounts"]) {
       await tx
         .newQuery(
           `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
