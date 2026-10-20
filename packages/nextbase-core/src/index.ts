@@ -102,8 +102,8 @@ export interface NextBaseOptions {
   /**
    * Milliseconds a statement of a records API request may run before Postgres
    * stops it, so an expensive filter cannot hold the database. Defaults to
-   * 8000, the default Supabase documents for signed-in API requests. 0 turns
-   * it off; a statement_timeout set on the database role still applies then.
+   * 8000 (8 seconds), long enough for normal requests. 0 turns it off; a
+   * statement_timeout set on the database role still applies then.
    */
   statementTimeout?: number;
   /**
@@ -137,10 +137,11 @@ export interface NextBaseOptions {
    */
   sms?: SmsOptions;
   /**
-   * Rejects new passwords that appear in known data breaches, as NIST SP
-   * 800-63B requires, through Have I Been Pwned's Pwned Passwords: only the
-   * first 5 characters of the password's SHA-1 are sent. When the service
-   * cannot be reached, passwords are accepted. Off by default.
+   * Rejects new passwords that appear in known data breaches, which attackers
+   * try first. Checked with the Have I Been Pwned password service, which
+   * receives only the first 5 characters of the password's SHA-1 hash, never
+   * the password. When the service cannot be reached, passwords are accepted.
+   * Off by default.
    */
   rejectBreachedPasswords?: boolean;
   /**
@@ -475,8 +476,8 @@ export class NextBase {
       return api(response);
     }
 
-    // RFC 9110 15.5.6: a path that exists answers other methods with 405
-    // and the methods it allows.
+    // A path that exists, asked with a method it does not take, answers 405
+    // and lists the methods it does take in the Allow header.
     const allowed = new Set(
       ROUTES.filter((r) => r.pattern.test(route)).map((r) => r.method),
     );
@@ -499,10 +500,10 @@ export class NextBase {
 }
 
 /**
- * Headers every API response carries (OWASP REST Security Cheat Sheet):
- * responses depend on the caller, including through the session cookie, which
- * shared caches do not account for, so nothing may store them; and browsers
- * must not guess another content type.
+ * Headers every API response carries. Responses depend on who is asking,
+ * including through the session cookie, which shared caches cannot see, so
+ * nothing may store them; and browsers must not guess another content type,
+ * which could turn a JSON response into a page that runs scripts.
  */
 function api(response: Response): Response {
   if (!response.headers.has("cache-control")) {

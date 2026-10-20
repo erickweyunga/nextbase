@@ -121,7 +121,7 @@ emails, simply skip records without one.
 
 ## Codes
 
-Codes follow NIST SP 800-63B for out-of-band authentication:
+How codes work:
 
 - Six random digits, valid for 10 minutes, and accepted once.
 - A code is discarded after 5 wrong guesses. Guesses are also limited per
@@ -140,9 +140,9 @@ to premium-rate numbers they profit from. NextBase sends at most 5 texts per
 number per hour, but pumping spreads over many numbers, so also:
 
 - Limit `countries` to where your users are. This is the strongest defense.
-- Turn on your provider's fraud protection, such as Twilio's Fraud Guard.
+- Turn on your SMS provider's fraud protection, if it has one.
 - Watch for a falling share of codes that are entered.
 
-NIST classes SMS as a restricted way to sign in, because numbers can be
-ported or SIM-swapped to an attacker. Offer another way to sign in alongside
+SMS is not the strongest way to sign in: a number can be moved to an
+attacker's SIM card by tricking the carrier (SIM swapping) or porting it. Offer another way to sign in alongside
 it, such as a password or [OAuth2](/docs/guides/auth/oauth2).

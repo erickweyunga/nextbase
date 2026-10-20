@@ -32,8 +32,8 @@ const DEFAULT_TEXT_MAX = 5000;
 const DEFAULT_FILE_MAX_SIZE = 5 * 1024 * 1024;
 const DEFAULT_JSON_MAX_SIZE = 1024 * 1024;
 /**
- * NIST SP 800-63B rev 4 3.1.1.2: at least 15 characters for a password used
- * on its own; NextBase has no second factor.
+ * Passwords are the only factor when signing in with a password, so they must
+ * be long: length makes a password harder to guess than any mix of symbols.
  */
 export const DEFAULT_PASSWORD_MIN = 15;
 export const DEFAULT_PASSWORD_MAX = 256;

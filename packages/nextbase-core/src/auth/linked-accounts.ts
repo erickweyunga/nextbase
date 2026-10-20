@@ -15,10 +15,11 @@ import { findByEmail } from "./flows.ts";
 import { type Identity, OAuth2Error } from "./oauth2.ts";
 
 // Provider accounts linked to auth records. A sign-in finds its record by the
-// provider's permanent account id, never by email. An email match links
-// automatically only when both the provider and NextBase verified that email,
-// and the owner is told; anything weaker could hand an account to whoever
-// controls a provider account claiming its address (CVE-2026-53516).
+// provider's permanent account id, never by email. When a new provider
+// account has the email of an existing record, they are linked only if both
+// the provider and NextBase verified that email, and the owner is told.
+// Anything weaker could hand your account to someone who created a provider
+// account with your email address.
 
 export interface AccountContext {
   db: DB;

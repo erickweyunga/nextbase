@@ -34,8 +34,8 @@ export interface SmsOptions {
   /**
    * The countries texts may go to, as ISO 3166-1 alpha-2 codes such as
    * `["TZ", "KE"]`. Limiting them is the strongest defense against SMS
-   * pumping, where attackers request codes to premium numbers they profit
-   * from. Defaults to every country.
+   * fraud, where attackers request codes to expensive numbers they earn
+   * money from, so you pay for every text. Defaults to every country.
    */
   countries?: string[];
   /** Replaces the default text of any kind of message. */

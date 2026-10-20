@@ -588,7 +588,8 @@ function preparePassword(
 ): string | undefined {
   const { password, passwordConfirm, oldPassword } = input;
   if (password === undefined) return undefined;
-  // NIST SP 800-63B: each Unicode code point counts as one character.
+  // Counts characters as people see them: an emoji or accented letter is one
+  // character, though JavaScript's `length` may count it as two.
   const length = typeof password === "string" ? [...password].length : 0;
   if (
     typeof password !== "string" ||

@@ -1,7 +1,8 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 
-// scrypt with N=2^14, r=8, p=5: one of OWASP's recommended settings, using
-// 16 MiB per hash so small serverless instances can verify logins in parallel.
+// scrypt with N=2^14, r=8, p=5: slow enough that guessing stolen hashes is
+// expensive, while using only 16 MiB per hash, so small serverless instances
+// can verify several sign-ins at once.
 const PARAMS = { ln: 14, r: 8, p: 5 } as const;
 const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
@@ -23,7 +24,8 @@ function derive(
   const N = 2 ** ln;
   return new Promise((resolve, reject) => {
     scrypt(
-      // NIST SP 800-63B 3.1.1.2: normalize with NFC before hashing.
+      // The same password can be typed as different Unicode sequences (an
+      // accented letter as one character or two); NFC makes them one.
       password.normalize("NFC"),
       salt,
       length,

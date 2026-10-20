@@ -477,8 +477,9 @@ export const ROUTES: readonly Route[] = [
       try {
         const state = await oauth2.consumeState(db, request);
         ({ redirect, errorRedirect } = state);
-        // The sign-in must return from the provider it went to, or one
-        // provider's response could finish another's sign-in (mix-up).
+        // The sign-in must return from the provider it went to. Otherwise a
+        // malicious provider could pass off its response as another
+        // provider's and finish a sign-in it was never part of.
         if (params[0] !== state.provider) {
           throw new OAuth2Error(
             "oauth2_failed",
@@ -977,8 +978,8 @@ function phoneContext({
 /**
  * Starts a session for `record` and answers with it: the token in the body,
  * or with `cookie` in an HttpOnly cookie. A cookie sign-in ends the session
- * in the cookie it replaces (OWASP: regenerate the session when the
- * authenticated user changes).
+ * in the cookie it replaces, so a session someone planted in the browser
+ * before sign-in never becomes signed in.
  */
 async function startSession(
   { request, db, principal }: Pick<Context, "request" | "db" | "principal">,
