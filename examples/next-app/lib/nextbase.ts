@@ -5,6 +5,7 @@ import {
   type OAuth2Options,
   type SmsOptions,
 } from "@nextbasejs/core";
+import { serverClient } from "@nextbasejs/next";
 
 /** The OAuth2 providers whose credentials are set: see .env.example. */
 function providers(env: NodeJS.ProcessEnv): OAuth2Options {
@@ -61,3 +62,9 @@ export const nextbase = new NextBase({
   oauth2: providers(process.env),
   sms: sms(process.env),
 });
+
+/**
+ * A client acting as the signed-in user, through the session cookie, for
+ * server components and server actions. Call it once per request.
+ */
+export const nb = () => serverClient(nextbase);
