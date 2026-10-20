@@ -26,6 +26,14 @@ import {
   OAuth2Error,
   setStateCookie,
 } from "../auth/oauth2.ts";
+import {
+  authWithPhoneCode,
+  confirmPasswordResetByPhone,
+  confirmPhoneVerification,
+  type PhoneContext,
+  requestPhoneCode,
+  requestPhoneVerification,
+} from "../auth/phone.ts";
 import { type Principal, requireSuperuser } from "../auth/principal.ts";
 import {
   bearerToken,
@@ -41,6 +49,7 @@ import {
   sessionModel,
   setSessionCookie,
 } from "../auth/sessions.ts";
+import type { Sms } from "../auth/sms.ts";
 import { completeSetup, hasSuperuser } from "../auth/superusers.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
@@ -76,6 +85,7 @@ export interface Context {
   /** Which other sites may write through the session cookie. */
   origins: OriginPolicy;
   mailer: Mailer;
+  sms: Sms;
   oauth2: OAuth2;
   /** Reject new passwords found in data breaches. */
   breachedPasswords: boolean;
@@ -349,7 +359,54 @@ export const ROUTES: readonly Route[] = [
           enabled: collection.authRule !== null && providers.length > 0,
           providers,
         },
+        phone: {
+          enabled:
+            collection.authRule !== null &&
+            collection.phoneAuth &&
+            collection.id !== SUPERUSERS,
+        },
       } satisfies AuthMethods);
+    },
+  },
+  ...phoneFlow("request-phone-code", (ctx, collection, input) =>
+    requestPhoneCode(ctx, collection, input),
+  ),
+  ...phoneFlow("confirm-password-reset-by-phone", (ctx, collection, input) =>
+    confirmPasswordResetByPhone(ctx, collection, input),
+  ),
+  ...phoneFlow(
+    "request-phone-verification",
+    (ctx, collection, input, principal) =>
+      requestPhoneVerification(ctx, collection, principal, input.phone),
+  ),
+  ...phoneFlow(
+    "confirm-phone-verification",
+    (ctx, collection, input, principal) =>
+      confirmPhoneVerification(ctx, collection, principal, input),
+  ),
+  {
+    method: "POST",
+    pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
+    async handler(context) {
+      const { request, params, db, schema, principal, inProcess, origins } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      const { phone, code, cookie } = await readJsonObject(request);
+      // Another site must not sign the browser in to an account of its choosing.
+      if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+      const record = await authWithPhoneCode(
+        phoneContext(context),
+        collection,
+        phone,
+        code,
+      );
+      await checkAuthRule(db, schema, collection, record.id as string);
+      return startSession(
+        { request, db, principal },
+        collection,
+        record,
+        cookie === true,
+      );
     },
   },
   {
@@ -873,6 +930,44 @@ function flow(
       },
     },
   ];
+}
+
+/**
+ * A POST route for a phone flow on an auth collection, answering 204: the
+ * same for phones that belong to accounts and ones that do not.
+ */
+function phoneFlow(
+  name: string,
+  run: (
+    ctx: PhoneContext,
+    collection: AuthCollection,
+    input: Record<string, unknown>,
+    principal: Principal,
+  ) => Promise<void>,
+): Route[] {
+  return [
+    {
+      method: "POST",
+      pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      async handler(context) {
+        const { request, params, schema, principal } = context;
+        const collection = authCollection(schema, params[0] as string);
+        const input = await readJsonObject(request);
+        await run(phoneContext(context), collection, input, principal);
+        return new Response(null, { status: 204 });
+      },
+    },
+  ];
+}
+
+function phoneContext({
+  db,
+  schema,
+  sms,
+  mailer,
+  breachedPasswords,
+}: Context): PhoneContext {
+  return { db, schema, sms, mailer, breachedPasswords };
 }
 
 /**

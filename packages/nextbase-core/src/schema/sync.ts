@@ -355,6 +355,7 @@ function columnType(q: Builder, field: Field, collection: Collection): string {
       }
       return "text NOT NULL DEFAULT ''";
     case "email":
+    case "phone":
     case "url":
       return "text NOT NULL DEFAULT ''";
     case "password":
@@ -427,6 +428,10 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
       {
         name: name("email"),
         sql: `CREATE UNIQUE INDEX ${col(name("email"))} ON ${t} (lower("email")) WHERE "email" <> ''`,
+      },
+      {
+        name: name("phone"),
+        sql: `CREATE UNIQUE INDEX ${col(name("phone"))} ON ${t} ("phone") WHERE "phone" <> ''`,
       },
       {
         name: name("tokenKey"),

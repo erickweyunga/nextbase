@@ -38,6 +38,8 @@ export interface RecordsContext {
   request: RequestInfo;
   /** Reject new passwords found in data breaches (see auth/breached.ts). */
   breachedPasswords?: boolean;
+  /** Protected auth fields NextBase itself sets in this write (see values.ts). */
+  vouched?: ReadonlySet<string>;
   /**
    * Queues an email to send once the request has succeeded, so a write that
    * rolls back, alone or in a batch, never tells anyone it happened.
@@ -151,6 +153,7 @@ export async function newRecord(
         collection,
         schema: ctx.schema,
         privileged: ctx.principal.superuser,
+        ...(ctx.vouched && { vouched: ctx.vouched }),
       });
       // Checked on the would-be row before inserting, so a caller without
       // permission never learns anything from a constraint error.
@@ -787,10 +790,10 @@ function sortColumns(
       field.type === "password" ||
       field.name === "tokenKey" ||
       (field.hidden && !ctx.principal.superuser) ||
-      // Sorting by an email the caller may not see would reveal its order.
+      // Sorting by an email or phone the caller may not see would reveal its order.
       (collection.type === "auth" &&
         field.system &&
-        field.name === "email" &&
+        (field.name === "email" || field.name === "phone") &&
         !ctx.principal.superuser)
     ) {
       throw new ApiError(400, `Cannot sort by "${name}".`);
@@ -887,6 +890,7 @@ async function writing<T>(
     let names: string[] = [];
     if (constraint === `_${collection.id}_pkey`) names = ["id"];
     else if (constraint === `_${collection.id}_email`) names = ["email"];
+    else if (constraint === `_${collection.id}_phone`) names = ["phone"];
     else {
       const index = collection.indexes.find((i) => i.name === constraint);
       names = (index?.fields ?? []).flatMap(

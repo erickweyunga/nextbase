@@ -66,6 +66,7 @@ describe("email verification, password reset and email change", () => {
     ).toEqual({
       password: { enabled: true, identityFields: ["email"] },
       oauth2: { enabled: false, providers: [] },
+      phone: { enabled: false },
     });
     await admin.collections.create({
       name: "closed",

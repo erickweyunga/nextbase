@@ -19,7 +19,8 @@ export type MailKind =
   | "passwordChanged"
   | "emailChanged"
   | "oauth2Linked"
-  | "oauth2Unlinked";
+  | "oauth2Unlinked"
+  | "phoneChanged";
 
 /** What a template gets to write one email. */
 export interface MailContext {
@@ -85,6 +86,10 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   oauth2Linked: ({ provider }) => ({
     subject: "A new way to sign in was added",
     text: `Your account can now sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
+  }),
+  phoneChanged: () => ({
+    subject: "Your phone number was changed",
+    text: "Your account's phone number was just changed. If this was not you, contact support right away.",
   }),
   oauth2Unlinked: ({ provider }) => ({
     subject: "A way to sign in was removed",

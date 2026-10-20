@@ -31,7 +31,8 @@ export default async function Dashboard({
   return (
     <main>
       <h1>Dashboard</h1>
-      <p>Welcome, {String(record.email)}.</p>
+      {/* Accounts made by phone sign-in may have no email. */}
+      <p>Welcome, {String(record.email || record.phone)}.</p>
       <h2>Linked accounts</h2>
       {typeof error === "string" && (
         <p role="alert">{OAUTH2_ERRORS[error] ?? "Linking failed."}</p>

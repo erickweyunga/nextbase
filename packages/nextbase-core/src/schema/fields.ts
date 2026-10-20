@@ -46,6 +46,7 @@ const FIELD_TYPES = [
   "number",
   "bool",
   "email",
+  "phone",
   "url",
   "date",
   "autodate",
@@ -188,6 +189,8 @@ export function parseField(
       return { ...base, type: "bool" };
     case "email":
       return { ...base, type: "email", ...parseDomains(r) };
+    case "phone":
+      return { ...base, type: "phone" };
     case "url":
       return { ...base, type: "url", ...parseDomains(r) };
     case "date": {

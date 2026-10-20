@@ -21,6 +21,7 @@ import {
   SESSION_COOKIES,
   sessionCookie,
 } from "./auth/sessions.ts";
+import { Sms, type SmsOptions } from "./auth/sms.ts";
 import {
   hasSuperuser,
   insertSuperuser,
@@ -71,6 +72,13 @@ export type {
   MailTemplate,
 } from "./auth/mail.ts";
 export type { OAuth2Options, OAuth2ProviderOptions } from "./auth/oauth2.ts";
+export type {
+  SmsContext,
+  SmsKind,
+  SmsMessage,
+  SmsOptions,
+  SmsTemplate,
+} from "./auth/sms.ts";
 
 /**
  * Whether a request carries a session cookie, without checking it: for an
@@ -122,6 +130,12 @@ export interface NextBaseOptions {
    * are logged.
    */
   mail?: MailOptions;
+  /**
+   * Sends the codes of phone sign-in, for auth collections with `phoneAuth`.
+   * Without it, phone endpoints answer 400 in production; in development
+   * the texts are logged.
+   */
+  sms?: SmsOptions;
   /**
    * Rejects new passwords that appear in known data breaches, as NIST SP
    * 800-63B requires, through Have I Been Pwned's Pwned Passwords: only the
@@ -183,6 +197,7 @@ export class NextBase {
   readonly #origins: OriginPolicy;
   readonly #mailer: Mailer;
   readonly #oauth2: OAuth2;
+  readonly #sms: Sms;
   readonly #breachedPasswords: boolean;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
@@ -200,6 +215,7 @@ export class NextBase {
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
+    this.#sms = new Sms(options.sms, options.waitUntil);
     this.#oauth2 = new OAuth2(
       options.oauth2,
       appUrl ??
@@ -427,6 +443,7 @@ export class NextBase {
             statementTimeout: this.#statementTimeout,
             origins: this.#origins,
             mailer: this.#mailer,
+            sms: this.#sms,
             oauth2: this.#oauth2,
             breachedPasswords: this.#breachedPasswords,
             pendingMail,

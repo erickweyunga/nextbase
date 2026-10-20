@@ -86,6 +86,7 @@ describe("migrate", () => {
       "0003_parse_timestamptz",
       "0004_view_collections",
       "0005_oauth2",
+      "0006_phone",
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 
@@ -97,6 +98,8 @@ describe("migrate", () => {
       "email",
       "emailVisibility",
       "verified",
+      "phone",
+      "phoneVerified",
       "password",
       "tokenKey",
       "created",
