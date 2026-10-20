@@ -1,8 +1,7 @@
-import { serverClient } from "@nextbasejs/next";
 import { NextBaseProvider } from "@nextbasejs/react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 import { UserBadge } from "./user-badge";
 
 export const metadata: Metadata = {
@@ -16,7 +15,7 @@ export default async function RootLayout({
 }) {
   // The server's view of the session seeds the browser's, so client
   // components render signed in from the first paint.
-  const session = await (await serverClient(nextbase)).getSession();
+  const session = await (await nb()).getSession();
   return (
     <html lang="en">
       <body>

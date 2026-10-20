@@ -1,14 +1,13 @@
-import { serverClient } from "@nextbasejs/next";
 import { links, returnPath } from "@/lib/links";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 import { OAUTH2_ERRORS } from "@/lib/oauth2-errors";
 import { PhoneSignIn } from "./phone-sign-in";
 
 export default async function SignIn({ searchParams }: PageProps<"/sign-in">) {
   const { next, error } = await searchParams;
-  const nb = await serverClient(nextbase);
+  const client = await nb();
   // No providers until a "users" collection exists and one is configured.
-  const methods = await nb
+  const methods = await client
     .collection("users")
     .listAuthMethods()
     .catch(() => null);

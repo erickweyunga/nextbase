@@ -1,7 +1,6 @@
-import { serverClient } from "@nextbasejs/next";
 import { redirect } from "next/navigation";
 import { links } from "@/lib/links";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 import { OAUTH2_ERRORS } from "@/lib/oauth2-errors";
 import { UnlinkButton } from "./unlink-button";
 
@@ -11,13 +10,13 @@ export default async function Dashboard({
   searchParams,
 }: PageProps<"/dashboard">) {
   const { error } = await searchParams;
-  const nb = await serverClient(nextbase);
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   // The session can end between proxy.ts and this render.
   if (!session) redirect("/sign-in");
   const record = session.record;
   const collection = String(record.collectionName);
-  const users = nb.collection(collection);
+  const users = client.collection(collection);
   const [linked, methods] = await Promise.all([
     users.listLinkedAccounts(record.id),
     users.listAuthMethods(),

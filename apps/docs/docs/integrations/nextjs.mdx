@@ -10,10 +10,29 @@ Before you start, make sure you have a NextBase instance configured. If you
 haven't done that yet, follow [Getting started](/docs/getting-started).
 
 ```sh
-npm i @nextbasejs/next @nextbasejs/react
+npm i @nextbasejs/next @nextbasejs/react server-only
 ```
 
 `@nextbasejs/next` needs Next.js 16 or later and the App Router.
+
+## Add a server helper
+
+Next to your instance, export a helper that returns a client acting as the
+signed-in user. Server components and server actions use it:
+
+```ts title="lib/nextbase.ts"
+import "server-only";
+import { NextBase } from "@nextbasejs/core";
+import { serverClient } from "@nextbasejs/next";
+
+export const nextbase = new NextBase();
+
+/** A client acting as the signed-in user, for server components and actions. */
+export const nb = () => serverClient(nextbase);
+```
+
+`server-only` makes the build fail if a client component imports this file,
+which would put server code in the browser.
 
 ## Create the API route
 
@@ -46,14 +65,13 @@ In client components, use `@nextbasejs/react`. Wrap your app in
 read lets the first render already show the signed-in user:
 
 ```tsx title="app/layout.tsx"
-import { serverClient } from "@nextbasejs/next";
 import { NextBaseProvider } from "@nextbasejs/react";
 import type { ReactNode } from "react";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const nb = await serverClient(nextbase);
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   return (
     <html lang="en">
       <body>
@@ -107,23 +125,21 @@ export function SignInForm() {
 
 ## Server components and server actions
 
-`serverClient(nextbase)` returns a client that acts as the user of the
-session cookie. It calls NextBase directly, without an HTTP request, and
+`await nb()` returns a client that acts as the user of the session cookie. It calls NextBase directly, without an HTTP request, and
 applies the same [access rules](/docs/guides/rules) as the REST API, so the
 server never sees more than the user could. Call it once per request.
 
 **Example: reading data in a server component**
 
 ```tsx title="app/notes/page.tsx"
-import { serverClient } from "@nextbasejs/next";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export default async function NotesPage() {
-  const nb = await serverClient(nextbase);
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   if (!session) return <p>Not signed in</p>;
 
-  const { items } = await nb.collection("notes").getList(1, 20);
+  const { items } = await client.collection("notes").getList(1, 20);
   return (
     <ul>
       {items.map((note) => (
@@ -138,14 +154,13 @@ export default async function NotesPage() {
 
 ```ts title="app/notes/actions.ts"
 "use server";
-import { serverClient } from "@nextbasejs/next";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export async function addNote(form: FormData) {
-  const nb = await serverClient(nextbase);
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   if (!session) throw new Error("Sign in first.");
-  await nb.collection("notes").create({
+  await client.collection("notes").create({
     text: String(form.get("text")),
     owner: session.record.id,
   });
@@ -162,18 +177,17 @@ next calls a server action or the API, which happens at most once a day.
 
 ### Signing in and out in server actions
 
-In server actions, `serverClient` writes the session cookie through Next.js's
+In server actions, the client from `nb()` writes the session cookie through Next.js's
 `cookies()`, so signing in and out needs no extra setup:
 
 ```ts title="app/actions.ts"
 "use server";
-import { serverClient } from "@nextbasejs/next";
 import { redirect } from "next/navigation";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export async function signIn(form: FormData) {
-  const nb = await serverClient(nextbase);
-  await nb
+  const client = await nb();
+  await client
     .collection("users")
     .signInWithPassword(String(form.get("email")), String(form.get("password")), {
       cookie: true,
@@ -182,8 +196,8 @@ export async function signIn(form: FormData) {
 }
 
 export async function signOut() {
-  const nb = await serverClient(nextbase);
-  await nb.signOut();
+  const client = await nb();
+  await client.signOut();
   redirect("/sign-in");
 }
 ```
@@ -259,13 +273,12 @@ should still check the session before rendering anything private.
 ### Checking the session in each page
 
 ```tsx title="app/dashboard/page.tsx"
-import { serverClient } from "@nextbasejs/next";
 import { redirect } from "next/navigation";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export default async function DashboardPage() {
-  const nb = await serverClient(nextbase);
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   if (!session) redirect("/sign-in");
 
   return <h1>Welcome {String(session.record.name)}</h1>;

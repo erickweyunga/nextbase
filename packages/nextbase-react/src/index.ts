@@ -29,7 +29,7 @@ const NextBaseContext = createContext<Shared | null>(null);
 
 export interface NextBaseProviderProps {
   /**
-   * The session the server read, such as `await (await serverClient(nextbase)).getSession()`,
+   * The session the server read, such as `await (await nb()).getSession()`,
    * so the first render already shows the signed-in user. `null` when signed
    * out. Leave it out to load the session in the browser after mounting.
    */
