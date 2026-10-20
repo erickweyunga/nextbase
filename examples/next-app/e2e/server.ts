@@ -12,6 +12,8 @@ const adminUrl =
 // signals on, which would leave servers running after the tests.
 const nextCli = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
+export const DATABASE_PREFIX = "nextbase_e2e";
+
 export interface Server {
   /** The app's origin, e.g. http://localhost:4123. */
   origin: string;
@@ -45,7 +47,9 @@ export async function startServer({
   /** Extra environment variables, given the app's origin. */
   env?: (origin: string) => Record<string, string>;
 } = {}): Promise<Server> {
-  const name = `nextbase_e2e_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  // The creation time, in base 36, lets a later run tell a database left by an
+  // interrupted run from one in use (see global-setup.ts).
+  const name = `${DATABASE_PREFIX}_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   await admin.query(`CREATE DATABASE ${name}`);
