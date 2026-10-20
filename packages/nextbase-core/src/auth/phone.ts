@@ -22,12 +22,13 @@ import {
   smsKey,
 } from "./throttle.ts";
 
-// Sign-in and verification with codes texted to a phone, as NIST SP 800-63B
-// rev 4 3.1.3 describes out-of-band authentication over the phone network:
-// random codes of six digits, valid for 10 minutes and accepted once, with
-// guesses limited per phone across every code sent to it, so a new code does
-// not reset the count. Requests answer the same whether or not an account
-// exists, and texts per phone are limited, as SMS costs money to send.
+// Sign-in and verification with codes texted to a phone.
+//
+// - Codes are six random digits, valid for 10 minutes, and work once.
+// - Wrong guesses are limited per phone across every code sent to it, so
+//   asking for a new code does not reset the count.
+// - Requests answer the same whether or not an account exists.
+// - Texts per phone are limited, as each one costs money to send.
 
 export interface PhoneContext {
   db: DB;
@@ -198,8 +199,8 @@ export async function requestPhoneVerification(
 
 /**
  * Makes `phone` the signed-in record's verified phone, given the code texted
- * to it. A new phone is a new way to sign in (NIST SP 800-63B 3.1.3.3): the
- * record's other sessions end, and its previous phone and email are told.
+ * to it. A new phone is a new way into the account, so the record's other
+ * sessions end, and its previous phone and email are told.
  */
 export async function confirmPhoneVerification(
   ctx: PhoneContext,

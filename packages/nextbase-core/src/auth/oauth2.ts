@@ -7,12 +7,19 @@ import { ApiError } from "../errors.ts";
 import { hasNul } from "../storable.ts";
 import { isSecure, readCookie } from "./sessions.ts";
 
-// Sign-in with OAuth2 and OpenID Connect providers, as the OAuth 2.0
-// Security BCP (RFC 9700) and the OWASP OAuth2 Cheat Sheet describe: the
-// authorization code flow with PKCE (S256), a one-time state bound to this
-// browser by a cookie, a nonce checked against the ID token, and redirects
-// built from the configured app URL only. The protocol work is done by
-// oauth4webapi, a certified OpenID Connect relying party.
+// Sign-in with OAuth2 and OpenID Connect providers. The flow:
+//
+// 1. start() sends the browser to the provider with a random `state`, also
+//    kept in a short-lived cookie, and a PKCE code challenge.
+// 2. The provider sends the browser back to the callback with a code.
+// 3. consumeState() checks the returned `state` against the cookie, so only
+//    the browser that started a sign-in can finish it.
+// 4. identify() exchanges the code for tokens, proving with the PKCE verifier
+//    that this server asked for it, checks the ID token's nonce, and reads
+//    the account.
+//
+// Redirects are built from the configured app URL only. The protocol details
+// (token requests, ID token checks, discovery) are handled by oauth4webapi.
 
 /** One provider's credentials, as the `oauth2` option takes them. */
 export interface OAuth2ProviderOptions {
@@ -121,8 +128,8 @@ export class OAuth2 {
 
   /**
    * Where `provider` sends the browser back, registered there as the
-   * redirect URI. One per provider, so a callback names the provider it came
-   * from (RFC 9700 4.4.2 mix-up defense).
+   * redirect URI. Each provider has its own, so the callback knows which
+   * provider answered and can refuse a response meant for another one.
    */
   callbackUrl(provider: Provider): string {
     return `${this.#callbackBase as string}${provider.name}`;
@@ -290,8 +297,8 @@ export class OAuth2 {
 
 /**
  * Checks a `redirect` to return to after signing in: a path on the app,
- * never another site, so the sign-in cannot be an open redirect (OWASP
- * Unvalidated Redirects and Forwards Cheat Sheet).
+ * never another site. Otherwise a link to your sign-in could send users on
+ * to a look-alike site after they sign in.
  */
 export function checkRedirect(
   value: string | null,

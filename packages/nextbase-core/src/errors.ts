@@ -27,7 +27,7 @@ export class ApiError extends Error {
       data: this.data,
     };
     const headers = new Headers(this.headers);
-    // RFC 9110 15.5.2: a 401 must name the scheme that would be accepted.
+    // A 401 tells the client how to authenticate: here, with a Bearer token.
     if (this.status === 401) headers.set("www-authenticate", "Bearer");
     return Response.json(body, { status: this.status, headers });
   }

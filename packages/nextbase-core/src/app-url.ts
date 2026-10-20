@@ -1,8 +1,10 @@
 /**
  * Validates your app's URL, which links in emails and OAuth2 redirects are
- * built from. Never taken from the request's Host header, which an attacker
- * can set (OWASP Forgot Password Cheat Sheet). HTTPS, so tokens and codes are
- * not sent in the clear, except on localhost.
+ * built from. Links never use the request's Host header instead: anyone can
+ * send a request with a Host of their choosing, and a reset link pointing at
+ * their site would hand them the token. It must be HTTPS, so tokens and codes
+ * are not sent in the clear; plain HTTP is allowed on localhost for
+ * development.
  */
 export function checkAppUrl(value: string, option = "appUrl"): URL {
   let url: URL;

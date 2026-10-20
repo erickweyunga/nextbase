@@ -99,9 +99,9 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
 
 /**
  * Sends auth emails in the background, after the response is decided, so
- * response times do not reveal whether an account exists (OWASP Forgot
- * Password Cheat Sheet). `waitUntil` keeps the work alive past the response
- * on serverless platforms.
+ * response times do not reveal whether an account exists: sending takes
+ * time only when there is someone to send to. `waitUntil` keeps the work
+ * alive past the response on serverless platforms.
  */
 export class Mailer {
   readonly #options: MailOptions | undefined;

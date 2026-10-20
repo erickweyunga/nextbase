@@ -151,12 +151,14 @@ await users.unlinkAccount(user.id, "github");
 
 ## Protections
 
-- The authorization code flow with PKCE (S256), a one-time `state` bound to
-  the browser by an HttpOnly cookie, and an OpenID Connect `nonce` checked
-  against the ID token, as the OAuth 2.0 Security Best Current Practice
-  (RFC 9700) recommends.
-- The protocol is handled by [oauth4webapi](https://github.com/panva/oauth4webapi),
-  a certified OpenID Connect relying party.
+- Only the browser that started a sign-in can finish it: a one-time `state`
+  is checked against an HttpOnly cookie set when the sign-in started.
+- The code the provider returns is useless to anyone who intercepts it: it
+  can only be exchanged together with a secret (PKCE) that never leaves the
+  server.
+- An ID token from another sign-in is refused: its `nonce` must match.
+- Each provider has its own callback, and a sign-in must return from the
+  provider it went to.
 - `redirect` must be a path on your app, so a sign-in can never send users to
   another site.
 - Superusers always sign in with their password.

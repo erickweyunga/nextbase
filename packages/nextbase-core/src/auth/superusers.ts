@@ -97,7 +97,7 @@ export async function insertSuperuser(
   }
   if (
     typeof password !== "string" ||
-    // Code points, as NIST SP 800-63B counts characters.
+    // Characters as people see them, not UTF-16 units.
     [...password].length < min ||
     [...password].length > max
   ) {

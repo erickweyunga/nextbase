@@ -92,7 +92,7 @@ describe("creating collections", () => {
       "created",
       "updated",
     ]);
-    // NIST SP 800-63B: 15 characters for a password used on its own.
+    // Long passwords by default: at least 15 characters.
     expect(users.fields.find((f) => f.name === "password")).toMatchObject({
       hidden: true,
       min: 15,

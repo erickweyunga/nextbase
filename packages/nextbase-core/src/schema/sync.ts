@@ -339,9 +339,11 @@ async function convertMultiplicity(
 }
 
 /**
- * The column definition of a field. Blank values are zero values for most
- * types, so filters never meet three-valued logic. Dates and JSON have no
- * honest zero value, and single relations need NULL for their foreign key.
+ * The column definition of a field. Most types store a blank as a plain
+ * value ("", 0, false) rather than NULL: in SQL, `NULL = ''` is neither true
+ * nor false, which would make filters such as `name != "x"` skip blank rows.
+ * Dates and JSON have no natural blank value, and single relations need NULL
+ * for their foreign key.
  */
 function columnType(q: Builder, field: Field, collection: Collection): string {
   switch (field.type) {

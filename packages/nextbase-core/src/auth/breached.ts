@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import { ApiError } from "../errors.ts";
 
-// Checks new passwords against Have I Been Pwned's Pwned Passwords, as NIST
-// SP 800-63B requires of passwords that users choose. Through the range API's
-// k-anonymity model, only the first 5 characters of the password's SHA-1
-// leave the server, and padded responses hide which prefix had matches.
+// Checks new passwords against passwords leaked in data breaches, which
+// attackers try first, using the Have I Been Pwned password service.
+//
+// The password never leaves the server. Its SHA-1 hash is computed here, and
+// only the first 5 characters are sent; the service answers with every leaked
+// hash starting with them, and the match is looked for here. Answers are
+// padded with fake entries, so their size does not hint at a match either.
 
 const RANGE_API = "https://api.pwnedpasswords.com/range/";
 const TIMEOUT_MS = 5_000;

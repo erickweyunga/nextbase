@@ -18,12 +18,14 @@ import {
 } from "./throttle.ts";
 import { peekToken, signToken, verifyToken } from "./tokens.ts";
 
-// Email verification, password reset and email change, following the OWASP
-// Forgot Password Cheat Sheet: requests answer the same whether or not the
-// account exists and send mail in the background; tokens are signed, expire,
-// and are bound to the record's tokenKey, so a reset or email change, which
-// rotates it, makes them single-use and ends every session; links come from
-// the configured app URL, never the Host header.
+// Email verification, password reset and email change.
+//
+// - Requests answer the same whether or not the account exists, and send mail
+//   in the background, so neither the answer nor its timing reveals accounts.
+// - Tokens are signed and expire. They are bound to the record's tokenKey,
+//   which a reset or email change replaces: that makes each token work once
+//   and ends every session.
+// - Links are built from the configured app URL, never the Host header.
 
 export interface FlowContext {
   db: DB;

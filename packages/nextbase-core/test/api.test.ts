@@ -443,7 +443,7 @@ describe("HTTP API", () => {
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       }
-      // RFC 9110: a 401 names the scheme that would be accepted.
+      // A 401 tells the client to authenticate with a Bearer token.
       const anonymous = await nextbase.handle(
         new Request(`${origin}/api/nextbase/collections`),
       );
