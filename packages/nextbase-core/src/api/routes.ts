@@ -76,6 +76,8 @@ interface Context {
   origins: OriginPolicy;
   mailer: Mailer;
   oauth2: OAuth2;
+  /** Reject new passwords found in data breaches. */
+  breachedPasswords: boolean;
 }
 
 interface Route {
@@ -686,6 +688,7 @@ function recordsContext(
     pool: context.db,
     schema,
     principal,
+    breachedPasswords: context.breachedPasswords,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
@@ -824,10 +827,17 @@ function flow(
     {
       method: "POST",
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
-      async handler({ request, params, db, schema, principal, mailer }) {
+      async handler(context) {
+        const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
         const input = await readJsonObject(request);
-        await run({ db, schema, mailer }, collection, input, principal);
+        const { breachedPasswords } = context;
+        await run(
+          { db, schema, mailer, breachedPasswords },
+          collection,
+          input,
+          principal,
+        );
         return new Response(null, { status: 204 });
       },
     },

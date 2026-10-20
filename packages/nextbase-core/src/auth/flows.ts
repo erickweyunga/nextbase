@@ -29,6 +29,8 @@ export interface FlowContext {
   db: DB;
   schema: Schema;
   mailer: Mailer;
+  /** Reject new passwords found in data breaches. */
+  breachedPasswords: boolean;
 }
 
 const invalidToken = (): ApiError =>
@@ -291,6 +293,7 @@ async function privilegedUpdate(
       schema: ctx.schema,
       principal: { superuser: true },
       request: { method: "PATCH", query: {}, headers: {}, body: input },
+      breachedPasswords: ctx.breachedPasswords,
     },
     collection,
     record.id as string,

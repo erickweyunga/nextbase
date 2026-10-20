@@ -10,6 +10,7 @@ import {
   type Row,
   type Tx,
 } from "@nextbasejs/dbx";
+import { checkBreached } from "../auth/breached.ts";
 import { verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";
@@ -34,6 +35,8 @@ export interface RecordsContext {
   schema: Schema;
   principal: Principal;
   request: RequestInfo;
+  /** Reject new passwords found in data breaches (see auth/breached.ts). */
+  breachedPasswords?: boolean;
 }
 
 /** The SQL alias of the collection's rows in every records query. Rules compile against it. */
@@ -135,6 +138,7 @@ export async function newRecord(
 ): Promise<Output | undefined> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
+  await checkNewPassword(ctx, collection, input);
   return writing(collection, () =>
     ctx.db.transaction(async (tx) => {
       const prepared = await prepareWrite(tx, input, {
@@ -180,6 +184,7 @@ export async function updateRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
+  await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
   return writing(collection, () =>
     ctx.db.transaction(async (tx) => {
@@ -264,6 +269,21 @@ export async function deleteRecord(
     }
     await deleteWithReferences(tx, ctx.schema, collection, id, new Set());
   });
+}
+
+/**
+ * Checks a new password against data breaches, when enabled. Before the
+ * write's transaction, so no row stays locked while the service answers.
+ */
+async function checkNewPassword(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+): Promise<void> {
+  if (!ctx.breachedPasswords || collection.type !== "auth") return;
+  const field = collection.fields.find((f) => f.type === "password");
+  const password = field && input[field.name];
+  if (typeof password === "string") await checkBreached(password);
 }
 
 /**
