@@ -11,11 +11,11 @@ first sign-in creates their account; later ones sign in to it.
 ## Set up a provider
 
 1. Register an OAuth app at the provider. As its **redirect URI** (also called
-   callback URL), enter your app's URL followed by the base path and
-   `/oauth2-callback`:
+   callback URL), enter your app's URL followed by the base path, `/callback/`
+   and the provider's name, as you name it in the `oauth2` option:
 
    ```text
-   https://example.com/api/nextbase/oauth2-callback
+   https://example.com/api/nextbase/callback/google
    ```
 
 2. Pass the app's URL and the provider's credentials to NextBase:
@@ -142,7 +142,8 @@ nb.collection("users").signInWithOAuth2("github", {
 });
 ```
 
-List and unlink a user's providers:
+List and unlink a user's providers. Linking or unlinking emails the account,
+so its owner hears of a change they did not make:
 
 ```ts
 const users = nb.collection("users");

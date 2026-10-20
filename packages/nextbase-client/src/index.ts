@@ -199,6 +199,11 @@ export class NextBaseClient<
       .items;
   }
 
+  /** Ends every session of the signed-in record except this one. */
+  async revokeOtherSessions(options?: SendOptions): Promise<void> {
+    await this.send("/sessions", { ...options, method: "DELETE" });
+  }
+
   /** Ends one of the signed-in record's sessions, such as a lost device. */
   async revokeSession(id: string, options?: SendOptions): Promise<void> {
     await this.send(`/sessions/${encodeURIComponent(id)}`, {

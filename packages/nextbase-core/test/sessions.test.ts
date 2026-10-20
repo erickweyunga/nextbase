@@ -1,3 +1,4 @@
+import { randomBytes, scryptSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type CookieStore, hasSessionCookie, NextBase } from "../src/index.ts";
 import { call, origin } from "./http.ts";
@@ -644,6 +645,67 @@ describe("sessions", () => {
     expect(hasSessionCookie(page({ cookie: "nextbase_session=made-up" }))).toBe(
       true,
     );
+  });
+
+  it("signs out every other device, keeping this one", async () => {
+    await signUp("oli@example.com");
+    const here = await login("oli@example.com");
+    const others = [
+      await login("oli@example.com"),
+      await login("oli@example.com"),
+    ];
+    expect(
+      (await call(nextbase, "DELETE", "/sessions", { token: here })).status,
+    ).toBe(204);
+    expect(await status(here)).toBe(200);
+    for (const token of others) expect(await status(token)).toBe(401);
+    expect((await call(nextbase, "DELETE", "/sessions")).status).toBe(401);
+  });
+
+  it("deletes a deleted account's sessions with it", async () => {
+    const id = await signUp("pam@example.com");
+    await login("pam@example.com");
+    const sessions = async (): Promise<number> =>
+      (
+        await t.pool.query(
+          "SELECT count(*)::int AS n FROM nextbase._sessions WHERE record_id = $1",
+          [id],
+        )
+      ).rows[0].n;
+    expect(await sessions()).toBe(1);
+    const deleted = await call(
+      nextbase,
+      "DELETE",
+      `/collections/users/records/${id}`,
+      {
+        token: admin,
+      },
+    );
+    expect(deleted.status).toBe(204);
+    expect(await sessions()).toBe(0);
+  });
+
+  it("upgrades a password hash with older parameters on sign-in", async () => {
+    const id = await signUp("quin@example.com");
+    const salt = randomBytes(16);
+    const key = scryptSync("password 123 456", salt, 32, {
+      N: 2 ** 13,
+      r: 8,
+      p: 1,
+    });
+    const b64 = (b: Buffer) => b.toString("base64").replace(/=+$/, "");
+    await t.pool.query(
+      "UPDATE nextbase.users SET password = $1 WHERE id = $2",
+      [`$scrypt$ln=13,r=8,p=1$${b64(salt)}$${b64(key)}`, id],
+    );
+    await login("quin@example.com");
+    const { rows } = await t.pool.query(
+      "SELECT password FROM nextbase.users WHERE id = $1",
+      [id],
+    );
+    expect(rows[0].password).toMatch(/^\$scrypt\$ln=14,r=8,p=5\$/);
+    // And the new hash still signs in.
+    await login("quin@example.com");
   });
 
   describe("server-side client with Next.js cookies", () => {

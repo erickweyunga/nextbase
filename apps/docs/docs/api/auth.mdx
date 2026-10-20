@@ -177,13 +177,14 @@ Also returned for the superusers collection.
 ## OAuth2 callback
 
 Where providers send the browser back: register
-`{appUrl}{basePath}/oauth2-callback` at each provider. It finishes the
+`{appUrl}{basePath}/callback/{provider}` at each provider. It checks that the
+browser returned from the provider the sign-in went to, then finishes the
 sign-in, sets the session cookie and redirects to the sign-in's `redirect`,
 or, when it fails, to its `errorRedirect` with `?error=` (see
 [when a sign-in fails](/docs/guides/auth/oauth2#when-a-sign-in-fails)).
 
 ```http
-GET /oauth2-callback
+GET /callback/{provider}
 ```
 
 ## List linked providers
@@ -447,6 +448,50 @@ GET /sessions
   ]
 }
 ```
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to manage sessions.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Sign out other sessions
+
+Ends every session of the signed-in record except the current one, such as
+after a device is lost.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.revokeOtherSessions();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/sessions \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+DELETE /sessions
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
 
 </TabItem>
 <TabItem value="401" label="401">
