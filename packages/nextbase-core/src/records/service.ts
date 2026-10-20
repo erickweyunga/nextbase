@@ -10,6 +10,7 @@ import {
   type Row,
   type Tx,
 } from "@nextbasejs/dbx";
+import type { MailKind } from "../auth/mail.ts";
 import { verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";
@@ -34,6 +35,11 @@ export interface RecordsContext {
   schema: Schema;
   principal: Principal;
   request: RequestInfo;
+  /**
+   * Queues an email to send once the request has succeeded, so a write that
+   * rolls back, alone or in a batch, never tells anyone it happened.
+   */
+  notify?: (mail: { kind: MailKind; collection: string; to: string }) => void;
 }
 
 /** The SQL alias of the collection's rows in every records query. Rules compile against it. */
@@ -228,6 +234,15 @@ export async function updateRecord(
             hash({ id }),
           )
           .execute();
+      }
+      // The owner learns of a password change they may not have made.
+      const password = collection.fields.find((f) => f.type === "password");
+      if (password && prepared.values[password.name] !== undefined) {
+        ctx.notify?.({
+          kind: "passwordChanged",
+          collection: collection.name,
+          to: existing.email as string,
+        });
       }
       // A new tokenKey (password or email change) ends the record's other
       // sessions; the caller's own stays signed in.
@@ -556,14 +571,16 @@ async function deleteWithReferences(
     }
   }
   await tx.delete(table(collection.name), hash({ id })).execute();
-  // Its linked provider accounts may then sign up again.
+  // Its sessions end, and its linked provider accounts may sign up again.
   if (collection.type === "auth") {
-    await tx
-      .newQuery(
-        `DELETE FROM {{${table("_external_auths")}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
-      )
-      .bind({ collectionId: collection.id, id })
-      .execute();
+    for (const name of ["_sessions", "_external_auths"]) {
+      await tx
+        .newQuery(
+          `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
+        )
+        .bind({ collectionId: collection.id, id })
+        .execute();
+    }
   }
 }
 

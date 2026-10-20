@@ -207,6 +207,41 @@ describe("email verification, password reset and email change", () => {
     expect(signedIn.record.verified).toBe(true);
   });
 
+  it("tells the owner of a password change, once the change is saved", async () => {
+    await admin.collections.update("users", {
+      updateRule: "id = @request.auth.id",
+    });
+    const nb = await signUp("ola@example.com");
+    const id = nb.authStore.record?.id as string;
+    const change = {
+      oldPassword: PASSWORD,
+      password: "a new password 789",
+      passwordConfirm: "a new password 789",
+    };
+    // A batch that fails saves nothing, so nobody is told.
+    const failed = await call(nextbase, "POST", "/batch", {
+      token: nb.authStore.token,
+      body: {
+        requests: [
+          {
+            method: "PATCH",
+            url: `/collections/users/records/${id}`,
+            body: change,
+          },
+          { method: "PATCH", url: "/collections/users/records/nope", body: {} },
+        ],
+      },
+    });
+    expect(failed.status).toBe(400);
+    await flush();
+    expect(sent.filter((m) => m.to === "ola@example.com")).toEqual([]);
+
+    await nb.collection("users").update(id, change);
+    await flush();
+    expect(lastTo("ola@example.com").subject).toBe("Your password was changed");
+    await admin.collections.update("users", { updateRule: null });
+  });
+
   it("changes an email with a link to the new address and the current password", async () => {
     const cy = await signUp("cy@example.com");
     const users = cy.collection("users");

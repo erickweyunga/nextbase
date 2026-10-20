@@ -31,6 +31,7 @@ import {
   bearerToken,
   checkSameOrigin,
   createSession,
+  deleteOtherSessions,
   deleteSession,
   extendSession,
   listSessions,
@@ -61,7 +62,7 @@ import {
   updateCollection,
 } from "../schema/sync.ts";
 
-interface Context {
+export interface Context {
   request: Request;
   /** Decoded path parameters, in order. */
   params: string[];
@@ -76,6 +77,8 @@ interface Context {
   origins: OriginPolicy;
   mailer: Mailer;
   oauth2: OAuth2;
+  /** Emails to send once the request has succeeded. */
+  pendingMail: Parameters<NonNullable<RecordsContext["notify"]>>[0][];
 }
 
 interface Route {
@@ -393,9 +396,10 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: "GET",
-    pattern: /^\/oauth2-callback$/,
+    pattern: new RegExp(`^/callback/${segment}$`),
     async handler(context) {
-      const { request, db, schema, principal, mailer, oauth2 } = context;
+      const { request, params, db, schema, principal, mailer, oauth2 } =
+        context;
       let redirect = "";
       let errorRedirect = "";
       const back = (error?: string): Response => {
@@ -410,6 +414,14 @@ export const ROUTES: readonly Route[] = [
       try {
         const state = await oauth2.consumeState(db, request);
         ({ redirect, errorRedirect } = state);
+        // The sign-in must return from the provider it went to, or one
+        // provider's response could finish another's sign-in (mix-up).
+        if (params[0] !== state.provider) {
+          throw new OAuth2Error(
+            "oauth2_failed",
+            "The sign-in returned from another provider.",
+          );
+        }
         const provider = oauth2.provider(state.provider);
         const collection = authCollection(schema, state.collectionId);
         // A link is for the record that started it, still signed in here.
@@ -482,7 +494,7 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(
       `^/collections/${segment}/records/${segment}/external-auths/${segment}$`,
     ),
-    async handler({ params, db, schema, principal }) {
+    async handler({ params, db, schema, principal, mailer, oauth2 }) {
       const { collection, id } = ownRecord(schema, principal, params);
       const unlinked = await unlinkExternalAuth(
         db,
@@ -491,6 +503,16 @@ export const ROUTES: readonly Route[] = [
         params[2] as string,
       );
       if (!unlinked) throw new ApiError(404, "The provider is not linked.");
+      const [owner] = await db
+        .select("email")
+        .from(table(collection.name))
+        .where(hash({ id }))
+        .all();
+      if (owner) {
+        mailer.send("oauth2Unlinked", collection.name, owner.email as string, {
+          provider: oauth2.displayName(params[2] as string),
+        });
+      }
       return new Response(null, { status: 204 });
     },
   },
@@ -624,6 +646,14 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: "DELETE",
+    pattern: /^\/sessions$/,
+    async handler({ db, principal }) {
+      await deleteOtherSessions(db, requireSession(principal));
+      return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: "DELETE",
     pattern: new RegExp(`^/sessions/${segment}$`),
     async handler({ request, params, db, principal }) {
       const current = requireSession(principal);
@@ -686,6 +716,7 @@ function recordsContext(
     pool: context.db,
     schema,
     principal,
+    notify: (mail) => context.pendingMail.push(mail),
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),

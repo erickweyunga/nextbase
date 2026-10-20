@@ -195,6 +195,20 @@ export async function deleteSession(
   return deleted.length > 0;
 }
 
+/** Ends every session of a record but `keep`, such as on lost devices. */
+export async function deleteOtherSessions(
+  q: Builder,
+  keep: { id: string; collectionId: string; recordId: string },
+): Promise<void> {
+  await q
+    .newQuery(
+      `DELETE FROM {{${table("_sessions")}}}
+       WHERE collection_id = {:collectionId} AND record_id = {:recordId} AND id <> {:id}`,
+    )
+    .bind(keep)
+    .execute();
+}
+
 /**
  * After a record's `tokenKey` changed: ends its other sessions and keeps the
  * caller's own (`keep`) valid under the new key, so changing your password

@@ -18,7 +18,8 @@ export type MailKind =
   | "emailChange"
   | "passwordChanged"
   | "emailChanged"
-  | "oauth2Linked";
+  | "oauth2Linked"
+  | "oauth2Unlinked";
 
 /** What a template gets to write one email. */
 export interface MailContext {
@@ -29,7 +30,7 @@ export interface MailContext {
   /** The link to open, with the token: for verification, reset and email change. */
   url?: string;
   token?: string;
-  /** The provider an account was linked to, for `oauth2Linked`. */
+  /** The provider of `oauth2Linked` and `oauth2Unlinked`. */
   provider?: string;
 }
 
@@ -84,6 +85,10 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   oauth2Linked: ({ provider }) => ({
     subject: "A new way to sign in was added",
     text: `Your account can now sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
+  }),
+  oauth2Unlinked: ({ provider }) => ({
+    subject: "A way to sign in was removed",
+    text: `Your account can no longer sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
   }),
 };
 
