@@ -174,6 +174,90 @@ const MIGRATIONS: readonly Migration[] = [
         )`);
     },
   },
+  {
+    name: "0006_phone",
+    async up(tx) {
+      // Codes texted to phones, one live code per phone and purpose. Codes are
+      // stored as SHA-256 hashes; a verification code also names the record
+      // it was requested by (see auth/phone.ts).
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table("_phone_codes")}}} (
+             collection_id text NOT NULL,
+             phone         text NOT NULL,
+             purpose       text NOT NULL,
+             record_id     text NOT NULL DEFAULT '',
+             code_hash     text NOT NULL,
+             attempts      integer NOT NULL DEFAULT 0,
+             expires       timestamptz NOT NULL,
+             PRIMARY KEY (collection_id, phone, purpose)
+           )`,
+        )
+        .execute();
+      // Auth collections gain the phone and phoneVerified system fields, after
+      // verified, and the phoneAuth option, off. Collections created since
+      // already have them.
+      const collections = await tx
+        .newQuery(
+          `SELECT id, name, fields FROM {{${table("_collections")}}} WHERE type = 'auth'`,
+        )
+        .all<{ id: string; name: string; fields: { id: string }[] }>();
+      let changed = false;
+      for (const { id, name, fields } of collections) {
+        if (fields.some((f) => f.id === "_phone")) continue;
+        changed = true;
+        fields.splice(
+          fields.findIndex((f) => f.id === "_verified") + 1,
+          0,
+          {
+            id: "_phone",
+            name: "phone",
+            type: "phone",
+            system: true,
+            required: false,
+            hidden: false,
+          } as { id: string },
+          {
+            id: "_phoneVerified",
+            name: "phoneVerified",
+            type: "bool",
+            system: true,
+            required: false,
+            hidden: false,
+          } as { id: string },
+        );
+        const t = `{{${table(name)}}}`;
+        await tx
+          .newQuery(
+            `ALTER TABLE ${t}
+               ADD COLUMN "phone" text NOT NULL DEFAULT '',
+               ADD COLUMN "phoneVerified" boolean NOT NULL DEFAULT false`,
+          )
+          .execute();
+        await tx
+          .newQuery(
+            `CREATE UNIQUE INDEX ${tx.quoteSimpleColumnName(`_${id}_phone`)} ON ${t} ("phone") WHERE "phone" <> ''`,
+          )
+          .execute();
+        await tx
+          .newQuery(
+            `UPDATE {{${table("_collections")}}}
+             SET fields = {:fields}::jsonb, options = options || '{"phoneAuth": false}'::jsonb
+             WHERE id = {:id}`,
+          )
+          .bind({ id, fields: JSON.stringify(fields) })
+          .execute();
+      }
+      // Instances that cached the old definitions reload them.
+      if (changed) {
+        await tx
+          .newQuery(
+            `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+          )
+          .execute();
+      }
+    },
+  },
 ];
 
 /**

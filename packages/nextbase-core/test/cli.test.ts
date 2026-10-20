@@ -154,7 +154,7 @@ describe("nextbase CLI", () => {
     );
     // Password hashes and token keys are hidden, so never typed.
     expect(types).toMatch(
-      /interface UsersRecord extends RecordModel \{\n {2}id: string;\n {2}email: string;\n {2}emailVisibility: boolean;\n {2}verified: boolean;\n {2}name: string;/,
+      /interface UsersRecord extends RecordModel \{\n {2}id: string;\n {2}email: string;\n {2}emailVisibility: boolean;\n {2}verified: boolean;\n {2}phone: string;\n {2}phoneVerified: boolean;\n {2}name: string;/,
     );
     expect(types).not.toMatch(/password|tokenKey|secret/);
     expect(types).toContain(

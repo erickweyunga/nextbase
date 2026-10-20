@@ -3,6 +3,7 @@ import type { Builder, Row } from "@nextbasejs/dbx";
 import { hashPassword } from "../auth/password.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
+import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
@@ -12,6 +13,13 @@ import { hasNul, isStorableTime } from "../storable.ts";
 const ID_PATTERN = /^[a-z0-9]{15}$/;
 /** A plausible email address: something, @, a domain with a dot. */
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const FORBIDDEN_MESSAGES: Record<string, string> = {
+  email: "Only superusers can change emails directly.",
+  verified: "Only superusers can verify records.",
+  phone: "Only superusers can change phones directly; verify one with a code.",
+  phoneVerified: "Only superusers can verify phones.",
+};
 const INVALID = Symbol("invalid");
 
 export interface WriteOptions {
@@ -21,6 +29,11 @@ export interface WriteOptions {
   existing?: Row | undefined;
   /** Superusers, and callers passing an auth collection's manageRule, may change protected auth fields. */
   privileged: boolean;
+  /**
+   * Protected auth fields NextBase itself sets in this write, such as the
+   * phone a sign-in code just proved, which the caller may not set alone.
+   */
+  vouched?: ReadonlySet<string>;
 }
 
 export interface PreparedWrite {
@@ -144,26 +157,30 @@ export async function prepareWrite(
     }
     if (!changed || value === INVALID) continue;
     if (validate(field, value, issues)) {
-      // Auth fields that only privileged callers may change directly.
+      // Auth fields that only privileged callers may change directly. A
+      // phone gets onto a record only through a code sent to it, so nobody
+      // can register someone else's number with a password they know.
       if (
         collection.type === "auth" &&
         field.system &&
-        (name === "email" || name === "verified")
+        name in FORBIDDEN_MESSAGES
       ) {
         const unchanged = creating
-          ? name === "email" || value === false
+          ? name === "email" || value === false || value === ""
           : value === row[name];
-        if (!privileged && !unchanged) {
+        if (!privileged && !unchanged && !options.vouched?.has(name)) {
           issues.add(
             [name],
             "validation_forbidden",
-            name === "email"
-              ? "Only superusers can change emails directly."
-              : "Only superusers can verify records.",
+            FORBIDDEN_MESSAGES[name] as string,
           );
           continue;
         }
-        if (name === "email" && !creating && value !== row[name]) {
+        if (
+          (name === "email" || name === "phone") &&
+          !creating &&
+          value !== row[name]
+        ) {
           row.tokenKey = values.tokenKey = randomString(50, ALPHANUMERIC);
         }
       }
@@ -178,6 +195,14 @@ export async function prepareWrite(
       (field.type === "text" && field.primaryKey)
     )
       continue;
+    // With phone sign-in, a record may have a phone instead of an email.
+    const phoneInstead =
+      collection.type === "auth" &&
+      collection.phoneAuth &&
+      field.system &&
+      field.name === "email" &&
+      !isBlank(row.phone);
+    if (phoneInstead) continue;
     if (
       field.type === "password"
         ? creating && isBlank(row[field.name])
@@ -323,6 +348,18 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
       : fail("Must be an array of strings.");
   }
   switch (field.type) {
+    case "phone": {
+      if (raw === null || raw === "") return "";
+      if (typeof raw !== "string") return fail("Must be a string.");
+      const phone = normalizePhone(raw);
+      if (phone !== undefined) return phone;
+      issues.add(
+        [field.name],
+        "validation_invalid_phone",
+        "Must be a valid phone number in international format, such as +255712345678.",
+      );
+      return INVALID;
+    }
     case "text":
     case "email":
     case "url":

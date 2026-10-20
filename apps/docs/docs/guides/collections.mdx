@@ -31,7 +31,7 @@ await superuser.collections.create({
 | Type   | System fields |
 | ------ | ------------- |
 | `base` | `id` |
-| `auth` | `id`, `email`, `emailVisibility`, `verified`, `password`, `tokenKey` |
+| `auth` | `id`, `email`, `emailVisibility`, `verified`, `phone`, `phoneVerified`, `password`, `tokenKey` |
 
 Auth collections hold users who can sign in. See
 [Authentication](/docs/guides/auth).
@@ -57,6 +57,7 @@ Every field has `name`, `type`, `required` (must not be empty) and `hidden`
 | `number`   | number | `0` | `min`, `max`, `onlyInt` |
 | `bool`     | boolean | `false` | |
 | `email`    | string | `""` | `onlyDomains`, `exceptDomains` |
+| `phone`    | string | `""` | Stored in E.164, such as `+255712345678`; input in international format |
 | `url`      | string | `""` | `onlyDomains`, `exceptDomains` |
 | `date`     | ISO 8601 string | `""` | `min`, `max` |
 | `autodate` | ISO 8601 string, set by the server | | `onCreate`, `onUpdate` |

@@ -339,6 +339,81 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/confirm-email-change", { token, password }, options);
   }
 
+  /**
+   * Texts a code to `phone`, in international format such as
+   * `+255712345678`: for signing in (and signing up a new phone), or with
+   * `purpose: "passwordReset"` for resetting the password of an account
+   * whose phone is verified. Resolves the same either way, so it reveals no
+   * accounts.
+   */
+  async requestPhoneCode(
+    phone: string,
+    {
+      purpose = "signIn",
+      ...options
+    }: SendOptions & { purpose?: "signIn" | "passwordReset" } = {},
+  ): Promise<void> {
+    await this.#post("/request-phone-code", { phone, purpose }, options);
+  }
+
+  /**
+   * Signs in with a code from {@link requestPhoneCode}, creating the account
+   * for a new phone under the collection's create rule. Saves the session
+   * like `signInWithPassword`, and takes the same `cookie` option.
+   */
+  async signInWithPhoneCode(
+    phone: string,
+    code: string,
+    options: AuthOptions = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, ...rest } = options;
+    return this.#saveAuth(
+      await this.#send<AuthResponse<T>>("/auth-with-phone-code", {
+        ...rest,
+        method: "POST",
+        body: { phone, code, ...(cookie && { cookie: true }) },
+      }),
+    );
+  }
+
+  /**
+   * Sets a new password with a code texted for a password reset. Every
+   * session of the account ends; sign in again with the new password.
+   */
+  async confirmPasswordResetByPhone(
+    phone: string,
+    code: string,
+    password: string,
+    passwordConfirm: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post(
+      "/confirm-password-reset-by-phone",
+      { phone, code, password, passwordConfirm },
+      options,
+    );
+  }
+
+  /** Texts a code to `phone` that verifies it as the signed-in account's phone. */
+  async requestPhoneVerification(
+    phone: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post("/request-phone-verification", { phone }, options);
+  }
+
+  /**
+   * Makes `phone` the signed-in account's verified phone, given the code
+   * texted to it. Changing the phone signs out the account's other devices.
+   */
+  async confirmPhoneVerification(
+    phone: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post("/confirm-phone-verification", { phone, code }, options);
+  }
+
   async #post(
     path: string,
     body: Record<string, unknown>,

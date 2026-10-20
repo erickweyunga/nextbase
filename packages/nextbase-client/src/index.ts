@@ -68,6 +68,7 @@ export type {
   JsonField,
   NumberField,
   PasswordField,
+  PhoneField,
   RelationField,
   Rule,
   SelectField,

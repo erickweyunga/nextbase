@@ -660,6 +660,20 @@ class Compiler {
           ? principal.record?.id
           : undefined;
       sql = `(CASE WHEN ${quote(alias)}."emailVisibility" OR ${quote(alias)}."id" = ${this.#bind(owner ?? "", "text")} THEN ${col} ELSE '' END)`;
+    } else if (
+      // A phone matches only for its owner, so filters cannot find who has one.
+      this.#context.mode === "filter" &&
+      !this.#context.principal.superuser &&
+      collection.type === "auth" &&
+      field.system &&
+      field.name === "phone"
+    ) {
+      const { principal } = this.#context;
+      const owner =
+        principal.collection?.id === collection.id
+          ? principal.record?.id
+          : undefined;
+      sql = `(CASE WHEN ${quote(alias)}."id" = ${this.#bind(owner ?? "", "text")} THEN ${col} ELSE '' END)`;
     }
     return modifier === "lower" ? `lower(${sql})` : sql;
   }

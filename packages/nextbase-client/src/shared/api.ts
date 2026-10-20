@@ -88,6 +88,10 @@ export interface AuthMethods {
     enabled: boolean;
     providers: AuthProvider[];
   };
+  phone: {
+    /** Whether records sign in with codes texted to their phone. */
+    enabled: boolean;
+  };
 }
 
 /** An OAuth2 provider a sign-in page can offer. */

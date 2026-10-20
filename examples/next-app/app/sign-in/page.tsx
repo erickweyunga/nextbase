@@ -2,6 +2,7 @@ import { serverClient } from "@nextbasejs/next";
 import { links, returnPath } from "@/lib/links";
 import { nextbase } from "@/lib/nextbase";
 import { OAUTH2_ERRORS } from "@/lib/oauth2-errors";
+import { PhoneSignIn } from "./phone-sign-in";
 
 export default async function SignIn({ searchParams }: PageProps<"/sign-in">) {
   const { next, error } = await searchParams;
@@ -22,6 +23,7 @@ export default async function SignIn({ searchParams }: PageProps<"/sign-in">) {
       {typeof error === "string" && (
         <p role="alert">{OAUTH2_ERRORS[error] ?? "The sign-in failed."}</p>
       )}
+      {methods?.phone.enabled && <PhoneSignIn redirect={redirect} />}
       {providers.length > 0 ? (
         <ul>
           {providers.map((provider) => (

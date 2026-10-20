@@ -1,8 +1,16 @@
 import type { AuthCollection } from "@nextbasejs/client";
-import { and, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
+import {
+  and,
+  type DB,
+  type Expression,
+  exp,
+  hash,
+  type Row,
+} from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { compileFilter } from "../filter/compiler.ts";
+import { normalizePhone } from "../phone.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
 import {
@@ -109,11 +117,18 @@ async function findByIdentity(
   for (const name of collection.identityFields) {
     const field = collection.fields.find((f) => f.name === name);
     if (!field || identity === "") continue;
-    // Emails are unique regardless of case, so they match regardless of case.
-    const condition =
-      field.type === "email"
-        ? exp(`lower([[${name}]]) = lower({:identity})`, { identity })
-        : hash({ [name]: identity });
+    // Emails are unique regardless of case, so they match regardless of case;
+    // phones are stored in E.164, so the identity is read as a phone first.
+    let condition: Expression;
+    if (field.type === "email") {
+      condition = exp(`lower([[${name}]]) = lower({:identity})`, { identity });
+    } else if (field.type === "phone") {
+      const phone = normalizePhone(identity);
+      if (phone === undefined) continue;
+      condition = hash({ [name]: phone });
+    } else {
+      condition = hash({ [name]: identity });
+    }
     const [record] = await db
       .select()
       .from(table(collection.name))

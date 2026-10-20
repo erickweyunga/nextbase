@@ -286,6 +286,218 @@ No body.
 </TabItem>
 </Tabs>
 
+## Request a phone code
+
+Texts a six-digit code for signing in or resetting a password, to a collection with [phone sign-in](/docs/guides/auth/phone). Answers 204 whether or not the number has an account. At most 5 texts per number per hour.
+
+```ts
+await nb.collection("users").requestPhoneCode("+255712345678");
+await nb.collection("users").requestPhoneCode("+255712345678", { purpose: "passwordReset" });
+```
+
+```http
+POST /collections/{collection}/request-phone-code
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+| `purpose` | string | Optional. `signIn` (default) or `passwordReset`. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to use the phone number.", "data": { "phone": { "code": "validation_invalid_phone", "message": "Must be a valid phone number in international format, such as +255712345678." } } }
+```
+Also returned when the collection has no phone sign-in, when SMS is not set up, and, with `validation_country_not_allowed`, for a country texts may not go to.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Sign in with a phone code
+
+Checks a sign-in code and starts a session, creating the account for a new number under the collection's `createRule`. The response is the same as [signing in with a password](#sign-in-with-a-password).
+
+```ts
+await nb.collection("users").signInWithPhoneCode("+255712345678", "123456", { cookie: true });
+```
+
+```http
+POST /collections/{collection}/auth-with-phone-code
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+| `code` | string | Required. The six-digit code. |
+| `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="200">
+
+`{ token, record }`, or with `cookie: true` only `record` and a session cookie.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The code is invalid or has expired.", "data": { "code": { "code": "validation_invalid_code", "message": "Invalid or expired." } } }
+```
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Reset a password by phone
+
+Sets a new password with a code from a `passwordReset` request to the account's verified phone. Every session of the account ends.
+
+```ts
+await nb.collection("users").confirmPasswordResetByPhone("+255712345678", "123456", "a new password", "a new password");
+```
+
+```http
+POST /collections/{collection}/confirm-password-reset-by-phone
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+| `code` | string | Required. The six-digit code. |
+| `password` | string | Required. The new password. |
+| `passwordConfirm` | string | Required. The same again. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The code is invalid or has expired.", "data": { "code": { "code": "validation_invalid_code", "message": "Invalid or expired." } } }
+```
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Request a phone verification
+
+Texts a code that verifies `phone` as the signed-in record's phone, to add or change it. Whether another account has the number is checked on confirming, so this request reveals nothing.
+
+```ts
+await nb.collection("users").requestPhoneVerification("+255712345678");
+```
+
+```http
+POST /collections/{collection}/request-phone-verification
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="204" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to this collection to verify a phone.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Confirm a phone verification
+
+Makes `phone` the signed-in record's verified phone, given the code texted to it. A changed number signs out the record's other sessions and tells the previous number and the email.
+
+```ts
+await nb.collection("users").confirmPhoneVerification("+255712345678", "123456");
+```
+
+```http
+POST /collections/{collection}/confirm-phone-verification
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `phone` | string | Required. In international format, such as `+255712345678`. |
+| `code` | string | Required. The six-digit code. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body. A number another account has answers 400 with `validation_not_unique` on `phone`.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The code is invalid or has expired.", "data": { "code": { "code": "validation_invalid_code", "message": "Invalid or expired." } } }
+```
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
 ## Refresh
 
 Extends the current session to its full lifetime and returns the record,

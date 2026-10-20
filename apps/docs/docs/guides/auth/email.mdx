@@ -79,8 +79,8 @@ mail: {
 ```
 
 The kinds are `verification`, `passwordReset`, `emailChange`,
-`passwordChanged`, `emailChanged`, `oauth2Linked` and `oauth2Unlinked`. The
-last four carry no link: they tell the owner that their password or email
-changed, by reset or while signed in, or that an
+`passwordChanged`, `emailChanged`, `phoneChanged`, `oauth2Linked` and
+`oauth2Unlinked`. The last five carry no link: they tell the owner that their
+password, email or phone changed, or that an
 [OAuth2 provider](/docs/guides/auth/oauth2) was linked or unlinked, which
 templates get as `provider`. They are sent only once the change is saved.
