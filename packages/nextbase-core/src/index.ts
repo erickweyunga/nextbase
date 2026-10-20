@@ -123,6 +123,13 @@ export interface NextBaseOptions {
    */
   mail?: MailOptions;
   /**
+   * Rejects new passwords that appear in known data breaches, as NIST SP
+   * 800-63B requires, through Have I Been Pwned's Pwned Passwords: only the
+   * first 5 characters of the password's SHA-1 are sent. When the service
+   * cannot be reached, passwords are accepted. Off by default.
+   */
+  breachedPasswords?: boolean;
+  /**
    * Sign-in with OAuth2 providers, by name: `google` and `github`, or any
    * OpenID Connect provider with its `issuer`. Each needs your app's URL in
    * `appUrl`; register `{appUrl origin}{basePath}/callback/{name}`, such as
@@ -176,6 +183,7 @@ export class NextBase {
   readonly #origins: OriginPolicy;
   readonly #mailer: Mailer;
   readonly #oauth2: OAuth2;
+  readonly #breachedPasswords: boolean;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -188,6 +196,7 @@ export class NextBase {
       "",
     );
     this.#database = options.database;
+    this.#breachedPasswords = options.breachedPasswords ?? false;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
@@ -419,6 +428,7 @@ export class NextBase {
             origins: this.#origins,
             mailer: this.#mailer,
             oauth2: this.#oauth2,
+            breachedPasswords: this.#breachedPasswords,
             pendingMail,
           });
           for (const mail of pendingMail) {
