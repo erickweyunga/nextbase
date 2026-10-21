@@ -1,5 +1,18 @@
 # @nextbasejs/react
 
+## 0.1.3
+
+### Patch Changes
+
+- 5e05113: Point the documentation links to nextbase.goomzo.com.
+- a10ffcf: Build the server for Node and add the "use client" directive to the React package as a banner, so the builds run without warnings.
+- Updated dependencies [419e109]
+- Updated dependencies [127629b]
+- Updated dependencies [5e05113]
+- Updated dependencies [b8180be]
+- Updated dependencies [ccb21ce]
+  - @nextbasejs/client@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes
