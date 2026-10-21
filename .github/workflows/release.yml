@@ -37,7 +37,7 @@ jobs:
       # A version missing from npm (or an unreachable registry) means there is
       # something to publish; changeset publish skips what is already there.
       - id: unpublished
-        if: steps.changesets.outputs.hasChangesets == 'false'
+        if: steps.changesets.outputs.has-changesets == 'false'
         run: |
           unpublished=false
           for manifest in packages/*/package.json; do
