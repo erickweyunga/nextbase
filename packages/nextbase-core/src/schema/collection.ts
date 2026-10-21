@@ -152,6 +152,7 @@ export function parseCollection(
       authRule: parseRule(r, "authRule", previous, ""),
       manageRule: parseRule(r, "manageRule", previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
+      phoneSignIn: r.boolean("phoneSignIn", previous?.phoneSignIn ?? false),
       tokens: parseTokens(r, previous?.tokens),
     };
   }
@@ -179,6 +180,7 @@ export function superusersCollection(): AuthCollection {
     authRule: "",
     manageRule: null,
     identityFields: ["email"],
+    phoneSignIn: false,
     tokens,
   };
 }
@@ -288,8 +290,8 @@ function systemFields(type: Collection["type"]): Field[] {
     primaryKey: true,
   };
   if (type === "base") return [id];
-  const flag = (name: string): Field => ({
-    id: `_${name}`,
+  const flag = (name: string, id = `_${name}`): Field => ({
+    id,
     name,
     type: "bool",
     system: true,
@@ -309,7 +311,17 @@ function systemFields(type: Collection["type"]): Field[] {
       exceptDomains: [],
     },
     flag("emailVisibility"),
-    flag("verified"),
+    // Its id predates the rename from `verified`; ids never change.
+    flag("emailVerified", "_verified"),
+    {
+      id: "_phone",
+      name: "phone",
+      type: "phone",
+      system: true,
+      required: false,
+      hidden: false,
+    },
+    flag("phoneVerified"),
     {
       id: "_password",
       name: "password",
@@ -579,17 +591,23 @@ function parseIdentityFields(
   names.forEach((name, i) => {
     const path = ["identityFields", i];
     const field = fields.find((f) => f.name === name);
-    if (!field || (field.type !== "email" && field.type !== "text")) {
+    if (
+      !field ||
+      (field.type !== "email" &&
+        field.type !== "phone" &&
+        field.type !== "text")
+    ) {
       r.issues.add(
         path,
         "validation_invalid_value",
-        "Must be the name of an email or text field.",
+        "Must be the name of an email, phone or text field.",
       );
     } else if (names.indexOf(name) !== i) {
       r.issues.add(path, "validation_not_unique", "Fields must be unique.");
     } else if (
-      // The system email field always has a unique index.
+      // The system email and phone fields always have unique indexes.
       field.id !== "_email" &&
+      field.id !== "_phone" &&
       !indexes.some(
         (x) => x.unique && x.fields.length === 1 && x.fields[0] === field.id,
       )

@@ -9,8 +9,8 @@ import type { Schema } from "../schema/cache.ts";
 /**
  * Names of the cookie holding a session token. Over HTTPS the `__Host-`
  * prefix makes browsers refuse it unless it is Secure, host-only and on
- * `Path=/`, so a sibling subdomain cannot set or shadow it (OWASP Session
- * Management Cheat Sheet). Plain HTTP, in development, cannot use it.
+ * `Path=/`, so a site on a sibling subdomain cannot set or overwrite it.
+ * Plain HTTP, in development, cannot use the prefix.
  */
 export const SESSION_COOKIES = {
   secure: "__Host-nextbase_session",
@@ -21,9 +21,8 @@ export const SESSION_COOKIES = {
 // active users stay signed in without a write on every request.
 const UPDATE_AGE = 86_400;
 /**
- * However active, a session ends this long after sign-in (OWASP: "an absolute
- * timeout, regardless of session activity"; NIST SP 800-63B rev 4 sets 30 days
- * as the longest reauthentication interval at AAL1).
+ * However active, a session ends this long after sign-in, so a stolen session
+ * cannot be kept alive forever by using it.
  */
 const MAX_AGE = 30 * 86_400;
 const MAX_USER_AGENT = 512;
@@ -195,6 +194,20 @@ export async function deleteSession(
   return deleted.length > 0;
 }
 
+/** Ends every session of a record but `keep`, such as on lost devices. */
+export async function deleteOtherSessions(
+  q: Builder,
+  keep: { id: string; collectionId: string; recordId: string },
+): Promise<void> {
+  await q
+    .newQuery(
+      `DELETE FROM {{${table("_sessions")}}}
+       WHERE collection_id = {:collectionId} AND record_id = {:recordId} AND id <> {:id}`,
+    )
+    .bind(keep)
+    .execute();
+}
+
 /**
  * After a record's `tokenKey` changed: ends its other sessions and keeps the
  * caller's own (`keep`) valid under the new key, so changing your password
@@ -244,8 +257,8 @@ export function bearerToken(request: Request): string | undefined {
   return match?.[1] ?? "";
 }
 
-/** Whether a request's session cookie is Secure, and so `__Host-` prefixed. */
-function isSecure(request: Request): boolean {
+/** Whether a request's cookies are Secure, and so `__Host-` prefixed. */
+export function isSecure(request: Request): boolean {
   return (
     new URL(request.url).protocol === "https:" ||
     process.env.NODE_ENV === "production"
@@ -254,9 +267,17 @@ function isSecure(request: Request): boolean {
 
 /** The session cookie's value, or undefined without one. */
 export function sessionCookie(request: Request): string | undefined {
-  const wanted = isSecure(request)
-    ? SESSION_COOKIES.secure
-    : SESSION_COOKIES.plain;
+  return readCookie(
+    request,
+    isSecure(request) ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
+  );
+}
+
+/** A cookie's value, or undefined without it. */
+export function readCookie(
+  request: Request,
+  wanted: string,
+): string | undefined {
   for (const part of (request.headers.get("cookie") ?? "").split(";")) {
     const [name, ...value] = part.trim().split("=");
     if (name === wanted) return value.join("=");
@@ -300,10 +321,12 @@ export interface OriginPolicy {
 }
 
 /**
- * Rejects cross-site requests that would act through the session cookie, as
- * the OWASP CSRF Prevention Cheat Sheet describes: by `Sec-Fetch-Site` where
- * the browser sends it, and otherwise by `Origin`, which browsers send on
- * such writes. The request's origin must be this host or a trusted one.
+ * Rejects cross-site requests that would act through the session cookie:
+ * browsers attach cookies to requests other sites make too, so a page on
+ * another site could otherwise make changes as the signed-in user. Checked by
+ * `Sec-Fetch-Site` where the browser sends it, and otherwise by `Origin`,
+ * which browsers send on such writes. The request must come from this host or
+ * a trusted one.
  * Hosts are compared rather than full origins, as Next.js does for server
  * actions, since proxies often change the scheme the app sees.
  */
@@ -331,8 +354,8 @@ export function checkSameOrigin(request: Request, policy: OriginPolicy): void {
 
 /**
  * This server's host: Host by default, which platforms such as Vercel set to
- * the domain the client used. X-Forwarded-Host only behind a trusted proxy
- * (OWASP: "Use the X-Forwarded-Host header value only from trusted proxies").
+ * the domain the client used. X-Forwarded-Host only behind a proxy you run,
+ * since anyone else can send that header with any value.
  */
 function thisHost(request: Request, policy: OriginPolicy): string {
   const forwarded = policy.trustProxy

@@ -128,7 +128,8 @@ POST /collections
 | `indexes` | array | Optional. `{ name, fields, unique?, type? }`, where `fields` are field ids. |
 | `listRule`, `viewRule`, `createRule`, `updateRule`, `deleteRule` | string or null | Optional. [Rules](/docs/guides/rules). Default `null` (superusers only). |
 | `authRule`, `manageRule` | string or null | Optional, auth collections. Defaults `""` and `null`. |
-| `identityFields` | string[] | Optional, auth collections. Fields to sign in with. Default `["email"]`. |
+| `identityFields` | string[] | Optional, auth collections. Fields to sign in with. Default `["email"]`. Add `"phone"` to sign in with phone and password. |
+| `phoneSignIn` | boolean | Optional, auth collections. Sign-in with codes texted to the `phone` field; records may then have a phone instead of an email. Default `false`. |
 
 **Responses**
 

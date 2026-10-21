@@ -12,7 +12,11 @@ const adminUrl =
 // signals on, which would leave servers running after the tests.
 const nextCli = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
+export const DATABASE_PREFIX = "nextbase_e2e";
+
 export interface Server {
+  /** The app's origin, e.g. http://localhost:4123. */
+  origin: string;
   /** Base URL of the NextBase API, e.g. http://localhost:4123/api/nextbase. */
   api: string;
   /** Everything the server printed so far. */
@@ -37,8 +41,15 @@ async function freePort(): Promise<number> {
  * Starts the built example app (`next start`) against a fresh, empty database,
  * the way it runs in production.
  */
-export async function startServer(): Promise<Server> {
-  const name = `nextbase_e2e_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+export async function startServer({
+  env = () => ({}),
+}: {
+  /** Extra environment variables, given the app's origin. */
+  env?: (origin: string) => Record<string, string>;
+} = {}): Promise<Server> {
+  // The creation time, in base 36, lets a later run tell a database left by an
+  // interrupted run from one in use (see global-setup.ts).
+  const name = `${DATABASE_PREFIX}_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   await admin.query(`CREATE DATABASE ${name}`);
@@ -46,6 +57,7 @@ export async function startServer(): Promise<Server> {
   database.pathname = `/${name}`;
 
   const port = await freePort();
+  const origin = `http://localhost:${port}`;
   let output = "";
   const child: ChildProcess = spawn(
     process.execPath,
@@ -58,6 +70,7 @@ export async function startServer(): Promise<Server> {
         ...process.env,
         DATABASE_URL: database.toString(),
         NODE_ENV: "production",
+        ...env(origin),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -65,7 +78,7 @@ export async function startServer(): Promise<Server> {
   child.stdout?.on("data", (chunk) => (output += chunk));
   child.stderr?.on("data", (chunk) => (output += chunk));
 
-  const api = `http://localhost:${port}/api/nextbase`;
+  const api = `${origin}/api/nextbase`;
   for (let attempt = 0; ; attempt++) {
     try {
       if ((await fetch(`${api}/health`)).ok) break;
@@ -82,6 +95,7 @@ export async function startServer(): Promise<Server> {
   }
 
   return {
+    origin,
     api,
     output: () => output,
     async stop() {

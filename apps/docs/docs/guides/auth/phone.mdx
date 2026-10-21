@@ -1,0 +1,148 @@
+---
+title: Phone
+---
+
+# Phone
+
+Users can sign in with their phone number: they enter it, receive a six-digit
+code by SMS, and enter the code. A new number creates an account, so phone
+sign-up needs no email. Users can also sign in with phone and password, verify
+or change their number, and reset their password by SMS.
+
+## Set up
+
+1. Turn on `phoneSignIn` for the auth collection. To also sign in with phone
+   and password, add `phone` to its identity fields:
+
+   ```ts
+   await superuser.collections.update("users", {
+     phoneSignIn: true,
+     identityFields: ["email", "phone"],
+   });
+   ```
+
+2. Give NextBase an `sms` option that sends texts through your provider, such
+   as Twilio, Africa's Talking or AWS SNS:
+
+   ```ts title="lib/nextbase.ts"
+   import { NextBase } from "@nextbasejs/core";
+   import { after } from "next/server";
+
+   export const nextbase = new NextBase({
+     sms: {
+       // Only send to the countries you serve: see "SMS fraud" below.
+       countries: ["TZ", "KE"],
+       async send({ to, text }) {
+         await sendWithYourProvider(to, text);
+       },
+     },
+     waitUntil: after,
+   });
+   ```
+
+| Option | Description |
+| ------ | ----------- |
+| `send` | Required. Sends one text: `{ to, text }`, with `to` in E.164 such as `+255712345678`. |
+| `countries` | Optional. The ISO country codes texts may go to, such as `["TZ"]`. Defaults to every country. |
+| `templates` | Optional. Replaces the text of any kind of message: `signIn`, `passwordReset`, `verifyPhone` or `phoneChanged`. |
+
+Without `sms`, the phone endpoints answer 400 in production. In development,
+texts are written to the server log instead, so you can read the codes.
+
+## Sign in with a code
+
+```ts
+const users = nb.collection("users");
+
+// 1. Text a code to the number, in international format.
+await users.requestPhoneCode("+255712345678");
+
+// 2. Sign in with the code the user received.
+await users.signInWithPhoneCode("+255712345678", "123456", { cookie: true });
+```
+
+If no account has the number, signing in creates one under the collection's
+`createRule`, with the phone verified and no email. Like accounts created
+through [OAuth2](/docs/guides/auth/oauth2), it gets a random password that
+nobody knows; the user can set one with a password reset.
+
+Numbers are accepted in any common notation, such as `+255 712 345 678`, and
+stored in E.164. They must include the country code.
+
+## Sign in with phone and password
+
+With `phone` in the collection's identity fields, the phone works wherever an
+email does:
+
+```ts
+await users.signInWithPassword("+255712345678", "a long password", {
+  cookie: true,
+});
+```
+
+## Reset the password by SMS
+
+For accounts with a verified phone:
+
+```ts
+await users.requestPasswordResetByPhone("+255712345678");
+await users.confirmPasswordResetByPhone(
+  "+255712345678",
+  "123456",
+  "a new long password",
+  "a new long password",
+);
+```
+
+As with an emailed reset, every session ends and the user signs in again.
+
+## Verify or change the phone
+
+A signed-in user adds or changes their number by proving they receive texts
+on it:
+
+```ts
+await users.requestPhoneVerification("+255712345678");
+await users.confirmPhoneVerification("+255712345678", "123456");
+```
+
+A new number is a new way into the account, so the account's other devices are
+signed out, and the previous number and the email are told of the change.
+
+Users cannot set `phone` or `phoneVerified` through the records API; only
+superusers can. A number gets onto an account only through a code sent to it,
+so nobody can register someone else's number with a password they know.
+
+## Email or phone
+
+In a collection with `phoneSignIn`, a record needs an email or a phone. In other
+collections the email stays required. Email features, such as verification
+emails, simply skip records without one.
+
+## Codes
+
+How codes work:
+
+- Six random digits, valid for 10 minutes, and accepted once.
+- A code is discarded after 5 wrong guesses. Guesses are also limited per
+  number across every code sent to it, so asking for a new code does not reset
+  the count.
+- A code works only for what it was sent for: a sign-in code cannot reset a
+  password, and a verification code works only for the account that asked.
+- Requests answer the same whether or not a number has an account. Codes are
+  only sent where they can be used: to existing accounts, or for sign-in to a
+  collection that allows sign-up.
+
+## SMS fraud
+
+Every text costs money, which attracts SMS pumping: attackers request codes
+to premium-rate numbers they profit from. NextBase sends at most 5 texts per
+number per hour, but pumping spreads over many numbers, so also:
+
+- Limit `countries` to where your users are. This is the strongest defense.
+- Turn on your SMS provider's fraud protection, if it has one.
+- Watch for a falling share of codes that are entered.
+
+SMS is not the strongest way to sign in: a number can be moved to an
+attacker's SIM card by tricking the carrier (SIM swapping) or porting it. Offer another way to sign in alongside
+it, such as a password or [OAuth2](/docs/guides/auth/oauth2).

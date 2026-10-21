@@ -33,17 +33,20 @@ export type {
   AuthOptions,
   FullListOptions,
   ListOptions,
+  OAuth2Options,
   RecordOptions,
   RecordService,
 } from "./records.ts";
 export type {
   ApiErrorBody,
   AuthMethods,
+  AuthProvider,
   AuthResponse,
   CurrentSession,
   ErrorData,
   FieldError,
   HealthResponse,
+  LinkedAccountModel,
   ListResult,
   RecordModel,
   SessionModel,
@@ -65,6 +68,7 @@ export type {
   JsonField,
   NumberField,
   PasswordField,
+  PhoneField,
   RelationField,
   Rule,
   SelectField,
@@ -196,6 +200,11 @@ export class NextBaseClient<
       .items;
   }
 
+  /** Ends every session of the signed-in record except this one. */
+  async revokeOtherSessions(options?: SendOptions): Promise<void> {
+    await this.send("/sessions", { ...options, method: "DELETE" });
+  }
+
   /** Ends one of the signed-in record's sessions, such as a lost device. */
   async revokeSession(id: string, options?: SendOptions): Promise<void> {
     await this.send(`/sessions/${encodeURIComponent(id)}`, {
@@ -276,6 +285,14 @@ export class NextBaseClient<
             data: {},
           },
     );
+  }
+
+  /**
+   * The URL of `path` below the base URL, for links and redirects that
+   * leave the SDK, such as an OAuth2 sign-in.
+   */
+  buildUrl(path: string, query: Record<string, QueryValue> = {}): string {
+    return this.#url(path, query);
   }
 
   #url(path: string, query: Record<string, QueryValue> = {}): string {

@@ -2,11 +2,19 @@ import type { Builder } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 
-// Password attempts allowed per key in one window. Counted in Postgres, so the
-// limit holds across serverless instances without trusting client IP headers.
-// The trade-off: someone can lock a known account out for one window.
-const MAX_ATTEMPTS = 10;
-const WINDOW = "15 minutes";
+// Attempts are counted in Postgres, so limits hold across serverless
+// instances without trusting client IP headers. The trade-off: someone can
+// lock a known account out for one window; a password reset still works.
+
+/** How many attempts a key allows in one window. */
+export interface Limit {
+  max: number;
+  /** A Postgres interval, such as `15 minutes`. */
+  window: string;
+}
+
+/** Password and code guesses, and emails, per key. */
+const DEFAULT_LIMIT: Limit = { max: 10, window: "15 minutes" };
 
 /**
  * Counts a password attempt for each key, before the password is checked,
@@ -18,20 +26,21 @@ const WINDOW = "15 minutes";
 export async function countAttempt(
   q: Builder,
   keys: readonly string[],
+  { max, window }: Limit = DEFAULT_LIMIT,
 ): Promise<void> {
   for (const key of keys) {
     const [row] = await q
       .newQuery(
         `INSERT INTO {{${table("_auth_attempts")}}} AS a (key, failures, window_end)
-         VALUES ({:key}, 1, now() + interval '${WINDOW}')
+         VALUES ({:key}, 1, now() + {:window}::interval)
          ON CONFLICT (key) DO UPDATE SET
            failures = CASE WHEN a.window_end <= now() THEN 1 ELSE a.failures + 1 END,
-           window_end = CASE WHEN a.window_end <= now() THEN now() + interval '${WINDOW}' ELSE a.window_end END
+           window_end = CASE WHEN a.window_end <= now() THEN now() + {:window}::interval ELSE a.window_end END
          RETURNING failures, ceil(extract(epoch FROM window_end - now()))::int AS "retryAfter"`,
       )
-      .bind({ key })
+      .bind({ key, window })
       .all<{ failures: number; retryAfter: number }>();
-    if (row && row.failures > MAX_ATTEMPTS) {
+    if (row && row.failures > max) {
       throw new ApiError(
         429,
         "Too many attempts. Try again later.",
@@ -72,6 +81,16 @@ export function accountKey(collectionId: string, recordId: string): string {
 /** The throttle key of a typed identity, which may match no account. */
 export function identityKey(collectionId: string, identity: string): string {
   return `${collectionId}:identity:${identity.toLowerCase()}`;
+}
+
+/** The throttle key of codes texted to a phone, so no one can run up SMS costs. */
+export function smsKey(collectionId: string, phone: string): string {
+  return `${collectionId}:sms:${phone}`;
+}
+
+/** The throttle key of code guesses for a phone, across every code sent to it. */
+export function phoneKey(collectionId: string, phone: string): string {
+  return `${collectionId}:phone:${phone}`;
 }
 
 /** The throttle key of emails sent to an address, so no one can flood an inbox. */

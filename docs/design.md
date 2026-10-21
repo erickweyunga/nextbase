@@ -1038,10 +1038,11 @@ nb.authStore.onChange((token, record) => {});
 
 ```ts
 // Server component or server action: acts as the user of the session cookie.
-// serverClient (from @nextbasejs/next) reads Next.js's cookies(); elsewhere, pass any
-// cookie store: nextbase.client({ cookies }).
-const nb = await serverClient(nextbase);
-const session = await nb.getSession();
+// The app's lib/nextbase.ts exports nb = () => serverClient(nextbase); serverClient
+// (from @nextbasejs/next) reads Next.js's cookies(). Elsewhere, pass any cookie
+// store: nextbase.client({ cookies }).
+const client = await nb();
+const session = await client.getSession();
 
 // Trusted server code: acts as a superuser. Never expose it to user input.
 const admin = nextbase.client({ superuser: true });

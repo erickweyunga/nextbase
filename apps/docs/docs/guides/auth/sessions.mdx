@@ -33,30 +33,30 @@ a reload with `nb.getSession()`.
 
 ## Read the user in a server component
 
+With the `nb()` helper from [the Next.js guide](/docs/integrations/nextjs#add-a-server-helper):
+
 ```tsx title="app/page.tsx"
-import { cookies } from "next/headers";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export default async function Page() {
-  const nb = nextbase.client({ cookies: await cookies() });
-  const session = await nb.getSession();
+  const client = await nb();
+  const session = await client.getSession();
   return <p>{session ? `Hi ${session.record.name}` : "Not signed in"}</p>;
 }
 ```
 
-`nextbase.client()` calls NextBase directly, without an HTTP request, and
-applies the same validation and rules as the REST API. Create one per request.
+The client calls NextBase directly, without an HTTP request, and applies the
+same validation and rules as the REST API. Create one per request.
 
 ## Sign in and out from a server action
 
 ```ts title="app/actions.ts"
 "use server";
-import { cookies } from "next/headers";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export async function signIn(form: FormData) {
-  const nb = nextbase.client({ cookies: await cookies() });
-  await nb
+  const client = await nb();
+  await client
     .collection("users")
     .signInWithPassword(String(form.get("email")), String(form.get("password")), {
       cookie: true,
@@ -64,15 +64,16 @@ export async function signIn(form: FormData) {
 }
 
 export async function signOut() {
-  await nextbase.client({ cookies: await cookies() }).signOut();
+  await (await nb()).signOut();
 }
 ```
 
 ## Lifetime and revocation
 
 - Sessions last 7 days (superusers: 1 day) and are extended while in use.
-- `nb.listSessions()` lists the user's devices, and `nb.revokeSession(id)`
-  signs one out.
+- `nb.listSessions()` lists the user's devices, `nb.revokeSession(id)` signs
+  one out, and `nb.revokeOtherSessions()` signs out every device but this one.
+- Deleting an account ends all of its sessions.
 - Changing a password ends every other session. Rotating the collection's auth
   secret ends all of its sessions.
 

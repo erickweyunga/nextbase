@@ -65,6 +65,8 @@ describe("email verification, password reset and email change", () => {
       await nextbase.client().collection("users").listAuthMethods(),
     ).toEqual({
       password: { enabled: true, identityFields: ["email"] },
+      oauth2: { enabled: false, providers: [] },
+      phone: { enabled: false },
     });
     await admin.collections.create({
       name: "closed",
@@ -87,7 +89,7 @@ describe("email verification, password reset and email change", () => {
     // A forged Host must not end up in the link.
     const reply = await nextbase.handle(
       new Request(
-        "https://evil.example/api/nextbase/collections/users/request-verification",
+        "https://evil.example/api/nextbase/collections/users/request-email-verification",
         {
           method: "POST",
           headers: { "content-type": "application/json", host: "evil.example" },
@@ -107,21 +109,21 @@ describe("email verification, password reset and email change", () => {
     );
     expect(message.text).not.toContain("evil");
 
-    await users.confirmVerification(tokenIn(message));
+    await users.confirmEmailVerification(tokenIn(message));
     expect(
       (
         await admin
           .collection("users")
           .getFirstListItem('email = "ann@example.com"')
-      ).verified,
+      ).emailVerified,
     ).toBe(true);
     // Verified already: the link stays harmless.
-    await users.confirmVerification(tokenIn(message));
-    await users.requestVerification("ann@example.com");
+    await users.confirmEmailVerification(tokenIn(message));
+    await users.requestEmailVerification("ann@example.com");
     await flush();
     expect(sent.filter((m) => m.to === "ann@example.com")).toHaveLength(1);
 
-    const forged = await failure(users.confirmVerification("not.a.token"));
+    const forged = await failure(users.confirmEmailVerification("not.a.token"));
     expect(forged.data).toMatchObject({
       token: { code: "validation_invalid_token" },
     });
@@ -130,7 +132,7 @@ describe("email verification, password reset and email change", () => {
   it("answers the same for accounts that do not exist", async () => {
     const before = sent.length;
     const users = nextbase.client().collection("users");
-    await users.requestVerification("nobody@example.com");
+    await users.requestEmailVerification("nobody@example.com");
     await users.requestPasswordReset("nobody@example.com");
     await flush();
     expect(sent.length).toBe(before);
@@ -203,7 +205,42 @@ describe("email verification, password reset and email change", () => {
       "ben@example.com",
       "brand new password",
     );
-    expect(signedIn.record.verified).toBe(true);
+    expect(signedIn.record.emailVerified).toBe(true);
+  });
+
+  it("tells the owner of a password change, once the change is saved", async () => {
+    await admin.collections.update("users", {
+      updateRule: "id = @request.auth.id",
+    });
+    const nb = await signUp("ola@example.com");
+    const id = nb.authStore.record?.id as string;
+    const change = {
+      oldPassword: PASSWORD,
+      password: "a new password 789",
+      passwordConfirm: "a new password 789",
+    };
+    // A batch that fails saves nothing, so nobody is told.
+    const failed = await call(nextbase, "POST", "/batch", {
+      token: nb.authStore.token,
+      body: {
+        requests: [
+          {
+            method: "PATCH",
+            url: `/collections/users/records/${id}`,
+            body: change,
+          },
+          { method: "PATCH", url: "/collections/users/records/nope", body: {} },
+        ],
+      },
+    });
+    expect(failed.status).toBe(400);
+    await flush();
+    expect(sent.filter((m) => m.to === "ola@example.com")).toEqual([]);
+
+    await nb.collection("users").update(id, change);
+    await flush();
+    expect(lastTo("ola@example.com").subject).toBe("Your password was changed");
+    await admin.collections.update("users", { updateRule: null });
   });
 
   it("changes an email with a link to the new address and the current password", async () => {
@@ -248,7 +285,7 @@ describe("email verification, password reset and email change", () => {
     );
     expect(moved.record).toMatchObject({
       email: "cy.new@example.com",
-      verified: true,
+      emailVerified: true,
     });
     // Spent: the email changed, so the token no longer matches.
     expect(

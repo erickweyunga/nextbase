@@ -6,6 +6,7 @@ export type FieldType =
   | "number"
   | "bool"
   | "email"
+  | "phone"
   | "url"
   | "date"
   | "autodate"
@@ -49,6 +50,9 @@ export interface EmailField extends FieldBase<"email"> {
   onlyDomains: string[];
   exceptDomains: string[];
 }
+
+/** A phone number, stored in E.164 such as `+255712345678`. */
+export type PhoneField = FieldBase<"phone">;
 
 export interface UrlField extends FieldBase<"url"> {
   onlyDomains: string[];
@@ -102,6 +106,7 @@ export type Field =
   | NumberField
   | BoolField
   | EmailField
+  | PhoneField
   | UrlField
   | DateField
   | AutodateField
@@ -164,12 +169,17 @@ export interface BaseCollection extends CollectionBase {
 
 export interface AuthCollection extends CollectionBase {
   type: "auth";
-  /** Extra condition a record must meet to log in or refresh, e.g. `verified = true`. */
+  /** Extra condition a record must meet to log in or refresh, e.g. `emailVerified = true`. */
   authRule: Rule;
-  /** Lets matching callers change other records' email, password and verified flag. */
+  /** Lets matching callers change other records' email, password and emailVerified flag. */
   manageRule: Rule;
   /** Field names a login identity is matched against. */
   identityFields: string[];
+  /**
+   * Sign-in with codes sent by SMS to the `phone` field, which also lets a
+   * record have a phone instead of an email.
+   */
+  phoneSignIn: boolean;
   tokens: Record<TokenType, TokenConfig>;
 }
 

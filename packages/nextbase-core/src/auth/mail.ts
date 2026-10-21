@@ -1,4 +1,5 @@
 import { waitUntil as vercelWaitUntil } from "@vercel/functions";
+import { checkAppUrl } from "../app-url.ts";
 import { ApiError } from "../errors.ts";
 
 /** One email, as `mail.send` receives it. */
@@ -16,7 +17,10 @@ export type MailKind =
   | "passwordReset"
   | "emailChange"
   | "passwordChanged"
-  | "emailChanged";
+  | "emailChanged"
+  | "oauth2Linked"
+  | "oauth2Unlinked"
+  | "phoneChanged";
 
 /** What a template gets to write one email. */
 export interface MailContext {
@@ -27,6 +31,8 @@ export interface MailContext {
   /** The link to open, with the token: for verification, reset and email change. */
   url?: string;
   token?: string;
+  /** The provider of `oauth2Linked` and `oauth2Unlinked`. */
+  provider?: string;
 }
 
 export type MailTemplate = (context: MailContext) => {
@@ -41,13 +47,11 @@ export interface MailOptions {
   /** Sends one email, through any provider: SMTP, Resend, SES, Postmark... */
   send(message: MailMessage): Promise<void>;
   /**
-   * Your app's URL, where the pages that take tokens live:
-   * `/verify-email`, `/reset-password` and `/confirm-email-change`, each
-   * with `?token=`. Never taken from the request's Host header, which an
-   * attacker can set (OWASP Forgot Password Cheat Sheet). HTTPS, except on
-   * localhost.
+   * Where the pages that take tokens live: `/verify-email`,
+   * `/reset-password` and `/confirm-email-change`, each with `?token=`.
+   * Defaults to the `appUrl` option.
    */
-  appUrl: string;
+  appUrl?: string;
   /** Replaces the default subject and text of any kind of email. */
   templates?: Partial<Record<MailKind, MailTemplate>>;
 }
@@ -79,13 +83,25 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
     subject: "Your email was changed",
     text: `Your account's email was just changed from ${to} to another address. If this was not you, contact support right away.`,
   }),
+  oauth2Linked: ({ provider }) => ({
+    subject: "A new way to sign in was added",
+    text: `Your account can now sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
+  }),
+  phoneChanged: () => ({
+    subject: "Your phone number was changed",
+    text: "Your account's phone number was just changed. If this was not you, contact support right away.",
+  }),
+  oauth2Unlinked: ({ provider }) => ({
+    subject: "A way to sign in was removed",
+    text: `Your account can no longer sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
+  }),
 };
 
 /**
  * Sends auth emails in the background, after the response is decided, so
- * response times do not reveal whether an account exists (OWASP Forgot
- * Password Cheat Sheet). `waitUntil` keeps the work alive past the response
- * on serverless platforms.
+ * response times do not reveal whether an account exists: sending takes
+ * time only when there is someone to send to. `waitUntil` keeps the work
+ * alive past the response on serverless platforms.
  */
 export class Mailer {
   readonly #options: MailOptions | undefined;
@@ -94,10 +110,19 @@ export class Mailer {
 
   constructor(
     options: MailOptions | undefined,
+    appUrl: URL | undefined,
     waitUntil: ((promise: Promise<unknown>) => void) | undefined,
   ) {
     this.#options = options;
-    this.#appUrl = options && checkAppUrl(options.appUrl);
+    this.#appUrl =
+      options?.appUrl === undefined
+        ? appUrl
+        : checkAppUrl(options.appUrl, "mail.appUrl");
+    if (options && !this.#appUrl) {
+      throw new TypeError(
+        "Mail needs your app's URL for its links: pass the appUrl option.",
+      );
+    }
     this.#waitUntil = waitUntil ?? vercelWaitUntil;
   }
 
@@ -115,7 +140,12 @@ export class Mailer {
   }
 
   /** Queues one email; failures are logged, never shown to the caller. */
-  send(kind: MailKind, collection: string, to: string, token?: string): void {
+  send(
+    kind: MailKind,
+    collection: string,
+    to: string,
+    { token, provider }: { token?: string; provider?: string } = {},
+  ): void {
     const path = PATHS[kind];
     const url =
       path && token !== undefined && this.#appUrl
@@ -127,6 +157,7 @@ export class Mailer {
       to,
       ...(url !== undefined && { url }),
       ...(token !== undefined && { token }),
+      ...(provider !== undefined && { provider }),
     };
     const template =
       this.#options?.templates?.[kind] ?? DEFAULT_TEMPLATES[kind];
@@ -145,22 +176,6 @@ export class Mailer {
     });
     this.#waitUntil(work);
   }
-}
-
-function checkAppUrl(value: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new TypeError(`mail.appUrl is not a URL: ${value}`);
-  }
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
-    throw new TypeError(
-      "mail.appUrl must use HTTPS, so links carrying tokens are not sent in the clear (http is allowed on localhost).",
-    );
-  }
-  return url;
 }
 
 function withToken(base: URL, path: string, token: string): string {

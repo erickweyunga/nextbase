@@ -5,6 +5,7 @@ const config: UserConfig = defineConfig({
   format: "esm",
   platform: "neutral",
   dts: true,
+  failOnWarn: true,
 });
 
 export default config;

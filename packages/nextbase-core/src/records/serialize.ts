@@ -6,7 +6,7 @@ import type { Principal } from "../auth/principal.ts";
  * Turns a database row into a record's API representation: hidden fields are
  * left out, SQL NULL blanks become `""`, and timestamps become ISO strings.
  * An auth record's email is shown only when it is visible, to the record
- * itself, or to a superuser.
+ * itself, or to a superuser; its phone only to the record and superusers.
  */
 export function serializeRecord(
   collection: Collection,
@@ -25,6 +25,14 @@ export function serializeRecord(
       viewer.collection?.id === collection.id &&
       viewer.record.id === row.id);
 
+  // Phones have no visibility setting: only the record and superusers see them.
+  const showPhone =
+    collection.type !== "auth" ||
+    viewer.superuser ||
+    (viewer.record !== undefined &&
+      viewer.collection?.id === collection.id &&
+      viewer.record.id === row.id);
+
   for (const field of collection.fields) {
     if (field.hidden) continue;
     const value = row[field.name];
@@ -33,6 +41,8 @@ export function serializeRecord(
     } else if (field.type === "relation" && value === null) {
       out[field.name] = "";
     } else if (field.system && field.name === "email" && !showEmail) {
+      out[field.name] = "";
+    } else if (field.system && field.name === "phone" && !showPhone) {
       out[field.name] = "";
     } else {
       out[field.name] = value;

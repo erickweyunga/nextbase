@@ -376,8 +376,8 @@ describe("records API", () => {
     it("protects auth fields and revokes other sessions on password change", async () => {
       const path = `/collections/users/records/${ids.bob}`;
       expect(
-        (await as("bob", "PATCH", path, { verified: true })).body.data,
-      ).toMatchObject({ verified: { code: "validation_forbidden" } });
+        (await as("bob", "PATCH", path, { emailVerified: true })).body.data,
+      ).toMatchObject({ emailVerified: { code: "validation_forbidden" } });
       expect(
         (await as("bob", "PATCH", path, { email: "new@example.com" })).body
           .data,
@@ -416,9 +416,9 @@ describe("records API", () => {
         "admin",
         "PATCH",
         `/collections/users/records/${ids.ann}`,
-        { verified: true },
+        { emailVerified: true },
       );
-      expect(reply.body).toMatchObject({ verified: true });
+      expect(reply.body).toMatchObject({ emailVerified: true });
     });
 
     it("reports unique violations on the indexed fields", async () => {
@@ -442,7 +442,7 @@ describe("records API", () => {
   describe("auth rule", () => {
     it("requires records to meet the authRule to sign in", async () => {
       await as("admin", "PATCH", "/collections/users", {
-        authRule: "verified = true",
+        authRule: "emailVerified = true",
       });
       expect(
         (await login("users", "bob@example.com", "new password 1234!")).status,

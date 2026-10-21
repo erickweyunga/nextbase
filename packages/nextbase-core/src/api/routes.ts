@@ -6,20 +6,41 @@ import type {
 import { type DB, hash, type Tx } from "@nextbasejs/dbx";
 import {
   confirmEmailChange,
+  confirmEmailVerification,
   confirmPasswordReset,
-  confirmVerification,
   type FlowContext,
   requestEmailChange,
+  requestEmailVerification,
   requestPasswordReset,
-  requestVerification,
 } from "../auth/flows.ts";
+import {
+  accountFor,
+  listLinkedAccounts,
+  unlinkAccount,
+} from "../auth/linked-accounts.ts";
 import { authWithPassword, checkAuthRule } from "../auth/login.ts";
 import type { Mailer } from "../auth/mail.ts";
+import {
+  checkRedirect,
+  type OAuth2,
+  OAuth2Error,
+  setStateCookie,
+} from "../auth/oauth2.ts";
+import {
+  authWithPhoneCode,
+  confirmPasswordResetByPhone,
+  confirmPhoneVerification,
+  type PhoneContext,
+  requestPasswordResetByPhone,
+  requestPhoneCode,
+  requestPhoneVerification,
+} from "../auth/phone.ts";
 import { type Principal, requireSuperuser } from "../auth/principal.ts";
 import {
   bearerToken,
   checkSameOrigin,
   createSession,
+  deleteOtherSessions,
   deleteSession,
   extendSession,
   listSessions,
@@ -29,6 +50,7 @@ import {
   sessionModel,
   setSessionCookie,
 } from "../auth/sessions.ts";
+import type { Sms } from "../auth/sms.ts";
 import { completeSetup, hasSuperuser } from "../auth/superusers.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
@@ -50,7 +72,7 @@ import {
   updateCollection,
 } from "../schema/sync.ts";
 
-interface Context {
+export interface Context {
   request: Request;
   /** Decoded path parameters, in order. */
   params: string[];
@@ -64,6 +86,12 @@ interface Context {
   /** Which other sites may write through the session cookie. */
   origins: OriginPolicy;
   mailer: Mailer;
+  sms: Sms;
+  oauth2: OAuth2;
+  /** Reject new passwords found in data breaches. */
+  rejectBreachedPasswords: boolean;
+  /** Emails to send once the request has succeeded. */
+  pendingMail: Parameters<NonNullable<RecordsContext["notify"]>>[0][];
 }
 
 interface Route {
@@ -74,9 +102,13 @@ interface Route {
 }
 
 const segment = "([^/]+)";
+const SUPERUSERS = "_superusers";
 
 const records = new RegExp(`^/collections/${segment}/records$`);
 const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
+const linkedAccounts = new RegExp(
+  `^/collections/${segment}/records/${segment}/linked-accounts$`,
+);
 
 export const ROUTES: readonly Route[] = [
   {
@@ -316,21 +348,243 @@ export const ROUTES: readonly Route[] = [
   {
     method: "GET",
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
-    async handler({ params, schema }) {
+    async handler({ params, schema, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
+      const providers = collection.id === SUPERUSERS ? [] : oauth2.list();
       return Response.json({
         password: {
           enabled: collection.authRule !== null,
           identityFields: collection.identityFields,
         },
+        oauth2: {
+          enabled: collection.authRule !== null && providers.length > 0,
+          providers,
+        },
+        phone: {
+          enabled:
+            collection.authRule !== null &&
+            collection.phoneSignIn &&
+            collection.id !== SUPERUSERS,
+        },
       } satisfies AuthMethods);
     },
   },
-  ...flow("request-verification", (ctx, collection, input) =>
-    requestVerification(ctx, collection, input.email),
+  ...phoneFlow("request-phone-code", (ctx, collection, input) =>
+    requestPhoneCode(ctx, collection, input.phone),
   ),
-  ...flow("confirm-verification", (ctx, collection, input) =>
-    confirmVerification(ctx, collection, input.token),
+  ...phoneFlow("request-password-reset-by-phone", (ctx, collection, input) =>
+    requestPasswordResetByPhone(ctx, collection, input.phone),
+  ),
+  ...phoneFlow("confirm-password-reset-by-phone", (ctx, collection, input) =>
+    confirmPasswordResetByPhone(ctx, collection, input),
+  ),
+  ...phoneFlow(
+    "request-phone-verification",
+    (ctx, collection, input, principal) =>
+      requestPhoneVerification(ctx, collection, principal, input.phone),
+  ),
+  ...phoneFlow(
+    "confirm-phone-verification",
+    (ctx, collection, input, principal) =>
+      confirmPhoneVerification(ctx, collection, principal, input),
+  ),
+  {
+    method: "POST",
+    pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
+    async handler(context) {
+      const { request, params, db, schema, principal, inProcess, origins } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      const { phone, code, cookie } = await readJsonObject(request);
+      // Another site must not sign the browser in to an account of its choosing.
+      if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+      const record = await authWithPhoneCode(
+        phoneContext(context),
+        collection,
+        phone,
+        code,
+      );
+      await checkAuthRule(db, schema, collection, record.id as string);
+      return startSession(
+        { request, db, principal },
+        collection,
+        record,
+        cookie === true,
+      );
+    },
+  },
+  {
+    method: "GET",
+    pattern: new RegExp(
+      `^/collections/${segment}/auth-with-oauth2/${segment}$`,
+    ),
+    async handler({ request, params, db, schema, principal, origins, oauth2 }) {
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, "Superusers sign in with their password.");
+      }
+      const provider = oauth2.provider(params[1] as string);
+      const query = new URL(request.url).searchParams;
+      const redirect = checkRedirect(query.get("redirect"));
+      const errorRedirect =
+        checkRedirect(query.get("errorRedirect"), "errorRedirect") || redirect;
+      let linkRecordId: string | null = null;
+      if (query.get("link") === "true") {
+        // Linking adds a way into the signed-in account, so only this site
+        // may start it.
+        checkSameOrigin(request, origins);
+        if (!principal.record || principal.collection?.id !== collection.id) {
+          throw new ApiError(
+            401,
+            "Sign in to this collection to link a provider.",
+          );
+        }
+        linkRecordId = principal.record.id as string;
+      }
+      const { location, state } = await oauth2.start(db, {
+        collection,
+        provider,
+        redirect,
+        errorRedirect,
+        linkRecordId,
+      });
+      return new Response(null, {
+        status: 302,
+        headers: [
+          ["location", location],
+          ["set-cookie", setStateCookie(request, state)],
+        ],
+      });
+    },
+  },
+  {
+    method: "GET",
+    pattern: new RegExp(`^/callback/${segment}$`),
+    async handler(context) {
+      const { request, params, db, schema, principal, mailer, oauth2 } =
+        context;
+      let redirect = "";
+      let errorRedirect = "";
+      const back = (error?: string): Response => {
+        const to = error === undefined ? redirect : errorRedirect;
+        const response = new Response(null, {
+          status: 302,
+          headers: [["location", oauth2.returnUrl(to, error)]],
+        });
+        response.headers.append("set-cookie", setStateCookie(request));
+        return response;
+      };
+      try {
+        const state = await oauth2.consumeState(db, request);
+        ({ redirect, errorRedirect } = state);
+        // The sign-in must return from the provider it went to. Otherwise a
+        // malicious provider could pass off its response as another
+        // provider's and finish a sign-in it was never part of.
+        if (params[0] !== state.provider) {
+          throw new OAuth2Error(
+            "oauth2_failed",
+            "The sign-in returned from another provider.",
+          );
+        }
+        const provider = oauth2.provider(state.provider);
+        const collection = authCollection(schema, state.collectionId);
+        // A link is for the record that started it, still signed in here.
+        if (
+          state.linkRecordId !== null &&
+          principal.record?.id !== state.linkRecordId
+        ) {
+          throw new OAuth2Error(
+            "oauth2_failed",
+            "Sign in again to link this provider.",
+          );
+        }
+        const identity = await oauth2.identify(provider, state, request);
+        const { record, linkedTo } = await accountFor(
+          { db, schema },
+          collection,
+          provider.name,
+          identity,
+          state.linkRecordId,
+        );
+        if (linkedTo !== undefined) {
+          mailer.send("oauth2Linked", collection.name, linkedTo, {
+            provider: provider.displayName,
+          });
+        }
+        if (state.linkRecordId !== null) return back();
+        try {
+          await checkAuthRule(db, schema, collection, record.id as string);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 403) {
+            throw new OAuth2Error("sign_in_forbidden", error.message);
+          }
+          throw error;
+        }
+        // As on any cookie sign-in, the session in the cookie is replaced.
+        if (principal.viaCookie && principal.session) {
+          await deleteSession(db, principal.session);
+        }
+        const { token, session } = await createSession(
+          db,
+          collection,
+          record,
+          request.headers.get("user-agent") ?? "",
+        );
+        const response = back();
+        response.headers.append(
+          "set-cookie",
+          setSessionCookie(request, { token, expires: session.expires }),
+        );
+        return response;
+      } catch (error) {
+        if (error instanceof OAuth2Error) return back(error.code);
+        console.error("[nextbase] an OAuth2 sign-in failed:", error);
+        return back("oauth2_failed");
+      }
+    },
+  },
+  {
+    method: "GET",
+    pattern: linkedAccounts,
+    async handler({ params, db, schema, principal }) {
+      const { collection, id } = ownRecord(schema, principal, params);
+      return Response.json({
+        items: await listLinkedAccounts(db, collection.id, id),
+      });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: new RegExp(
+      `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
+    ),
+    async handler({ params, db, schema, principal, mailer, oauth2 }) {
+      const { collection, id } = ownRecord(schema, principal, params);
+      const unlinked = await unlinkAccount(
+        db,
+        collection.id,
+        id,
+        params[2] as string,
+      );
+      if (!unlinked) throw new ApiError(404, "The provider is not linked.");
+      const [owner] = await db
+        .select("email")
+        .from(table(collection.name))
+        .where(hash({ id }))
+        .all();
+      if (owner) {
+        mailer.send("oauth2Unlinked", collection.name, owner.email as string, {
+          provider: oauth2.displayName(params[2] as string),
+        });
+      }
+      return new Response(null, { status: 204 });
+    },
+  },
+  ...flow("request-email-verification", (ctx, collection, input) =>
+    requestEmailVerification(ctx, collection, input.email),
+  ),
+  ...flow("confirm-email-verification", (ctx, collection, input) =>
+    confirmEmailVerification(ctx, collection, input.token),
   ),
   ...flow("request-password-reset", (ctx, collection, input) =>
     requestPasswordReset(ctx, collection, input.email),
@@ -456,6 +710,14 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: "DELETE",
+    pattern: /^\/sessions$/,
+    async handler({ db, principal }) {
+      await deleteOtherSessions(db, requireSession(principal));
+      return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: "DELETE",
     pattern: new RegExp(`^/sessions/${segment}$`),
     async handler({ request, params, db, principal }) {
       const current = requireSession(principal);
@@ -518,6 +780,8 @@ function recordsContext(
     pool: context.db,
     schema,
     principal,
+    rejectBreachedPasswords: context.rejectBreachedPasswords,
+    notify: (mail) => context.pendingMail.push(mail),
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
@@ -656,10 +920,17 @@ function flow(
     {
       method: "POST",
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
-      async handler({ request, params, db, schema, principal, mailer }) {
+      async handler(context) {
+        const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
         const input = await readJsonObject(request);
-        await run({ db, schema, mailer }, collection, input, principal);
+        const { rejectBreachedPasswords } = context;
+        await run(
+          { db, schema, mailer, rejectBreachedPasswords },
+          collection,
+          input,
+          principal,
+        );
         return new Response(null, { status: 204 });
       },
     },
@@ -667,10 +938,48 @@ function flow(
 }
 
 /**
+ * A POST route for a phone flow on an auth collection, answering 204: the
+ * same for phones that belong to accounts and ones that do not.
+ */
+function phoneFlow(
+  name: string,
+  run: (
+    ctx: PhoneContext,
+    collection: AuthCollection,
+    input: Record<string, unknown>,
+    principal: Principal,
+  ) => Promise<void>,
+): Route[] {
+  return [
+    {
+      method: "POST",
+      pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      async handler(context) {
+        const { request, params, schema, principal } = context;
+        const collection = authCollection(schema, params[0] as string);
+        const input = await readJsonObject(request);
+        await run(phoneContext(context), collection, input, principal);
+        return new Response(null, { status: 204 });
+      },
+    },
+  ];
+}
+
+function phoneContext({
+  db,
+  schema,
+  sms,
+  mailer,
+  rejectBreachedPasswords,
+}: Context): PhoneContext {
+  return { db, schema, sms, mailer, rejectBreachedPasswords };
+}
+
+/**
  * Starts a session for `record` and answers with it: the token in the body,
  * or with `cookie` in an HttpOnly cookie. A cookie sign-in ends the session
- * in the cookie it replaces (OWASP: regenerate the session when the
- * authenticated user changes).
+ * in the cookie it replaces, so a session someone planted in the browser
+ * before sign-in never becomes signed in.
  */
 async function startSession(
   { request, db, principal }: Pick<Context, "request" | "db" | "principal">,
@@ -718,6 +1027,28 @@ function requireSession(principal: Principal): Session {
   if (!principal.session)
     throw new ApiError(401, "Sign in to manage sessions.");
   return principal.session;
+}
+
+/**
+ * The auth record of a path, which only the record itself and superusers
+ * may manage. Anyone else gets 404, so it reveals no records.
+ */
+function ownRecord(
+  schema: Schema,
+  principal: Principal,
+  params: string[],
+): { collection: AuthCollection; id: string } {
+  const collection = authCollection(schema, params[0] as string);
+  const id = params[1] as string;
+  if (!principal.superuser && !principal.record) {
+    throw new ApiError(401, "Sign in to manage linked accounts.");
+  }
+  const own =
+    principal.collection?.id === collection.id && principal.record?.id === id;
+  if (!principal.superuser && !own) {
+    throw new ApiError(404, "Record not found.");
+  }
+  return { collection, id };
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {

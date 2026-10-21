@@ -23,13 +23,12 @@ asks for the current password and confirms the change:
 
 ```ts title="app/confirm-email-change/actions.ts"
 "use server";
-import { serverClient } from "@nextbasejs/next";
 import { redirect } from "next/navigation";
-import { nextbase } from "@/lib/nextbase";
+import { nb } from "@/lib/nextbase";
 
 export async function confirmEmailChange(form: FormData) {
-  const nb = await serverClient(nextbase);
-  await nb
+  const client = await nb();
+  await client
     .collection("users")
     .confirmEmailChange(String(form.get("token")), String(form.get("password")));
   redirect("/sign-in");

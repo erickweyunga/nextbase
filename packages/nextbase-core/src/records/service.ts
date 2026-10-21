@@ -10,6 +10,8 @@ import {
   type Row,
   type Tx,
 } from "@nextbasejs/dbx";
+import { checkBreached } from "../auth/breached.ts";
+import type { MailKind } from "../auth/mail.ts";
 import { verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";
@@ -34,6 +36,15 @@ export interface RecordsContext {
   schema: Schema;
   principal: Principal;
   request: RequestInfo;
+  /** Reject new passwords found in data breaches (see auth/breached.ts). */
+  rejectBreachedPasswords?: boolean;
+  /** Protected auth fields NextBase itself sets in this write (see values.ts). */
+  vouched?: ReadonlySet<string>;
+  /**
+   * Queues an email to send once the request has succeeded, so a write that
+   * rolls back, alone or in a batch, never tells anyone it happened.
+   */
+  notify?: (mail: { kind: MailKind; collection: string; to: string }) => void;
 }
 
 /** The SQL alias of the collection's rows in every records query. Rules compile against it. */
@@ -135,12 +146,14 @@ export async function newRecord(
 ): Promise<Output | undefined> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
+  await checkNewPassword(ctx, collection, input);
   return writing(collection, () =>
     ctx.db.transaction(async (tx) => {
       const prepared = await prepareWrite(tx, input, {
         collection,
         schema: ctx.schema,
         privileged: ctx.principal.superuser,
+        ...(ctx.vouched && { vouched: ctx.vouched }),
       });
       // Checked on the would-be row before inserting, so a caller without
       // permission never learns anything from a constraint error.
@@ -180,6 +193,7 @@ export async function updateRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
+  await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
   return writing(collection, () =>
     ctx.db.transaction(async (tx) => {
@@ -229,6 +243,15 @@ export async function updateRecord(
           )
           .execute();
       }
+      // The owner learns of a password change they may not have made.
+      const password = collection.fields.find((f) => f.type === "password");
+      if (password && prepared.values[password.name] !== undefined) {
+        ctx.notify?.({
+          kind: "passwordChanged",
+          collection: collection.name,
+          to: existing.email as string,
+        });
+      }
       // A new tokenKey (password or email change) ends the record's other
       // sessions; the caller's own stays signed in.
       const { tokenKey } = prepared.values;
@@ -264,6 +287,21 @@ export async function deleteRecord(
     }
     await deleteWithReferences(tx, ctx.schema, collection, id, new Set());
   });
+}
+
+/**
+ * Checks a new password against data breaches, when enabled. Before the
+ * write's transaction, so no row stays locked while the service answers.
+ */
+async function checkNewPassword(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+): Promise<void> {
+  if (!ctx.rejectBreachedPasswords || collection.type !== "auth") return;
+  const field = collection.fields.find((f) => f.type === "password");
+  const password = field && input[field.name];
+  if (typeof password === "string") await checkBreached(password);
 }
 
 /**
@@ -556,6 +594,17 @@ async function deleteWithReferences(
     }
   }
   await tx.delete(table(collection.name), hash({ id })).execute();
+  // Its sessions end, and its linked provider accounts may sign up again.
+  if (collection.type === "auth") {
+    for (const name of ["_sessions", "_linked_accounts"]) {
+      await tx
+        .newQuery(
+          `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
+        )
+        .bind({ collectionId: collection.id, id })
+        .execute();
+    }
+  }
 }
 
 // --- output ----------------------------------------------------------------
@@ -741,10 +790,10 @@ function sortColumns(
       field.type === "password" ||
       field.name === "tokenKey" ||
       (field.hidden && !ctx.principal.superuser) ||
-      // Sorting by an email the caller may not see would reveal its order.
+      // Sorting by an email or phone the caller may not see would reveal its order.
       (collection.type === "auth" &&
         field.system &&
-        field.name === "email" &&
+        (field.name === "email" || field.name === "phone") &&
         !ctx.principal.superuser)
     ) {
       throw new ApiError(400, `Cannot sort by "${name}".`);
@@ -841,6 +890,7 @@ async function writing<T>(
     let names: string[] = [];
     if (constraint === `_${collection.id}_pkey`) names = ["id"];
     else if (constraint === `_${collection.id}_email`) names = ["email"];
+    else if (constraint === `_${collection.id}_phone`) names = ["phone"];
     else {
       const index = collection.indexes.find((i) => i.name === constraint);
       names = (index?.fields ?? []).flatMap(

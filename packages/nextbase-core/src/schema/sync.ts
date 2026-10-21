@@ -122,6 +122,16 @@ export async function deleteCollection(
     } else
       await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
     await deleteCollectionRow(tx, existing.id);
+    if (existing.type === "auth") {
+      for (const name of ["_sessions", "_linked_accounts", "_oauth2_states"]) {
+        await tx
+          .newQuery(
+            `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
+          )
+          .bind({ collectionId: existing.id })
+          .execute();
+      }
+    }
     await bumpSchemaVersion(tx);
   });
 }
@@ -329,9 +339,11 @@ async function convertMultiplicity(
 }
 
 /**
- * The column definition of a field. Blank values are zero values for most
- * types, so filters never meet three-valued logic. Dates and JSON have no
- * honest zero value, and single relations need NULL for their foreign key.
+ * The column definition of a field. Most types store a blank as a plain
+ * value ("", 0, false) rather than NULL: in SQL, `NULL = ''` is neither true
+ * nor false, which would make filters such as `name != "x"` skip blank rows.
+ * Dates and JSON have no natural blank value, and single relations need NULL
+ * for their foreign key.
  */
 function columnType(q: Builder, field: Field, collection: Collection): string {
   switch (field.type) {
@@ -345,6 +357,7 @@ function columnType(q: Builder, field: Field, collection: Collection): string {
       }
       return "text NOT NULL DEFAULT ''";
     case "email":
+    case "phone":
     case "url":
       return "text NOT NULL DEFAULT ''";
     case "password":
@@ -417,6 +430,10 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
       {
         name: name("email"),
         sql: `CREATE UNIQUE INDEX ${col(name("email"))} ON ${t} (lower("email")) WHERE "email" <> ''`,
+      },
+      {
+        name: name("phone"),
+        sql: `CREATE UNIQUE INDEX ${col(name("phone"))} ON ${t} ("phone") WHERE "phone" <> ''`,
       },
       {
         name: name("tokenKey"),

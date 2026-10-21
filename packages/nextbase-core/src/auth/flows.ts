@@ -1,5 +1,5 @@
 import type { AuthCollection, TokenType } from "@nextbasejs/client";
-import { type DB, exp, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { updateRecord } from "../records/service.ts";
@@ -18,17 +18,21 @@ import {
 } from "./throttle.ts";
 import { peekToken, signToken, verifyToken } from "./tokens.ts";
 
-// Email verification, password reset and email change, following the OWASP
-// Forgot Password Cheat Sheet: requests answer the same whether or not the
-// account exists and send mail in the background; tokens are signed, expire,
-// and are bound to the record's tokenKey, so a reset or email change, which
-// rotates it, makes them single-use and ends every session; links come from
-// the configured app URL, never the Host header.
+// Email verification, password reset and email change.
+//
+// - Requests answer the same whether or not the account exists, and send mail
+//   in the background, so neither the answer nor its timing reveals accounts.
+// - Tokens are signed and expire. They are bound to the record's tokenKey,
+//   which a reset or email change replaces: that makes each token work once
+//   and ends every session.
+// - Links are built from the configured app URL, never the Host header.
 
 export interface FlowContext {
   db: DB;
   schema: Schema;
   mailer: Mailer;
+  /** Reject new passwords found in data breaches. */
+  rejectBreachedPasswords: boolean;
 }
 
 const invalidToken = (): ApiError =>
@@ -40,7 +44,7 @@ const invalidToken = (): ApiError =>
   });
 
 /** Sends a verification link to `email`, if it belongs to an unverified record. */
-export async function requestVerification(
+export async function requestEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
   email: unknown,
@@ -49,17 +53,16 @@ export async function requestVerification(
   ctx.mailer.check();
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
-  if (!record || record.verified === true) return;
-  ctx.mailer.send(
-    "verification",
-    collection.name,
-    record.email as string,
-    await token(collection, record, "verification", { email: record.email }),
-  );
+  if (!record || record.emailVerified === true) return;
+  ctx.mailer.send("verification", collection.name, record.email as string, {
+    token: await token(collection, record, "verification", {
+      email: record.email,
+    }),
+  });
 }
 
 /** Marks the record of a verification token as verified. */
-export async function confirmVerification(
+export async function confirmEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
   token: unknown,
@@ -72,8 +75,8 @@ export async function confirmVerification(
   );
   // A token for an address the record no longer has proves nothing.
   if (claims.email !== record.email) throw invalidToken();
-  if (record.verified === true) return;
-  await privilegedUpdate(ctx, collection, record, { verified: true });
+  if (record.emailVerified === true) return;
+  await privilegedUpdate(ctx, collection, record, { emailVerified: true });
 }
 
 /** Sends a password reset link to `email`, if it belongs to a record. */
@@ -87,12 +90,11 @@ export async function requestPasswordReset(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
   if (!record) return;
-  ctx.mailer.send(
-    "passwordReset",
-    collection.name,
-    record.email as string,
-    await token(collection, record, "passwordReset", { email: record.email }),
-  );
+  ctx.mailer.send("passwordReset", collection.name, record.email as string, {
+    token: await token(collection, record, "passwordReset", {
+      email: record.email,
+    }),
+  });
 }
 
 /**
@@ -116,7 +118,7 @@ export async function confirmPasswordReset(
   await privilegedUpdate(ctx, collection, record, {
     password: input.password,
     passwordConfirm: input.passwordConfirm,
-    verified: true,
+    emailVerified: true,
   });
   // Ends a lockout, counted per account and per identity it signs in with.
   await clearAttempts(ctx.db, [
@@ -154,15 +156,12 @@ export async function requestEmailChange(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   // Whether another record has the address is checked on confirming, so
   // this request does not reveal it.
-  ctx.mailer.send(
-    "emailChange",
-    collection.name,
-    address,
-    await token(collection, record, "emailChange", {
+  ctx.mailer.send("emailChange", collection.name, address, {
+    token: await token(collection, record, "emailChange", {
       email: record.email,
       newEmail: address,
     }),
-  );
+  });
 }
 
 /**
@@ -200,7 +199,7 @@ export async function confirmEmailChange(
   await clearAttempts(ctx.db, keys);
   await privilegedUpdate(ctx, collection, record, {
     email: claims.newEmail,
-    verified: true,
+    emailVerified: true,
   });
   ctx.mailer.send("emailChanged", collection.name, record.email as string);
 }
@@ -223,8 +222,8 @@ function checkEmail(value: unknown, field = "email"): string {
 }
 
 /** Emails are unique regardless of case, so they match regardless of case. */
-async function findByEmail(
-  db: DB,
+export async function findByEmail(
+  db: Builder,
   collection: AuthCollection,
   email: string,
 ): Promise<Row | undefined> {
@@ -296,6 +295,7 @@ async function privilegedUpdate(
       schema: ctx.schema,
       principal: { superuser: true },
       request: { method: "PATCH", query: {}, headers: {}, body: input },
+      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
     },
     collection,
     record.id as string,

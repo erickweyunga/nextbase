@@ -84,13 +84,15 @@ describe("creating collections", () => {
       "id",
       "email",
       "emailVisibility",
-      "verified",
+      "emailVerified",
+      "phone",
+      "phoneVerified",
       "password",
       "tokenKey",
       "created",
       "updated",
     ]);
-    // NIST SP 800-63B: 15 characters for a password used on its own.
+    // Long passwords by default: at least 15 characters.
     expect(users.fields.find((f) => f.name === "password")).toMatchObject({
       hidden: true,
       min: 15,
@@ -417,7 +419,9 @@ describe("updating collections", () => {
     expect(fieldNames(updated)).toEqual([
       "id",
       "emailVisibility",
-      "verified",
+      "emailVerified",
+      "phone",
+      "phoneVerified",
       "password",
       "tokenKey",
       "email",
@@ -450,7 +454,7 @@ describe("updating collections", () => {
       errorsOf(
         {
           fields: [{ id: "nick000000", name: "nick", type: "text" }],
-          identityFields: ["email", "nick", "verified"],
+          identityFields: ["email", "nick", "emailVerified"],
           tokens: { auth: { duration: 0 }, file: { secret: "short" } },
         },
         { existing: users, others: [] },

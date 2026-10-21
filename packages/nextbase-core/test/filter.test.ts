@@ -67,7 +67,7 @@ const anonymous: Principal = { superuser: false };
 const ann: Principal = {
   superuser: false,
   collection: users,
-  record: { id: "ann000000000000", verified: true },
+  record: { id: "ann000000000000", emailVerified: true },
 };
 
 function compile(
@@ -290,7 +290,7 @@ describe("compileFilter", () => {
       '"t0"."author" IS NULL',
     );
     expect(
-      compile("@request.auth.verified = true", { mode: "rule" }).params,
+      compile("@request.auth.emailVerified = true", { mode: "rule" }).params,
     ).toEqual({ f0: false, f1: true });
     expect(
       compile("@request.body.title:isset = false", {
@@ -399,7 +399,7 @@ describe("back-relations, @collection and JSON", () => {
 
   it("joins @collection rows, sharing one row per collection and alias", () => {
     const shared = compile(
-      "@collection.users.name = 'a' && @collection.users.verified = true",
+      "@collection.users.name = 'a' && @collection.users.emailVerified = true",
       { mode: "rule" },
     ).sql;
     expect(shared).toMatch(

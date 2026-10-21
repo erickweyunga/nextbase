@@ -38,6 +38,8 @@ const sidebars: SidebarsConfig = {
       items: [
         doc("guides/auth/index", "Overview", "info"),
         doc("guides/auth/email-password", "Email & Password", "mail"),
+        doc("guides/auth/oauth2", "OAuth2", "key"),
+        doc("guides/auth/phone", "Phone", "phone"),
       ],
     },
     {

@@ -3,6 +3,7 @@ import type { NextBaseClient, SendOptions } from "./index.ts";
 import type {
   AuthMethods,
   AuthResponse,
+  LinkedAccountModel,
   ListResult,
   RecordModel,
 } from "./shared/api.ts";
@@ -31,6 +32,16 @@ export interface ListOptions extends RecordOptions {
 export interface FullListOptions extends ListOptions {
   /** Records fetched per request. Defaults to 1000, the server's maximum. */
   batch?: number;
+}
+
+export interface OAuth2Options {
+  /** Path on your app to return to afterwards, such as `/dashboard`. */
+  redirect?: string;
+  /**
+   * Path to return to with `?error=` when the sign-in fails, such as
+   * `/sign-in`. Defaults to `redirect`.
+   */
+  errorRedirect?: string;
 }
 
 const MAX_PER_PAGE = 1000;
@@ -202,6 +213,78 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
+  /**
+   * The URL that signs in with an OAuth2 provider, such as `google`: open it
+   * in the browser, as a link or a redirect. The server sends the browser
+   * to the provider and back to `redirect` signed in with a session cookie,
+   * or with `?error=` naming what went wrong.
+   */
+  oauth2Url(
+    provider: string,
+    options: OAuth2Options & {
+      /** Link the provider to the signed-in account instead of signing in. */
+      link?: boolean;
+    } = {},
+  ): string {
+    return this.#client.buildUrl(
+      `/collections/${encodeURIComponent(this.#collection)}/auth-with-oauth2/${encodeURIComponent(provider)}`,
+      {
+        redirect: options.redirect,
+        errorRedirect: options.errorRedirect,
+        ...(options.link && { link: true }),
+      },
+    );
+  }
+
+  /** Signs in with an OAuth2 provider by sending the browser to {@link oauth2Url}. */
+  signInWithOAuth2(provider: string, options: OAuth2Options = {}): void {
+    if (typeof location === "undefined") {
+      throw new Error(
+        "signInWithOAuth2 works in the browser; use oauth2Url elsewhere.",
+      );
+    }
+    location.assign(this.oauth2Url(provider, options));
+  }
+
+  /**
+   * Links an OAuth2 provider to the signed-in account, by sending the
+   * browser to the provider; the session stays as it is. Comes back to
+   * `redirect`, or to `errorRedirect` with `?error=`.
+   */
+  linkOAuth2(provider: string, options: OAuth2Options = {}): void {
+    if (typeof location === "undefined") {
+      throw new Error(
+        "linkOAuth2 works in the browser; use oauth2Url with link: true elsewhere.",
+      );
+    }
+    location.assign(this.oauth2Url(provider, { ...options, link: true }));
+  }
+
+  /** The OAuth2 providers linked to a record: the signed-in record's own, or any for superusers. */
+  async listLinkedAccounts(
+    recordId: string,
+    options?: SendOptions,
+  ): Promise<LinkedAccountModel[]> {
+    return (
+      await this.#send<{ items: LinkedAccountModel[] }>(
+        `/records/${encodeURIComponent(recordId)}/linked-accounts`,
+        options,
+      )
+    ).items;
+  }
+
+  /** Unlinks an OAuth2 provider from a record. */
+  async unlinkAccount(
+    recordId: string,
+    provider: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#send(
+      `/records/${encodeURIComponent(recordId)}/linked-accounts/${encodeURIComponent(provider)}`,
+      { ...options, method: "DELETE" },
+    );
+  }
+
   /** How records of this auth collection sign in, for a login page. */
   listAuthMethods(options?: SendOptions): Promise<AuthMethods> {
     return this.#send("/auth-methods", options);
@@ -211,19 +294,19 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * Emails a verification link to `email`, if it belongs to an unverified
    * account. Resolves the same either way, so it reveals no accounts.
    */
-  async requestVerification(
+  async requestEmailVerification(
     email: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-verification", { email }, options);
+    await this.#post("/request-email-verification", { email }, options);
   }
 
   /** Verifies the account of a verification link's token. */
-  async confirmVerification(
+  async confirmEmailVerification(
     token: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/confirm-verification", { token }, options);
+    await this.#post("/confirm-email-verification", { token }, options);
   }
 
   /**
@@ -272,6 +355,84 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options?: SendOptions,
   ): Promise<void> {
     await this.#post("/confirm-email-change", { token, password }, options);
+  }
+
+  /**
+   * Texts a sign-in code to `phone`, in international format such as
+   * `+255712345678`; a new phone signs up. Resolves the same either way, so
+   * it reveals no accounts.
+   */
+  async requestPhoneCode(phone: string, options?: SendOptions): Promise<void> {
+    await this.#post("/request-phone-code", { phone }, options);
+  }
+
+  /**
+   * Texts a password reset code to `phone`, if it is an account's verified
+   * phone. Resolves the same either way, so it reveals no accounts.
+   */
+  async requestPasswordResetByPhone(
+    phone: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post("/request-password-reset-by-phone", { phone }, options);
+  }
+
+  /**
+   * Signs in with a code from {@link requestPhoneCode}, creating the account
+   * for a new phone under the collection's create rule. Saves the session
+   * like `signInWithPassword`, and takes the same `cookie` option.
+   */
+  async signInWithPhoneCode(
+    phone: string,
+    code: string,
+    options: AuthOptions = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, ...rest } = options;
+    return this.#saveAuth(
+      await this.#send<AuthResponse<T>>("/auth-with-phone-code", {
+        ...rest,
+        method: "POST",
+        body: { phone, code, ...(cookie && { cookie: true }) },
+      }),
+    );
+  }
+
+  /**
+   * Sets a new password with a code texted for a password reset. Every
+   * session of the account ends; sign in again with the new password.
+   */
+  async confirmPasswordResetByPhone(
+    phone: string,
+    code: string,
+    password: string,
+    passwordConfirm: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post(
+      "/confirm-password-reset-by-phone",
+      { phone, code, password, passwordConfirm },
+      options,
+    );
+  }
+
+  /** Texts a code to `phone` that verifies it as the signed-in account's phone. */
+  async requestPhoneVerification(
+    phone: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post("/request-phone-verification", { phone }, options);
+  }
+
+  /**
+   * Makes `phone` the signed-in account's verified phone, given the code
+   * texted to it. Changing the phone signs out the account's other devices.
+   */
+  async confirmPhoneVerification(
+    phone: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post("/confirm-phone-verification", { phone, code }, options);
   }
 
   async #post(

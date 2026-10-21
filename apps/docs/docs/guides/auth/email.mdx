@@ -16,9 +16,9 @@ import { Resend } from "resend";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const nextbase = new NextBase({
+  appUrl: "https://app.example.com",
   mail: {
     from: "app@example.com",
-    appUrl: "https://app.example.com",
     async send({ from, to, subject, text, html }) {
       await resend.emails.send({ from, to, subject, text, html });
     },
@@ -31,7 +31,7 @@ export const nextbase = new NextBase({
 | ------ | ----------- |
 | `from` | Required. The sender address. |
 | `send` | Required. Sends one email: `{ from, to, subject, text, html? }`. |
-| `appUrl` | Required. Your app's URL. Links point at pages there. HTTPS, except on localhost. |
+| `appUrl` | Optional. Where the pages that take the links live, when not at the top-level `appUrl`. |
 | `templates` | Optional. Replaces the subject and text of any kind of email. |
 
 Without `mail`, the account email endpoints answer 400 in production. In
@@ -39,6 +39,8 @@ development, the emails are written to the server log instead, so you can
 follow the links.
 
 ## Pages that take the links
+
+`appUrl`, next to `mail`, is your app's URL. HTTPS, except on localhost.
 
 Links open pages in your app, at these paths under `appUrl`, with the token in
 `?token=`:
@@ -77,5 +79,8 @@ mail: {
 ```
 
 The kinds are `verification`, `passwordReset`, `emailChange`,
-`passwordChanged` and `emailChanged`. The last two tell the owner that their
-password or email changed, and carry no link.
+`passwordChanged`, `emailChanged`, `phoneChanged`, `oauth2Linked` and
+`oauth2Unlinked`. The last five carry no link: they tell the owner that their
+password, email or phone changed, or that an
+[OAuth2 provider](/docs/guides/auth/oauth2) was linked or unlinked, which
+templates get as `provider`. They are sent only once the change is saved.

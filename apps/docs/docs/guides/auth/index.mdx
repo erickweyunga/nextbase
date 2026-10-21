@@ -6,7 +6,7 @@ sidebar_label: Overview
 # Authentication
 
 Users live in **auth collections**. An auth collection has the system fields
-`email`, `password`, `verified` and `emailVisibility`; you add your own fields.
+`email`, `emailVisibility`, `emailVerified`, `phone`, `phoneVerified` and `password`; you add your own fields.
 Each signed-in user gets a session in the database, which you can list and
 revoke.
 
@@ -37,6 +37,10 @@ is a filter the request must match.
 
 - [Email & Password](/docs/guides/auth/email-password): sign up, sign in and
   sign out, with optional email verification.
+- [OAuth2](/docs/guides/auth/oauth2): sign in with Google, GitHub or any
+  OpenID Connect provider.
+- [Phone](/docs/guides/auth/phone): sign in with a code texted to a phone, or
+  with a phone and password.
 
 ## Account emails
 
