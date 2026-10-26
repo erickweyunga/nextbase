@@ -2,6 +2,7 @@ import { AuthStore } from "./auth-store.ts";
 import { Batch } from "./batch.ts";
 import { ClientError } from "./client-error.ts";
 import { CollectionService } from "./collections.ts";
+import { FileService } from "./files.ts";
 import { type FilterValue, filter } from "./filter.ts";
 import { RecordService } from "./records.ts";
 import {
@@ -28,6 +29,7 @@ export type {
 } from "./batch.ts";
 export { ClientError } from "./client-error.ts";
 export type { CollectionInput, CollectionService } from "./collections.ts";
+export type { FileService, FileUrlOptions } from "./files.ts";
 export { type FilterValue, filter } from "./filter.ts";
 export type {
   AuthOptions,
@@ -112,6 +114,8 @@ export class NextBaseClient<
   readonly authStore: AuthStore;
   /** Collection definitions. Superusers only. */
   readonly collections: CollectionService;
+  /** Uploaded files: their URLs, and tokens for protected ones. */
+  readonly files: FileService;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
 
@@ -122,6 +126,7 @@ export class NextBaseClient<
     this.#fetch = (input, init) => fetch(input, init);
     this.authStore = options.authStore ?? new AuthStore();
     this.collections = new CollectionService(this);
+    this.files = new FileService(this);
   }
 
   /** Records of one collection, by name or id. */

@@ -11,13 +11,20 @@ import {
   type Tx,
 } from "@nextbasejs/dbx";
 import { checkBreached } from "../auth/breached.ts";
-import type { MailKind } from "../auth/mail.ts";
 import { verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";
 import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
 import { table } from "../db/system.ts";
+import type { Effects } from "../effects.ts";
 import { ApiError } from "../errors.ts";
+import {
+  type FileChanges,
+  fileKey,
+  fileNames,
+  storeFiles,
+} from "../files/files.ts";
+import type { Storage } from "../files/storage.ts";
 import { compileFilter, type RequestInfo } from "../filter/compiler.ts";
 import { FilterError } from "../filter/parser.ts";
 import type { Schema } from "../schema/cache.ts";
@@ -41,10 +48,13 @@ export interface RecordsContext {
   /** Protected auth fields NextBase itself sets in this write (see values.ts). */
   vouched?: ReadonlySet<string>;
   /**
-   * Queues an email to send once the request has succeeded, so a write that
-   * rolls back, alone or in a batch, never tells anyone it happened.
+   * Emails and file cleanup that wait for the request's outcome, so a write
+   * that rolls back, alone or in a batch, neither tells anyone it happened
+   * nor loses files. Without it, writes cannot add or remove files.
    */
-  notify?: (mail: { kind: MailKind; collection: string; to: string }) => void;
+  effects?: Effects;
+  /** Where uploaded files are kept. */
+  storage?: Storage;
 }
 
 /** The SQL alias of the collection's rows in every records query. Rules compile against it. */
@@ -154,6 +164,7 @@ export async function newRecord(
         schema: ctx.schema,
         privileged: ctx.principal.superuser,
         ...(ctx.vouched && { vouched: ctx.vouched }),
+        storage: ctx.storage,
       });
       // Checked on the would-be row before inserting, so a caller without
       // permission never learns anything from a constraint error.
@@ -171,6 +182,7 @@ export async function newRecord(
           throw new ApiError(400, "Failed to create the record.");
         }
       }
+      await keepFiles(tx, ctx, collection, prepared.row.id as string, prepared);
       await tx
         .insert(
           table(collection.name),
@@ -213,6 +225,7 @@ export async function updateRecord(
           schema: ctx.schema,
           existing,
           privileged: await canManage(tx, ctx, collection, id),
+          storage: ctx.storage,
         });
       } catch (error) {
         invalid = error;
@@ -234,6 +247,7 @@ export async function updateRecord(
       if (prepared.oldPassword !== undefined) {
         await checkOldPassword(ctx, collection, existing, prepared.oldPassword);
       }
+      await keepFiles(tx, ctx, collection, id, prepared);
       if (Object.keys(prepared.values).length > 0) {
         await tx
           .update(
@@ -246,7 +260,7 @@ export async function updateRecord(
       // The owner learns of a password change they may not have made.
       const password = collection.fields.find((f) => f.type === "password");
       if (password && prepared.values[password.name] !== undefined) {
-        ctx.notify?.({
+        ctx.effects?.mail.push({
           kind: "passwordChanged",
           collection: collection.name,
           to: existing.email as string,
@@ -285,8 +299,30 @@ export async function deleteRecord(
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
       throw new ApiError(404, "Record not found.");
     }
-    await deleteWithReferences(tx, ctx.schema, collection, id, new Set());
+    await deleteWithReferences(
+      tx,
+      ctx.schema,
+      collection,
+      id,
+      new Set(),
+      ctx.effects?.obsoleteFiles ?? [],
+    );
   });
+}
+
+/** Stores the files a write adds, and marks the ones it removes. */
+async function keepFiles(
+  tx: Builder,
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  { files }: { files: FileChanges },
+): Promise<void> {
+  if (files.added.length === 0 && files.removed.length === 0) return;
+  if (!ctx.storage || !ctx.effects) {
+    throw new Error("Writes that change files need storage and effects.");
+  }
+  await storeFiles(tx, ctx.storage, ctx.effects, collection, id, files);
 }
 
 /**
@@ -556,6 +592,8 @@ async function deleteWithReferences(
   collection: Collection,
   id: string,
   visited: Set<string>,
+  /** Collects the stored files of every deleted record, to delete on success. */
+  obsoleteFiles: string[],
 ): Promise<void> {
   const key = `${collection.id}/${id}`;
   if (visited.has(key)) return;
@@ -576,7 +614,14 @@ async function deleteWithReferences(
       if (referencing.length === 0) continue;
       if (field.cascadeDelete) {
         for (const row of referencing)
-          await deleteWithReferences(tx, schema, source, row.id, visited);
+          await deleteWithReferences(
+            tx,
+            schema,
+            source,
+            row.id,
+            visited,
+            obsoleteFiles,
+          );
         continue;
       }
       if (field.required && referencing.some((r) => r.count <= 1)) {
@@ -591,6 +636,19 @@ async function deleteWithReferences(
         )
         .bind({ id })
         .execute();
+    }
+  }
+  const fileFields = collection.fields.filter((f) => f.type === "file");
+  if (fileFields.length > 0) {
+    const [row] = await tx
+      .select(...fileFields.map((f) => f.name))
+      .from(table(collection.name))
+      .where(hash({ id }))
+      .all();
+    for (const field of fileFields) {
+      for (const name of fileNames(field, row?.[field.name])) {
+        obsoleteFiles.push(fileKey(collection.id, id, name));
+      }
     }
   }
   await tx.delete(table(collection.name), hash({ id })).execute();

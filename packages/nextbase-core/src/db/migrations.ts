@@ -309,6 +309,32 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: "0008_uploads",
+    async up(tx) {
+      // Direct uploads waiting for a record to take them, each allowed for a
+      // collection's file field, at one exact size, until it expires (see
+      // files/files.ts).
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table("_uploads")}}} (
+             id            text PRIMARY KEY,
+             collection_id text NOT NULL,
+             field_id      text NOT NULL,
+             filename      text NOT NULL,
+             size          bigint NOT NULL,
+             content_type  text NOT NULL,
+             expires       timestamptz NOT NULL
+           )`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_uploads_expires" ON {{${table("_uploads")}}} (expires)`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**

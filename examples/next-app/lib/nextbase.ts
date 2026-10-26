@@ -61,6 +61,8 @@ export const nextbase = new NextBase({
   appUrl: process.env.APP_URL,
   oauth2: providers(process.env),
   sms: sms(process.env),
+  // Local disk unless STORAGE_DIR says where; use storage.s3 on Vercel.
+  ...(process.env.STORAGE_DIR && { storage: { dir: process.env.STORAGE_DIR } }),
 });
 
 /**

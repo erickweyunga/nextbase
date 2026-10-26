@@ -31,7 +31,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20.9"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -44,8 +44,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "catalog:",
+    "@aws-sdk/s3-request-presigner": "catalog:",
     "@nextbasejs/client": "workspace:*",
     "@vercel/functions": "catalog:",
+    "file-type": "catalog:",
     "jose": "catalog:",
     "libphonenumber-js": "catalog:",
     "oauth4webapi": "catalog:",

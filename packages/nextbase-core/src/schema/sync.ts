@@ -1,7 +1,13 @@
-import type { Collection, ErrorData, Field } from "@nextbasejs/client";
+import type {
+  Collection,
+  ErrorData,
+  Field,
+  FileField,
+} from "@nextbasejs/client";
 import type { Builder, DB, Tx } from "@nextbasejs/dbx";
 import { lockSchema, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
+import { fileKey, fileNames } from "../files/files.ts";
 import { ruleProblem } from "../filter/compiler.ts";
 import { Schema } from "./cache.ts";
 import { parseCollection } from "./collection.ts";
@@ -58,6 +64,8 @@ export async function updateCollection(
   db: DB,
   idOrName: string,
   input: unknown,
+  /** Collects the stored files of file fields the change removes. */
+  obsoleteFiles: string[] = [],
 ): Promise<Collection> {
   return db.transaction(async (tx) => {
     await lockSchema(tx);
@@ -82,6 +90,7 @@ export async function updateCollection(
       checkRules(collection, others);
     } else {
       checkRules(collection, others);
+      obsoleteFiles.push(...(await removedFiles(tx, existing, collection)));
       await alterCollectionTable(tx, existing, collection, others);
       await refreshViewGrants(tx, [...others, collection]);
     }
@@ -134,6 +143,34 @@ export async function deleteCollection(
     }
     await bumpSchemaVersion(tx);
   });
+}
+
+/**
+ * The stored files of file fields that `next` removes, or turns into
+ * another type, from `existing`.
+ */
+async function removedFiles(
+  tx: Tx,
+  existing: Collection,
+  next: Collection,
+): Promise<string[]> {
+  const removed = existing.fields.filter(
+    (f): f is FileField =>
+      f.type === "file" &&
+      !next.fields.some((n) => n.id === f.id && n.type === "file"),
+  );
+  if (removed.length === 0) return [];
+  const rows = await tx
+    .select("id", ...removed.map((f) => f.name))
+    .from(table(existing.name))
+    .all();
+  return rows.flatMap((row) =>
+    removed.flatMap((field) =>
+      fileNames(field, row[field.name]).map((name) =>
+        fileKey(existing.id, row.id as string, name),
+      ),
+    ),
+  );
 }
 
 /** Keeps the view role's grants in step with the tables, once it exists. */

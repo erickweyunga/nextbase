@@ -46,3 +46,73 @@ export async function readJsonObject(
     throw new ApiError(400, "The request body must be a JSON object.");
   return body;
 }
+
+/**
+ * The most a multipart request may carry, all files together. Larger files
+ * go straight to the bucket with direct uploads instead.
+ */
+const MAX_MULTIPART_BODY = 32 * 1024 * 1024;
+
+/**
+ * Reads a record write's body: JSON, or multipart form data carrying files.
+ * In form data, each part is a field; a field sent several times becomes a
+ * list; and a part named `@jsonPayload` holds a JSON object of the other
+ * values, which keeps numbers, booleans and JSON as they are. Its size is
+ * enforced while streaming, as for JSON.
+ */
+export async function readRecordBody(
+  request: Request,
+): Promise<Record<string, unknown>> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!/^multipart\/form-data\s*;/i.test(type)) return readJsonObject(request);
+  const tooLarge = new ApiError(413, "The request body is too large.");
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_MULTIPART_BODY)
+    throw tooLarge;
+
+  let size = 0;
+  const limited = request.body?.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        size += chunk.byteLength;
+        if (size > MAX_MULTIPART_BODY) controller.error(tooLarge);
+        else controller.enqueue(chunk);
+      },
+    }),
+  );
+  let form: FormData;
+  try {
+    form = await new Request(request.url, {
+      method: "POST",
+      headers: { "content-type": type },
+      body: limited ?? null,
+      duplex: "half",
+    } as RequestInit).formData();
+  } catch {
+    if (size > MAX_MULTIPART_BODY) throw tooLarge;
+    throw new ApiError(400, "The request body is not valid form data.");
+  }
+
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of form) {
+    if (key === "@jsonPayload") {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(typeof value === "string" ? value : "");
+      } catch {
+        throw new ApiError(400, "@jsonPayload is not valid JSON.");
+      }
+      if (!isRecord(payload))
+        throw new ApiError(400, "@jsonPayload must be a JSON object.");
+      Object.assign(body, payload);
+      continue;
+    }
+    const previous = body[key];
+    body[key] =
+      previous === undefined
+        ? value
+        : Array.isArray(previous)
+          ? [...previous, value]
+          : [previous, value];
+  }
+  return body;
+}
