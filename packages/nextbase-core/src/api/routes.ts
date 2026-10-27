@@ -99,9 +99,7 @@ interface Context {
   oauth2: OAuth2;
   /** Reject new passwords found in data breaches. */
   rejectBreachedPasswords: boolean;
-  /** Emails and file cleanup that wait for the request's outcome. */
   effects: Effects;
-  /** Where uploaded files are kept. */
   storage: Storage;
 }
 
@@ -318,8 +316,7 @@ export const ROUTES: readonly Route[] = [
       requireSuperuser(principal);
       const { id } = schema.get(params[0] as string);
       await schemaChange(() => deleteCollection(db, params[0] as string));
-      // Its records are gone, and so are their files. A failure only leaves
-      // unused files behind.
+      // A failure only leaves unused files behind.
       await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
         console.error(
           "[nextbase] deleting a collection's files failed:",
@@ -360,8 +357,7 @@ export const ROUTES: readonly Route[] = [
       const { collection, field, key } = await findFile(db, schema, params);
       const query = new URL(request.url).searchParams;
       if (field.protected) {
-        // Protected files follow the record's view rule, as the caller of the
-        // session, or of a file token for links that cannot send headers.
+        // The view rule decides, for the session's caller or the file token's.
         const token = query.get("token");
         const principal = token
           ? ((await principalOfFileToken(db, schema, token)) ?? {

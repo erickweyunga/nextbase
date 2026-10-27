@@ -2,11 +2,7 @@ import { ClientError } from "./client-error.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
 import type { RecordModel } from "./shared/api.ts";
 
-/**
- * Files larger than this skip the API request and go straight to the
- * bucket, when the server stores files in one: serverless hosts such as
- * Vercel cap request bodies at 4.5 MB.
- */
+/** Larger files go straight to the bucket: Vercel caps request bodies at 4.5 MB. */
 const DIRECT_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 export interface FileUrlOptions {
@@ -24,10 +20,7 @@ export class FileService {
     this.#client = client;
   }
 
-  /**
-   * The URL of one of a record's files, for links and `<img>` tags. A
-   * protected file also needs the caller's session cookie, or a `token`.
-   */
+  /** A file's URL. Protected files also need the session cookie, or a `token`. */
   getUrl(
     record: Pick<RecordModel, "id" | "collectionId">,
     filename: string,
@@ -43,10 +36,7 @@ export class FileService {
     );
   }
 
-  /**
-   * A short-lived token for the signed-in record's protected files, to put
-   * in `getUrl` where no session cookie is sent.
-   */
+  /** A short-lived token for protected files, for `getUrl` where no cookie is sent. */
   async getToken(options?: SendOptions): Promise<string> {
     return (
       await this.#client.send<{ token: string }>("/files/token", {
@@ -57,7 +47,6 @@ export class FileService {
   }
 }
 
-/** Whether a record body carries files, which then go as form data. */
 export function hasFiles(body: Record<string, unknown>): boolean {
   return Object.values(body).some((value) =>
     Array.isArray(value) ? value.some(isFile) : isFile(value),
@@ -65,10 +54,8 @@ export function hasFiles(body: Record<string, unknown>): boolean {
 }
 
 /**
- * Turns a record body with files into form data: files as parts, and every
- * other value in a `@jsonPayload` part, so numbers and JSON stay as they
- * are. Files over 4 MB are first uploaded straight to the bucket, when the
- * server has one, and replaced by their upload's token.
+ * Files as parts, other values in `@jsonPayload` to keep their types. Files
+ * over 4 MB are uploaded to the bucket first, when there is one.
  */
 export async function toFormData(
   client: NextBaseClient,
@@ -84,7 +71,6 @@ export async function toFormData(
       payload[key] = value;
       continue;
     }
-    // In order: names kept from the record, files, and upload tokens.
     for (const item of items) {
       if (!isFile(item)) {
         form.append(key, String(item));
@@ -102,10 +88,7 @@ export async function toFormData(
   return form;
 }
 
-/**
- * Uploads a file straight to the bucket and returns its token, or undefined
- * when the server stores files locally and takes them with the record.
- */
+/** The upload's token, or undefined when the server has no bucket. */
 async function uploadDirectly(
   client: NextBaseClient,
   collection: string,
@@ -113,7 +96,7 @@ async function uploadDirectly(
   file: Blob,
   options: SendOptions,
 ): Promise<string | undefined> {
-  // Field names ending in + or - are modifiers of the field itself.
+  // `field+`, `+field` and `field-` upload to `field`.
   const name = field.replace(/^\+|[+-]$/g, "");
   let upload: { token: string; url: string; headers: Record<string, string> };
   try {

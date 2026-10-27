@@ -24,74 +24,55 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 
-/** Where uploaded files are kept: a local directory, or an S3-compatible bucket. */
 export interface StorageOptions {
-  /**
-   * A directory on this machine. Defaults to `.nextbase/storage` in the
-   * current working directory. Serverless hosts lose local files between
-   * requests, so use `s3` there.
-   */
+  /** Defaults to `.nextbase/storage`. Serverless hosts lose local files: use `s3` there. */
   dir?: string;
-  /** An S3-compatible bucket: AWS S3, Cloudflare R2, MinIO and others. */
+  /** AWS S3, Cloudflare R2, MinIO or another S3-compatible bucket. */
   s3?: S3StorageOptions;
 }
 
 export interface S3StorageOptions {
   bucket: string;
-  /** Defaults to `auto`, which Cloudflare R2 expects; AWS needs the bucket's region. */
+  /** Defaults to `auto` (Cloudflare R2); AWS needs the bucket's region. */
   region?: string;
-  /** The service URL, for providers other than AWS, such as `https://<account>.r2.cloudflarestorage.com`. */
+  /** For providers other than AWS, such as `https://<account>.r2.cloudflarestorage.com`. */
   endpoint?: string;
   /** Without both keys, the AWS SDK's usual credential sources apply. */
   accessKeyId?: string;
   secretAccessKey?: string;
-  /** Address buckets as `endpoint/bucket` rather than `bucket.endpoint`, as MinIO needs. */
+  /** `endpoint/bucket` addressing, as MinIO needs. */
   forcePathStyle?: boolean;
 }
 
-/** How a downloaded file should be presented by the browser. */
 export interface Presentation {
   contentType: string;
-  /** A `Content-Disposition` value, such as `inline` or `attachment; filename="a.pdf"`. */
+  /** `inline`, or `attachment; filename="..."`. */
   disposition: string;
 }
 
-/**
- * Stores files by key, such as `<collection id>/<record id>/<file name>`.
- * Keys are always built by NextBase from ids and generated names, never
- * taken from requests as they are.
- */
+/** Files by key. Keys are built from ids and generated names, never taken from requests. */
 export interface Storage {
   readonly kind: "local" | "s3";
   put(key: string, data: Uint8Array, contentType: string): Promise<void>;
-  /**
-   * The file's bytes as a stream, or only those from `range.start` to
-   * `range.end`, inclusive; undefined when the file does not exist.
-   */
+  /** The whole file, or `range` (inclusive); undefined when missing. */
   read(
     key: string,
     range?: { start: number; end: number },
   ): Promise<{ body: ReadableStream<Uint8Array>; size: number } | undefined>;
-  /** Up to `length` bytes from the start of the file, for detecting its type. */
+  /** Up to `length` bytes from the start, for type detection. */
   readStart(key: string, length: number): Promise<Uint8Array | undefined>;
-  /** The file's size in bytes, or undefined when it does not exist. */
   size(key: string): Promise<number | undefined>;
   copy(from: string, to: string): Promise<void>;
-  /** Deletes files; missing ones are ignored. */
+  /** Missing files are ignored. */
   delete(keys: readonly string[]): Promise<void>;
-  /** Deletes every file whose key starts with `prefix`. */
   deletePrefix(prefix: string): Promise<void>;
-  /**
-   * A URL the browser can PUT a file to directly, for `seconds`. The size
-   * and type are signed in, so the upload must match them. Only buckets
-   * support this.
-   */
+  /** Buckets only: a URL to PUT the file to, signed for its exact size and type. */
   uploadUrl?(
     key: string,
     upload: { contentType: string; size: number },
     seconds: number,
   ): Promise<string>;
-  /** A URL the browser can download a file from directly, for `seconds`. */
+  /** Buckets only: a signed URL to download the file from. */
   downloadUrl?(
     key: string,
     presentation: Presentation,
@@ -105,7 +86,6 @@ export function newStorage(options: StorageOptions = {}): Storage {
     : new LocalStorage(resolve(options.dir ?? join(".nextbase", "storage")));
 }
 
-/** Files in a directory on this machine. */
 class LocalStorage implements Storage {
   readonly kind = "local";
   readonly #root: string;
@@ -114,8 +94,7 @@ class LocalStorage implements Storage {
     this.#root = root;
   }
 
-  // Keys never contain `..` (see checkName), but a key that somehow resolves
-  // outside the root is refused rather than read or written.
+  // Defense in depth: a key resolving outside the root is refused.
   #path(key: string): string {
     const path = resolve(this.#root, key);
     if (!path.startsWith(this.#root + sep)) {
@@ -125,8 +104,7 @@ class LocalStorage implements Storage {
   }
 
   async put(key: string, data: Uint8Array): Promise<void> {
-    // Vercel functions keep no files between requests, so an upload saved
-    // here would quietly disappear.
+    // Vercel keeps no files between requests: the upload would be lost.
     if (process.env.VERCEL) {
       throw new ApiError(
         400,
@@ -135,8 +113,7 @@ class LocalStorage implements Storage {
     }
     const path = this.#path(key);
     await mkdir(dirname(path), { recursive: true });
-    // Written beside the target and renamed into place, so a reader never
-    // sees half a file.
+    // Renamed into place, so readers never see half a file.
     const temp = `${path}.${randomString(8, LOWER_ALPHANUMERIC)}.tmp`;
     await writeFile(temp, data);
     await rename(temp, path);
@@ -190,15 +167,13 @@ class LocalStorage implements Storage {
       keys.map(async (key) => {
         const path = this.#path(key);
         await rm(path, { force: true });
-        // A record's directory goes with its last file; one still holding
-        // files, or already gone, is left as it is.
+        // Removes the record's directory once empty.
         await rmdir(dirname(path)).catch(() => {});
       }),
     );
   }
 
   async deletePrefix(prefix: string): Promise<void> {
-    // Prefixes are whole directories, such as `<collection id>/`.
     await rm(this.#path(prefix.replace(/\/+$/, "")), {
       recursive: true,
       force: true,
@@ -206,7 +181,6 @@ class LocalStorage implements Storage {
   }
 }
 
-/** Files in an S3-compatible bucket. */
 class S3Storage implements Storage {
   readonly kind = "s3";
   readonly #client: S3Client;
@@ -342,7 +316,6 @@ class S3Storage implements Storage {
       }),
       {
         expiresIn: seconds,
-        // Signed, so the browser must send exactly this size and type.
         signableHeaders: new Set(["content-type", "content-length"]),
       },
     );

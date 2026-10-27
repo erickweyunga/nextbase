@@ -138,11 +138,7 @@ export interface NextBaseOptions {
    * are logged.
    */
   mail?: MailOptions;
-  /**
-   * Where uploaded files are kept: a local directory by default, or an
-   * S3-compatible bucket with `{ s3: { bucket, ... } }`. Serverless hosts
-   * such as Vercel lose local files, so use a bucket there.
-   */
+  /** Local disk by default, or `{ s3: { bucket, ... } }`. Use a bucket on serverless hosts. */
   storage?: StorageOptions;
   /**
    * Sends the codes of phone sign-in, for auth collections with `phoneSignIn`.
@@ -379,10 +375,7 @@ export class NextBase {
     });
   }
 
-  /**
-   * Deletes stored files in the background. A failure only leaves an unused
-   * file behind, so it is logged rather than failing the request.
-   */
+  /** In the background: a failure only leaves an unused file, so it is logged. */
   #deleteFiles(keys: readonly string[]): void {
     if (keys.length === 0) return;
     this.#waitUntil(
@@ -438,7 +431,6 @@ export class NextBase {
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       let setCookie: string | undefined;
-      // Emails and file cleanup that wait for the request's outcome.
       const effects = new Effects();
       const response = await (async (): Promise<Response> => {
         let db: DB | undefined;
@@ -487,7 +479,6 @@ export class NextBase {
           this.#deleteFiles(effects.obsoleteFiles);
           return response;
         } catch (error) {
-          // The request's database changes rolled back; so do its files.
           this.#deleteFiles(effects.newFiles);
           const code = (error as { code?: unknown }).code as string;
           const raced =

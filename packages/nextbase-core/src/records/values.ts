@@ -40,7 +40,6 @@ export interface WriteOptions {
    * phone a sign-in code just proved, which the caller may not set alone.
    */
   vouched?: ReadonlySet<string>;
-  /** Where uploaded files are kept; writes without it cannot add files. */
   storage?: Storage | undefined;
 }
 
@@ -57,7 +56,7 @@ export interface PreparedWrite {
    * someone the rule rejects can neither guess it nor lock the account.
    */
   oldPassword?: string;
-  /** Files to store and remove, once the write is known to be allowed. */
+  /** Stored once the write is allowed. */
   files: FileChanges;
 }
 

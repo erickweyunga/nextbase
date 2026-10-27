@@ -64,7 +64,6 @@ export async function updateCollection(
   db: DB,
   idOrName: string,
   input: unknown,
-  /** Collects the stored files of file fields the change removes. */
   obsoleteFiles: string[] = [],
 ): Promise<Collection> {
   return db.transaction(async (tx) => {
@@ -145,10 +144,7 @@ export async function deleteCollection(
   });
 }
 
-/**
- * The stored files of file fields that `next` removes, or turns into
- * another type, from `existing`.
- */
+/** Files of file fields that `next` removes or retypes. */
 async function removedFiles(
   tx: Tx,
   existing: Collection,

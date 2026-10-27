@@ -47,13 +47,8 @@ export interface RecordsContext {
   rejectBreachedPasswords?: boolean;
   /** Protected auth fields NextBase itself sets in this write (see values.ts). */
   vouched?: ReadonlySet<string>;
-  /**
-   * Emails and file cleanup that wait for the request's outcome, so a write
-   * that rolls back, alone or in a batch, neither tells anyone it happened
-   * nor loses files. Without it, writes cannot add or remove files.
-   */
+  /** Required, with `storage`, for writes that change files. */
   effects?: Effects;
-  /** Where uploaded files are kept. */
   storage?: Storage;
 }
 
@@ -310,7 +305,6 @@ export async function deleteRecord(
   });
 }
 
-/** Stores the files a write adds, and marks the ones it removes. */
 async function keepFiles(
   tx: Builder,
   ctx: RecordsContext,
@@ -592,7 +586,6 @@ async function deleteWithReferences(
   collection: Collection,
   id: string,
   visited: Set<string>,
-  /** Collects the stored files of every deleted record, to delete on success. */
   obsoleteFiles: string[],
 ): Promise<void> {
   const key = `${collection.id}/${id}`;

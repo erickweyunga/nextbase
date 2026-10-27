@@ -47,18 +47,13 @@ export async function readJsonObject(
   return body;
 }
 
-/**
- * The most a multipart request may carry, all files together. Larger files
- * go straight to the bucket with direct uploads instead.
- */
+/** Larger files use direct uploads to the bucket. */
 const MAX_MULTIPART_BODY = 32 * 1024 * 1024;
 
 /**
- * Reads a record write's body: JSON, or multipart form data carrying files.
- * In form data, each part is a field; a field sent several times becomes a
- * list; and a part named `@jsonPayload` holds a JSON object of the other
- * values, which keeps numbers, booleans and JSON as they are. Its size is
- * enforced while streaming, as for JSON.
+ * A record write's body: JSON, or form data where repeated parts become a
+ * list and an `@jsonPayload` part holds typed values. The size limit is
+ * enforced while streaming.
  */
 export async function readRecordBody(
   request: Request,

@@ -18,18 +18,15 @@ import {
 } from "./files.ts";
 import type { Storage } from "./storage.ts";
 
-/** How long a direct upload URL works, and how long its upload waits for a record. */
+/** How long an upload URL works, and its upload waits for a record. */
 const UPLOAD_SECONDS = 15 * 60;
-/** How long a redirect to a protected file in a bucket works. */
+/** How long a signed download URL works. */
 const DOWNLOAD_SECONDS = 5 * 60;
 const MAX_ORIGINAL_NAME = 255;
 
 /**
- * Allows one direct upload to the bucket, for a file field of `collection`:
- * returns a URL the browser PUTs the file to, and the token to put in the
- * record's field afterwards. The URL is signed for the exact size and type,
- * and expires after 15 minutes. Whether the caller may create or update the
- * record is decided when the record is written, as for any write.
+ * Starts a direct upload to the bucket: a signed PUT URL, and the token the
+ * record's field takes afterwards. Write rules apply when the record is written.
  */
 export async function createUpload(
   db: DB,
@@ -133,10 +130,7 @@ export async function createUpload(
   };
 }
 
-/**
- * Forgets uploads no record took in time, and their files. Done here, where
- * uploads start, so abandoned ones do not pile up.
- */
+/** Removes uploads no record took in time; run where uploads start. */
 async function deleteExpiredUploads(db: DB, storage: Storage): Promise<void> {
   const expired = await db
     .newQuery(
@@ -152,9 +146,8 @@ async function deleteExpiredUploads(db: DB, storage: Storage): Promise<void> {
 }
 
 /**
- * A short-lived token that lets the signed-in record download protected
- * files, for links and `<img>` tags, which cannot send an Authorization
- * header. Signed with the record's tokenKey, so a password change ends it.
+ * A short-lived token for protected files, for links that cannot send an
+ * Authorization header. Bound to the record's tokenKey.
  */
 export function fileToken(
   collection: AuthCollection,
@@ -168,7 +161,6 @@ export function fileToken(
   );
 }
 
-/** The caller a file token stands for, or undefined for an invalid one. */
 export async function principalOfFileToken(
   db: DB,
   schema: Schema,
@@ -203,7 +195,6 @@ export async function principalOfFileToken(
   };
 }
 
-/** A record's file, found by collection, record id and stored name. */
 export async function findFile(
   db: DB,
   schema: Schema,
@@ -216,7 +207,6 @@ export async function findFile(
   } catch {
     throw notFound;
   }
-  // Only names NextBase generated, and only record ids, are ever looked up.
   if (
     collection.type === "view" ||
     !/^[a-z0-9]{15}$/.test(recordId as string) ||
@@ -243,9 +233,8 @@ export async function findFile(
 }
 
 /**
- * Answers with a file: streamed from local storage, or as a redirect to a
- * short-lived signed URL in the bucket, which keeps large downloads out of
- * the function. Public files may be cached; protected ones never are.
+ * Streams the file from disk, or redirects to a signed bucket URL, which
+ * keeps large downloads out of the function.
  */
 export async function fileResponse(
   storage: Storage,
@@ -268,9 +257,7 @@ export async function fileResponse(
   const headers: Record<string, string> = {
     "content-type": shown.contentType,
     "content-disposition": shown.disposition,
-    // Even if a browser rendered a file as a page, it could run nothing.
-    // Media and the styles of the browser's own media viewer still load, so
-    // audio and video play when opened directly.
+    // Runs nothing, but lets the browser's media viewer play audio and video.
     "content-security-policy":
       "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
     "cache-control": cache,
@@ -301,11 +288,9 @@ export async function fileResponse(
 }
 
 /**
- * The part of a file a `Range` header asks for, as Express's `send` reads
- * it: one byte range is served as 206 Partial Content; a range past the end
- * is 416; several ranges, a malformed header, or an `If-Range` (whose
- * validator NextBase never issues, so it cannot match) get the whole file.
- * Video players seek with ranges.
+ * The requested byte range, handled as Express's `send` does: one range is
+ * 206, past the end is 416, and multiple ranges, malformed headers or
+ * `If-Range` (no validator is issued, so it cannot match) get the whole file.
  */
 function byteRange(
   request: Request,
