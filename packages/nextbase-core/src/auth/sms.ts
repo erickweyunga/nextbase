@@ -2,24 +2,21 @@ import { waitUntil as vercelWaitUntil } from "@vercel/functions";
 import { ApiError } from "../errors.ts";
 import { phoneCountry } from "../phone.ts";
 
-/** One text message, as `sms.send` receives it. */
 export interface SmsMessage {
   /** In E.164, such as `+255712345678`. */
   to: string;
   text: string;
 }
 
-/** The texts phone sign-in sends. */
 export type SmsKind =
   | "signIn"
   | "passwordReset"
   | "verifyPhone"
   | "phoneChanged";
 
-/** What a template gets to write one text. */
 export interface SmsContext {
   kind: SmsKind;
-  /** The auth collection, by name. */
+  /** The auth collection name. */
   collection: string;
   to: string;
   /** The code to enter, for every kind but `phoneChanged`. */
@@ -29,16 +26,13 @@ export interface SmsContext {
 export type SmsTemplate = (context: SmsContext) => string;
 
 export interface SmsOptions {
-  /** Sends one text, through any provider: Twilio, Africa's Talking, AWS SNS... */
+  /** Sends one text through any provider (Twilio, Africa's Talking, AWS SNS...). */
   send(message: SmsMessage): Promise<void>;
   /**
-   * The countries texts may go to, as ISO 3166-1 alpha-2 codes such as
-   * `["TZ", "KE"]`. Limiting them is the strongest defense against SMS
-   * fraud, where attackers request codes to expensive numbers they earn
-   * money from, so you pay for every text. Defaults to every country.
+   * Allowed destination countries, such as `["TZ", "KE"]`; defaults to all.
+   * The strongest defense against attackers texting premium numbers on your bill.
    */
   countries?: string[];
-  /** Replaces the default text of any kind of message. */
   templates?: Partial<Record<SmsKind, SmsTemplate>>;
 }
 
@@ -54,9 +48,8 @@ const DEFAULT_TEMPLATES: Record<SmsKind, SmsTemplate> = {
 };
 
 /**
- * Sends texts in the background, after the response is decided, so response
- * times do not reveal whether an account exists. `waitUntil` keeps the work
- * alive past the response on serverless platforms.
+ * Sends after the response so timing does not reveal whether an account
+ * exists; `waitUntil` keeps the work alive on serverless platforms.
  */
 export class Sms {
   readonly #options: SmsOptions | undefined;
@@ -74,11 +67,7 @@ export class Sms {
     this.#waitUntil = waitUntil ?? vercelWaitUntil;
   }
 
-  /**
-   * Throws 400 when texts cannot go to `phone`: SMS is not set up (outside
-   * development, where texts are logged instead), or its country is not
-   * allowed.
-   */
+  /** Development without SMS set up logs texts instead. */
   check(phone: string): void {
     if (!this.#options && process.env.NODE_ENV === "production") {
       throw new ApiError(
@@ -98,7 +87,7 @@ export class Sms {
     }
   }
 
-  /** Queues one text; failures are logged, never shown to the caller. */
+  /** Failures are logged, never shown to the caller. */
   send(kind: SmsKind, collection: string, to: string, code?: string): void {
     const template =
       this.#options?.templates?.[kind] ?? DEFAULT_TEMPLATES[kind];

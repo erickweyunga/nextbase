@@ -1,23 +1,15 @@
 import { createHash } from "node:crypto";
 import { ApiError } from "../errors.ts";
 
-// Checks new passwords against passwords leaked in data breaches, which
-// attackers try first, using the Have I Been Pwned password service.
-//
-// The password never leaves the server. Its SHA-1 hash is computed here, and
-// only the first 5 characters are sent; the service answers with every leaked
-// hash starting with them, and the match is looked for here. Answers are
-// padded with fake entries, so their size does not hint at a match either.
+// Checks new passwords against the Have I Been Pwned breach list. Only the
+// first 5 hex chars of the SHA-1 leave the server; matching happens here, and
+// padded answers keep the response size from hinting at a match.
 
 const RANGE_API = "https://api.pwnedpasswords.com/range/";
 const TIMEOUT_MS = 5_000;
 const LINE = /^([0-9A-F]{35}):(\d+)$/;
 
-/**
- * Rejects a password found in known data breaches with a 400 on `password`.
- * When the service cannot be reached or answers unexpectedly, the password
- * is accepted and a warning logged, so an outage never blocks sign-ups.
- */
+/** Fails open (logs a warning) when the service is unreachable, so an outage never blocks sign-ups. */
 export async function checkBreached(password: string): Promise<void> {
   const sha1 = createHash("sha1")
     .update(password.normalize("NFC"))

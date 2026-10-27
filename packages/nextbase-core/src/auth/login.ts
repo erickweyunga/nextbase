@@ -26,15 +26,12 @@ import {
   identityKey,
 } from "./throttle.ts";
 
-// Longer passwords cannot be valid (the field allows at most 1024 characters);
-// rejecting them early bounds hashing cost.
+// The field caps passwords at 1024 chars; rejecting longer ones bounds hashing cost.
 const MAX_PASSWORD_INPUT = 1024;
 
 /**
- * Checks that a record may log in: `null` disables logins, `""` allows every
- * record, and any other authRule is a condition the record must meet, such as
- * `emailVerified = true`. Called only after the password matched, so the 403 tells
- * nothing to someone without it.
+ * authRule `null` disables logins, `""` allows all, anything else is a filter.
+ * Call only after the password matched, so the 403 leaks nothing.
  */
 export async function checkAuthRule(
   db: DB,
@@ -62,11 +59,7 @@ export async function checkAuthRule(
   if (rows.length === 0) throw denied;
 }
 
-/**
- * Finds the record whose identity field matches `identity` and whose password
- * matches. Every failure is the same 400, so responses do not reveal which
- * identities exist.
- */
+/** Every failure is the same 400, so responses do not reveal which identities exist. */
 export async function authWithPassword(
   db: DB,
   schema: Schema,
@@ -117,8 +110,7 @@ async function findByIdentity(
   for (const name of collection.identityFields) {
     const field = collection.fields.find((f) => f.name === name);
     if (!field || identity === "") continue;
-    // Emails are unique regardless of case, so they match regardless of case;
-    // phones are stored in E.164, so the identity is read as a phone first.
+    // Emails are unique case-insensitively; phones are stored in E.164.
     let condition: Expression;
     if (field.type === "email") {
       condition = exp(`lower([[${name}]]) = lower({:identity})`, { identity });

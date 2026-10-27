@@ -4,8 +4,7 @@ import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { type Io, run } from "./run.ts";
 
-// .env.local first: loadEnvFile keeps variables already set, so the
-// environment wins, then .env.local, then .env, as in Next.js.
+// loadEnvFile keeps set variables, so precedence is env, .env.local, .env (as in Next.js).
 for (const file of [".env.local", ".env"]) {
   if (existsSync(file)) process.loadEnvFile(file);
 }
@@ -19,10 +18,7 @@ const io: Io = {
 
 process.exitCode = await run(process.argv.slice(2), io);
 
-/**
- * Reads one line. Hidden input switches the terminal to raw mode and reads
- * keypresses itself, so nothing is echoed; piped input is read as a line.
- */
+// Hidden input uses raw mode so nothing is echoed; piped input is read as a line.
 async function prompt(question: string, hidden: boolean): Promise<string> {
   const { stdin, stdout } = process;
   if (!hidden || !stdin.isTTY) {

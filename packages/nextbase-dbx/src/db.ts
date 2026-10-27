@@ -11,16 +11,15 @@ export interface Pool extends Queryable {
   connect(): Promise<PoolClient>;
 }
 
-/** Transaction modes, written into the `BEGIN` statement. Postgres defaults apply to omitted fields. */
+/** Modes for `BEGIN`; omitted fields use the Postgres defaults. */
 export interface TxOptions {
   isolation?:
     | "serializable"
     | "repeatable read"
     | "read committed"
     | "read uncommitted";
-  /** `READ ONLY` or `READ WRITE`. */
   readOnly?: boolean;
-  /** `DEFERRABLE` or `NOT DEFERRABLE`. Only has an effect on serializable read-only transactions. */
+  /** Only affects serializable read-only transactions. */
   deferrable?: boolean;
 }
 
@@ -40,13 +39,8 @@ export class TxDoneError extends Error {
 }
 
 /**
- * The entry point: query methods on a connection pool. Each statement may run
- * on a different connection, so use `transaction()` for work that must share
- * one. The pool belongs to the caller, who also ends it.
- *
- * ```ts
- * const db = new DB(new pg.Pool({ connectionString }));
- * ```
+ * Query methods on a pool. Statements may run on different connections; use
+ * `transaction()` to share one. The caller owns and ends the pool.
  */
 export class DB extends Builder {
   readonly pool: Pool;
@@ -57,9 +51,8 @@ export class DB extends Builder {
   }
 
   /**
-   * Takes a connection from the pool and starts a transaction on it. The
-   * connection is held until `commit()` or `rollback()`, so one of them must
-   * always be called. Prefer `transaction()`, which does that.
+   * The connection is held until `commit()` or `rollback()`, so one must always
+   * be called. Prefer `transaction()`.
    */
   async begin(options: TxOptions = {}): Promise<Tx> {
     const text = beginSQL(options);
@@ -74,17 +67,8 @@ export class DB extends Builder {
   }
 
   /**
-   * Runs `fn` in a transaction. It commits when `fn` resolves and rolls back
-   * when it rejects, then settles with `fn`'s result or error. `fn` may commit
-   * or roll back itself. If the rollback fails too, it rejects with an
-   * AggregateError holding both errors.
-   *
-   * ```ts
-   * await db.transaction(async (tx) => {
-   *   await tx.insert("posts", { title: "Hello" }).execute();
-   *   await tx.update("users", { posts: exp("posts + 1") }, hash({ id })).execute();
-   * });
-   * ```
+   * Commits when `fn` resolves, rolls back when it rejects; `fn` may finish it
+   * itself. A failed rollback rejects with an AggregateError of both errors.
    */
   async transaction<T>(
     fn: (tx: Tx) => Promise<T>,
@@ -112,11 +96,7 @@ export class DB extends Builder {
   }
 }
 
-/**
- * A transaction on one pinned connection. It has every query method of `DB`.
- * The connection returns to the pool on commit or rollback, after which the
- * transaction rejects every query with TxDoneError.
- */
+/** A transaction on one pinned connection. Queries after it finishes throw TxDoneError. */
 export class Tx extends Builder {
   readonly #client: PoolClient;
   readonly #state: { done: boolean };
@@ -138,16 +118,13 @@ export class Tx extends Builder {
     this.#state = state;
   }
 
-  /** Whether the transaction was committed or rolled back. */
   get done(): boolean {
     return this.#state.done;
   }
 
   /**
-   * Runs `fn` in a nested transaction, a savepoint. When `fn` rejects, its
-   * changes are rolled back to the savepoint and the error is rethrown; the
-   * outer transaction stays usable. Lets code written for `DB.transaction()`
-   * run as part of a larger transaction.
+   * Runs `fn` in a savepoint. On reject only its changes are rolled back and the
+   * outer transaction stays usable.
    */
   async transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const name = `dbx_savepoint_${++this.#savepoints}`;
@@ -173,12 +150,12 @@ export class Tx extends Builder {
     return result;
   }
 
-  /** Commits and returns the connection to the pool. Throws TxDoneError if already finished. */
+  /** Throws TxDoneError if already finished. */
   commit(): Promise<void> {
     return this.#finish("COMMIT");
   }
 
-  /** Rolls back and returns the connection to the pool. Throws TxDoneError if already finished. */
+  /** Throws TxDoneError if already finished. */
   rollback(): Promise<void> {
     return this.#finish("ROLLBACK");
   }
@@ -189,8 +166,7 @@ export class Tx extends Builder {
     try {
       await this.#client.query({ text: command, values: [] });
     } catch (error) {
-      // The connection's transaction state is unknown, so it is discarded
-      // instead of returned to the pool.
+      // Transaction state is unknown, so discard the connection.
       this.#client.release(asError(error));
       throw error;
     }

@@ -1,10 +1,7 @@
 import type { Collection, Field } from "@nextbasejs/client";
 import { isMultiple } from "../schema/fields.ts";
 
-/**
- * TypeScript types for every collection's records, and a `Collections` map
- * from collection names to them, for `new NextBaseClient<Collections>()`.
- */
+/** Record types plus a `Collections` map, for `new NextBaseClient<Collections>()`. */
 export function typegen(collections: readonly Collection[]): string {
   const names = new Map<string, string>();
   const used = new Set<string>();
@@ -29,7 +26,6 @@ export function typegen(collections: readonly Collection[]): string {
       `export interface ${names.get(collection.id)} extends RecordModel {`,
     );
     for (const field of collection.fields) {
-      // Hidden fields, such as password hashes, are never in API output.
       if (field.hidden) continue;
       // A view's columns come from a query, which can produce NULL.
       const type = fieldType(field);

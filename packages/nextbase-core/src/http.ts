@@ -3,10 +3,7 @@ import { isRecord } from "./schema/input.ts";
 
 const MAX_JSON_BODY = 1024 * 1024;
 
-/**
- * Reads a JSON object body of at most 1 MiB. The size is enforced while
- * streaming, so an oversized body is rejected without being buffered whole.
- */
+// At most 1 MiB, enforced while streaming so an oversized body is never buffered whole.
 export async function readJsonObject(
   request: Request,
 ): Promise<Record<string, unknown>> {
@@ -50,11 +47,8 @@ export async function readJsonObject(
 /** Larger files use direct uploads to the bucket. */
 const MAX_MULTIPART_BODY = 32 * 1024 * 1024;
 
-/**
- * A record write's body: JSON, or form data where repeated parts become a
- * list and an `@jsonPayload` part holds typed values. The size limit is
- * enforced while streaming.
- */
+// JSON, or form data where repeated parts become a list and `@jsonPayload`
+// holds typed values. The size limit is enforced while streaming.
 export async function readRecordBody(
   request: Request,
 ): Promise<Record<string, unknown>> {

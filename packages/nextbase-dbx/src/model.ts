@@ -25,16 +25,8 @@ export interface ModelOptions {
 }
 
 /**
- * Inserts, updates or deletes one record, created by `model()`. Record keys
- * are column names; `undefined` values are left out. Rows are found by
- * primary key, `id` unless `ModelOptions.pk` says otherwise.
- *
- * ```ts
- * const post = { id: null, title: "Hello" };
- * await db.model("posts", post).insert(); // post.id is now set
- * post.title = "Hi";
- * await db.model("posts", post).update("title");
- * ```
+ * Writes one record by primary key. Record keys are column names; `undefined`
+ * values are left out.
  */
 export class ModelQuery<T extends object> {
   readonly #builder: Builder;
@@ -57,24 +49,20 @@ export class ModelQuery<T extends object> {
     if (this.#pk.length === 0) throw new MissingPKError();
   }
 
-  /** Columns to leave out of `insert()` and `update()`, even when listed there. Replaces earlier exclusions. */
+  /** Always left out of `insert()` and `update()`. Replaces earlier exclusions. */
   exclude(...cols: (keyof T & string)[]): this {
     this.#exclude = cols;
     return this;
   }
 
   /**
-   * Inserts the record. With `cols`, only those columns are inserted.
-   *
-   * If the key is a single column whose value is `null` or `undefined`, it is
-   * left to the database default and the generated value is written back to
-   * the record.
+   * A single-column key that is null is left to the database default, and the
+   * generated value is written back to the record.
    */
   async insert(...cols: (keyof T & string)[]): Promise<void> {
     const values = this.#columns(cols);
     const [pk] = this.#pk;
-    // Generated keys are decided by the record, not the column list, so a
-    // record that has its key never has it overwritten.
+    // Decided by the record, not `cols`, so an existing key is never overwritten.
     if (
       this.#pk.length !== 1 ||
       pk === undefined ||
@@ -93,11 +81,7 @@ export class ModelQuery<T extends object> {
     (this.#record as Params)[pk] = id;
   }
 
-  /**
-   * Updates the record's row by primary key. With `cols`, only those columns
-   * are updated; key columns are never set. Throws MissingPKError if the key
-   * has no value. Matching no row is not an error.
-   */
+  /** Key columns are never set. Matching no row is not an error. */
   async update(...cols: (keyof T & string)[]): Promise<void> {
     const values = this.#columns(cols);
     for (const name of this.#pk) delete values[name];
@@ -106,7 +90,6 @@ export class ModelQuery<T extends object> {
       .execute();
   }
 
-  /** Deletes the record by primary key. Throws MissingPKError if the key has no value. */
   async delete(): Promise<void> {
     await this.#builder.delete(this.#table, hash(this.#pkValues())).execute();
   }

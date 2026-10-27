@@ -27,10 +27,8 @@ import {
   renameView,
 } from "./views.ts";
 
-// Every schema change runs in one transaction holding the schema lock: load the
-// current schema, validate against it, run the DDL, store the definition and
-// bump the version. Postgres DDL is transactional, so a failure at any step
-// leaves both the tables and the stored definitions as they were.
+// Each schema change is one transaction under the schema lock (load, validate,
+// DDL, store, bump version). DDL is transactional, so a failure changes nothing.
 
 export async function newCollection(
   db: DB,
@@ -144,7 +142,6 @@ export async function deleteCollection(
   });
 }
 
-/** Files of file fields that `next` removes or retypes. */
 async function removedFiles(
   tx: Tx,
   existing: Collection,
@@ -169,7 +166,6 @@ async function removedFiles(
   );
 }
 
-/** Keeps the view role's grants in step with the tables, once it exists. */
 async function refreshViewGrants(
   tx: Tx,
   collections: readonly Collection[],
@@ -188,12 +184,8 @@ const RULE_KEYS = [
   "manageRule",
 ] as const;
 
-/**
- * Checks that every stored rule still compiles once `collection` is saved:
- * its own, and those of other collections that may reach it through a
- * relation. A rename that breaks a rule is rejected instead of leaving a rule
- * that fails at request time.
- */
+// Rejects a change (e.g. a rename) that would break any stored rule, rather
+// than letting it fail at request time.
 function checkRules(
   collection: Collection,
   others: readonly Collection[],
@@ -222,10 +214,7 @@ function checkRules(
     throw new ApiError(400, "Failed to validate the collection.", data);
 }
 
-/**
- * Creates the table of a validated collection. Exported for the system
- * migration that creates `_superusers`; everything else uses newCollection.
- */
+/** Exported for the migration that creates `_superusers`; use newCollection otherwise. */
 export async function createCollectionTable(
   tx: Tx,
   collection: Collection,
@@ -269,8 +258,7 @@ async function alterCollectionTable(
   const t = `{{${table(after.name)}}}`;
   const col = (name: string): string => tx.quoteSimpleColumnName(name);
 
-  // Indexes first: a column changing between text and text[] cannot keep an
-  // index built for its old type.
+  // Indexes first: a text <-> text[] change cannot keep an index of the old type.
   const afterSystem = new Set(systemIndexes(tx, after).map((i) => i.name));
   for (const { name } of systemIndexes(tx, before)) {
     if (!afterSystem.has(name)) await exec(dropIndex(name));
@@ -335,11 +323,7 @@ async function alterCollectionTable(
   }
 }
 
-/**
- * Switches a select, relation or file column between one value (text) and
- * several (text[]), keeping the data: one value becomes a one-element array,
- * and an array keeps its first element.
- */
+// text <-> text[]: a value becomes a one-element array; an array keeps its first element.
 async function convertMultiplicity(
   tx: Tx,
   t: string,
@@ -372,20 +356,15 @@ async function convertMultiplicity(
 }
 
 /**
- * The column definition of a field. Most types store a blank as a plain
- * value ("", 0, false) rather than NULL: in SQL, `NULL = ''` is neither true
- * nor false, which would make filters such as `name != "x"` skip blank rows.
- * Dates and JSON have no natural blank value, and single relations need NULL
- * for their foreign key.
+ * Blanks are stored as "", 0 or false, not NULL, so filters like `name != "x"`
+ * still match blank rows. Dates, JSON and single relations use NULL.
  */
 function columnType(q: Builder, field: Field, collection: Collection): string {
   switch (field.type) {
     case "text":
       if (field.primaryKey) {
-        // Ids appear in file storage paths, so their format is enforced by the
-        // database too, not only by validation. Named after the collection id:
-        // Postgres would name it after the table, and a later collection could
-        // reuse that table name.
+        // Ids appear in storage paths, so the database enforces their format too.
+        // Named by collection id, since a later collection could reuse the table name.
         return `text CONSTRAINT ${q.quoteSimpleColumnName(`_${collection.id}_pkey`)} PRIMARY KEY CHECK (${q.quoteSimpleColumnName(field.name)} ~ '^[a-z0-9]{15}$')`;
       }
       return "text NOT NULL DEFAULT ''";
@@ -423,11 +402,7 @@ function foreignKeyName(q: Builder, field: Field): string {
   return q.quoteSimpleColumnName(`_${field.id}_fk`);
 }
 
-/**
- * A foreign key backing a single relation. NO ACTION: NextBase clears or
- * cascades references itself before deleting a record, so the key only stops
- * raw SQL from leaving dangling references.
- */
+// NO ACTION: NextBase resolves references itself; the key only guards raw SQL.
 function foreignKey(
   q: Builder,
   field: Field,
@@ -442,17 +417,12 @@ function foreignKey(
 }
 
 interface SystemIndex {
-  /** `_<collection id>_...`: user index names cannot start with `_`. */
+  /** `_<collection id>_...`, which user index names cannot collide with. */
   name: string;
   sql: string;
 }
 
-/**
- * Indexes every collection of a given shape has: unique emails and token keys
- * for auth collections, btree indexes for single relations, and GIN indexes
- * for array columns. Index names carry the kind, so switching a field between
- * one value and several drops the old index and creates the new one.
- */
+// Names carry the index kind, so switching a field's multiplicity replaces its index.
 function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
   const t = `{{${table(collection.name)}}}`;
   const col = (name: string): string => q.quoteSimpleColumnName(name);
@@ -481,8 +451,7 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
         sql: `CREATE INDEX ${col(name(`${field.id}_gin`))} ON ${t} USING gin (${col(field.name)})`,
       });
     } else if (field.type === "relation") {
-      // Rules such as `author = @request.auth.id`, back-relations and delete
-      // cascades all look records up by this column.
+      // Rules, back-relations and delete cascades look records up by this column.
       indexes.push({
         name: name(field.id),
         sql: `CREATE INDEX ${col(name(field.id))} ON ${t} (${col(field.name)})`,
@@ -521,11 +490,8 @@ async function createIndex(
     .execute();
 }
 
-/**
- * The trigram operator class, qualified with the schema pg_trgm lives in, so
- * it resolves whatever the search path. Installs the extension when missing,
- * which needs the CREATE privilege on the database.
- */
+// Schema-qualified so it resolves whatever the search path. Installing pg_trgm
+// needs the CREATE privilege on the database.
 async function trigramOperatorClass(tx: Tx): Promise<string> {
   const find = (): Promise<string[]> =>
     tx

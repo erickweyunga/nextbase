@@ -10,11 +10,7 @@ function isFieldError(value: FieldError | ErrorData): value is FieldError {
   return typeof value.code === "string" && typeof value.message === "string";
 }
 
-/**
- * Collects validation errors by path, nested the way the API reports them.
- * The first error at a path wins, and nothing is recorded below a path that
- * already failed.
- */
+// The first error at a path wins; nothing is recorded below a failed path.
 export class Issues {
   readonly data: ErrorData = {};
 
@@ -43,11 +39,8 @@ export class Issues {
   }
 }
 
-/**
- * Reads typed properties of an untrusted object. A missing property yields the
- * fallback; a property of the wrong type records an issue and yields the
- * fallback too, so validation continues and reports every problem at once.
- */
+// A missing or mistyped property yields the fallback (mistyped also records an
+// issue), so validation reports every problem at once.
 export class Reader {
   readonly input: Record<string, unknown>;
   readonly path: Path;
@@ -63,7 +56,6 @@ export class Reader {
     return Object.hasOwn(this.input, key) && this.input[key] !== undefined;
   }
 
-  /** Records an issue on property `key`. */
   fail(key: string | number, code: string, message: string): void {
     this.issues.add([...this.path, key], code, message);
   }

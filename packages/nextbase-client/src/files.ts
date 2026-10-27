@@ -2,17 +2,17 @@ import { ClientError } from "./client-error.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
 import type { RecordModel } from "./shared/api.ts";
 
-/** Larger files go straight to the bucket: Vercel caps request bodies at 4.5 MB. */
+// Larger files go straight to the bucket: Vercel caps request bodies at 4.5 MB.
 const DIRECT_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 export interface FileUrlOptions {
-  /** Ask the browser to save the file rather than show it. */
+  /** Download the file instead of showing it. */
   download?: boolean;
-  /** A file token from `files.getToken()`, for protected files. */
+  /** A token from `files.getToken()`, for protected files. */
   token?: string;
 }
 
-/** Uploaded files: their URLs, and tokens for protected ones. */
+/** File URLs and tokens for protected files. */
 export class FileService {
   readonly #client: NextBaseClient;
 
@@ -20,7 +20,7 @@ export class FileService {
     this.#client = client;
   }
 
-  /** A file's URL. Protected files also need the session cookie, or a `token`. */
+  /** A file's URL. Protected files also need the session cookie or a `token`. */
   getUrl(
     record: Pick<RecordModel, "id" | "collectionId">,
     filename: string,
@@ -36,7 +36,7 @@ export class FileService {
     );
   }
 
-  /** A short-lived token for protected files, for `getUrl` where no cookie is sent. */
+  /** A short-lived token for protected files, for `getUrl` when no cookie is sent. */
   async getToken(options?: SendOptions): Promise<string> {
     return (
       await this.#client.send<{ token: string }>("/files/token", {
@@ -53,10 +53,8 @@ export function hasFiles(body: Record<string, unknown>): boolean {
   );
 }
 
-/**
- * Files as parts, other values in `@jsonPayload` to keep their types. Files
- * over 4 MB are uploaded to the bucket first, when there is one.
- */
+// Non-file values go in `@jsonPayload` to keep their types. Files over 4 MB go
+// to the bucket when there is one.
 export async function toFormData(
   client: NextBaseClient,
   collection: string,
@@ -88,7 +86,7 @@ export async function toFormData(
   return form;
 }
 
-/** The upload's token, or undefined when the server has no bucket. */
+// Returns undefined when the server has no bucket.
 async function uploadDirectly(
   client: NextBaseClient,
   collection: string,

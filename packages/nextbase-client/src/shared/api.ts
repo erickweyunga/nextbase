@@ -7,10 +7,7 @@ export interface FieldError {
   message: string;
 }
 
-/**
- * Validation errors keyed by field, nested for nested input. For example a bad
- * name on the third field of a collection is `{ fields: { 2: { name: ... } } }`.
- */
+/** Validation errors keyed by field, nested like the input: `{ fields: { 2: { name: ... } } }`. */
 export interface ErrorData {
   [key: string]: FieldError | ErrorData;
 }
@@ -35,7 +32,7 @@ export interface ListResult<T> {
   items: T[];
 }
 
-/** A record as the records API returns it. Other keys are the collection's fields. */
+/** A record. Other keys are the collection's fields. */
 export interface RecordModel {
   id: string;
   collectionId: string;
@@ -45,10 +42,7 @@ export interface RecordModel {
   [field: string]: unknown;
 }
 
-/**
- * Response of a successful sign-in or refresh. `token` is left out when the
- * session lives in the HttpOnly cookie, where scripts cannot read it.
- */
+/** A sign-in or refresh response. `token` is omitted when the session is in the HttpOnly cookie. */
 export interface AuthResponse<T extends RecordModel = RecordModel> {
   token?: string;
   record: T;
@@ -75,10 +69,10 @@ export interface SetupStatus {
   required: boolean;
 }
 
-/** How records of an auth collection can sign in: GET /collections/{c}/auth-methods. */
+/** How records of an auth collection can sign in. */
 export interface AuthMethods {
   password: {
-    /** False when the collection's authRule is null: nobody signs in. */
+    /** False when the collection's authRule is null. */
     enabled: boolean;
     /** Fields the identity may be, such as `email` or `username`. */
     identityFields: string[];
@@ -89,16 +83,15 @@ export interface AuthMethods {
     providers: AuthProvider[];
   };
   phone: {
-    /** Whether records sign in with codes texted to their phone. */
     enabled: boolean;
   };
 }
 
 /** An OAuth2 provider a sign-in page can offer. */
 export interface AuthProvider {
-  /** As in the server's `oauth2` option, such as `google`. */
+  /** The server's `oauth2` key, such as `google`. */
   name: string;
-  /** For sign-in buttons, such as `Google`. */
+  /** Button label, such as `Google`. */
   displayName: string;
 }
 

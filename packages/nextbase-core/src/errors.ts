@@ -1,10 +1,9 @@
 import type { ApiErrorBody, ErrorData } from "@nextbasejs/client";
 
-/** An error with an HTTP status, returned to the client as an ApiErrorBody. */
+/** Returned to the client as an ApiErrorBody. */
 export class ApiError extends Error {
   readonly status: number;
   readonly data: ErrorData;
-  /** Extra response headers, such as Retry-After. */
   readonly headers: Readonly<Record<string, string>>;
 
   constructor(
@@ -27,7 +26,6 @@ export class ApiError extends Error {
       data: this.data,
     };
     const headers = new Headers(this.headers);
-    // A 401 tells the client how to authenticate: here, with a Bearer token.
     if (this.status === 401) headers.set("www-authenticate", "Bearer");
     return Response.json(body, { status: this.status, headers });
   }

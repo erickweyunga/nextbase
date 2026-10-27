@@ -1,8 +1,7 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 
-// scrypt with N=2^14, r=8, p=5: slow enough that guessing stolen hashes is
-// expensive, while using only 16 MiB per hash, so small serverless instances
-// can verify several sign-ins at once.
+// Slow enough to make cracking stolen hashes expensive, yet only 16 MiB per
+// hash so small serverless instances can verify several sign-ins at once.
 const PARAMS = { ln: 14, r: 8, p: 5 } as const;
 const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
@@ -24,8 +23,7 @@ function derive(
   const N = 2 ** ln;
   return new Promise((resolve, reject) => {
     scrypt(
-      // The same password can be typed as different Unicode sequences (an
-      // accented letter as one character or two); NFC makes them one.
+      // One password can be typed as different Unicode sequences; NFC unifies them.
       password.normalize("NFC"),
       salt,
       length,
@@ -38,14 +36,13 @@ function derive(
 const b64 = (bytes: Buffer): string =>
   bytes.toString("base64").replace(/=+$/, "");
 
-/** Hashes a password into PHC format: `$scrypt$ln=14,r=8,p=5$<salt>$<hash>`. */
+/** PHC format: `$scrypt$ln=14,r=8,p=5$<salt>$<hash>`. */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_LENGTH);
   const key = await derive(password, salt, PARAMS, KEY_LENGTH);
   return `$scrypt$ln=${PARAMS.ln},r=${PARAMS.r},p=${PARAMS.p}$${b64(salt)}$${b64(key)}`;
 }
 
-/** Whether `password` matches `hash`. Malformed hashes never match. */
 export async function verifyPassword(
   password: string,
   hash: string,
@@ -73,7 +70,6 @@ export async function verifyPassword(
   return key.length === expectedKey.length && timingSafeEqual(key, expectedKey);
 }
 
-/** Whether `hash` uses other parameters than new hashes, so it should be redone on login. */
 export function needsRehash(hash: string): boolean {
   return !hash.startsWith(
     `$scrypt$ln=${PARAMS.ln},r=${PARAMS.r},p=${PARAMS.p}$`,
@@ -82,10 +78,7 @@ export function needsRehash(hash: string): boolean {
 
 let dummyHash: Promise<string> | undefined;
 
-/**
- * Spends the same time as verifying a real password, so a login for an
- * unknown identity is not answered noticeably faster than a wrong password.
- */
+/** Equalizes timing so an unknown identity is not answered faster than a wrong password. */
 export async function verifyDummyPassword(password: string): Promise<void> {
   dummyHash ??= hashPassword("nextbase-dummy-password");
   await verifyPassword(password, await dummyHash);

@@ -3,11 +3,10 @@ import type { Builder, QueryConfig, QueryResult } from "./builder.ts";
 /** Values for `{:name}` placeholders, keyed by name. */
 export type Params = Record<string, unknown>;
 
-/** A result row, keyed by column name. */
 export type Row = Record<string, unknown>;
 
 export interface ExecResult {
-  /** Rows inserted, updated or deleted. 0 for statements that report no count. */
+  /** 0 for statements that report no count. */
   rowsAffected: number;
 }
 
@@ -20,20 +19,9 @@ export class NoRowsError extends Error {
 }
 
 /**
- * A SQL statement with named parameters, ready to run. Created by
- * `newQuery()` and the other builder methods; run with `execute()`, `all()`,
- * `one()`, `column()` or `row()`. A query can be run more than once.
- *
- * Placeholders are written `{:name}` and become `$1`, `$2`, ... in the SQL sent
- * to Postgres; a name used twice reuses its number. `{{table}}` and
- * `[[column]]` are replaced with quoted identifiers. Running a query that has
- * a placeholder with no bound value throws.
- *
- * ```ts
- * await db.newQuery("SELECT * FROM {{posts}} WHERE [[author]]={:author}")
- *   .bind({ author: id })
- *   .all();
- * ```
+ * A reusable SQL statement. `{:name}` becomes `$n` (a repeated name reuses its
+ * number); `{{table}}` and `[[column]]` become quoted identifiers. Running with
+ * an unbound placeholder throws.
  */
 export class Query {
   /** The SQL as written, with `{:name}` placeholders. */
@@ -52,18 +40,17 @@ export class Query {
     this.#placeholders = processed.placeholders;
   }
 
-  /** A copy of the bound parameters. */
   get params(): Params {
     return { ...this.#params };
   }
 
-  /** Binds parameter values, adding to and overriding earlier bindings. */
+  /** Merges over earlier bindings. */
   bind(params: Params): this {
     this.#params = { ...this.#params, ...params };
     return this;
   }
 
-  /** Runs the statement for its effect and returns the number of rows it changed. Returned rows are ignored. */
+  /** Runs for effect; returned rows are ignored. */
   async execute(): Promise<ExecResult> {
     const result = await this.#run("exec");
     return { rowsAffected: result.rowCount ?? 0 };
@@ -75,23 +62,19 @@ export class Query {
     return result.rows as T[];
   }
 
-  /**
-   * Returns the first row, or throws NoRowsError. `T` is not checked at
-   * runtime. Every row is fetched, so the SQL should limit itself to one.
-   */
+  /** Throws NoRowsError if empty. Fetches every row, so the SQL should LIMIT 1. */
   async one<T = Row>(): Promise<T> {
     const { rows } = await this.#run("query");
     if (rows.length === 0) throw new NoRowsError();
     return rows[0] as T;
   }
 
-  /** Returns the first column of every row. */
   async column<T = unknown>(): Promise<T[]> {
     const result = await this.#run("query", "array");
     return result.rows.map((row) => (row as unknown[])[0] as T);
   }
 
-  /** Returns the first row as an array of column values, or throws NoRowsError. */
+  /** First row as an array of values. Throws NoRowsError if empty. */
   async row<T extends unknown[] = unknown[]>(): Promise<T> {
     const { rows } = await this.#run("query", "array");
     if (rows.length === 0) throw new NoRowsError();

@@ -6,7 +6,7 @@ import type {
 } from "@nextbasejs/core";
 import { cookies } from "next/headers";
 
-/** The route handler exports of `app/api/nextbase/[...path]/route.ts`. */
+/** Exports of `app/api/nextbase/[...path]/route.ts`. */
 export interface NextRouteHandlers {
   GET: RouteHandler;
   POST: RouteHandler;
@@ -16,14 +16,11 @@ export interface NextRouteHandlers {
 }
 
 /**
- * Route handlers that mount `nextbase` in the App Router:
+ * App Router handlers for `nextbase`. HEAD and OPTIONS are handled by Next.js.
  *
  * ```ts
  * export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
  * ```
- *
- * Next.js runs HEAD through GET and answers OPTIONS itself. No route takes
- * PUT, but routing it to NextBase answers 405 with an Allow header.
  */
 export function newNextHandler(nextbase: NextBase): NextRouteHandlers {
   const { handle } = nextbase;
@@ -37,10 +34,8 @@ export function newNextHandler(nextbase: NextBase): NextRouteHandlers {
 }
 
 /**
- * A client for server components, server actions and route handlers that
- * acts as the user of the session cookie, read with Next.js's `cookies()`.
- * In server actions and route handlers, signing in with `{ cookie: true }`
- * and signing out update the cookie. Call it per request.
+ * A client acting as the session cookie's user. Call it per request; in server
+ * actions and route handlers, sign-in with `{ cookie: true }` and sign-out update the cookie.
  */
 export async function serverClient(
   nextbase: NextBase,

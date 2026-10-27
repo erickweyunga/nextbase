@@ -14,14 +14,13 @@ import {
   parseFilter,
 } from "./parser.ts";
 
-/** The parts of a request that rules can read through `@request.*`. */
+/** What rules can read through `@request.*`. */
 export interface RequestInfo {
   method: string;
-  /** Query parameters. */
   query: Record<string, string>;
   /** Lowercased header names. */
   headers: Record<string, string>;
-  /** The submitted values of a create or update, after normalization. */
+  /** Normalized create or update values. */
   body: Record<string, unknown>;
 }
 
@@ -30,9 +29,8 @@ export interface FilterContext {
   principal: Principal;
   request: RequestInfo;
   /**
-   * `filter`: an untrusted client filter. Hidden fields are off limits, and a
-   * path into a related collection only sees records the caller may view.
-   * `rule`: an access rule written by a superuser, trusted.
+   * `filter` is untrusted: no hidden fields, and related paths only see records
+   * the caller may view. `rule` is a trusted superuser-written rule.
    */
   mode: "filter" | "rule";
 }
@@ -48,48 +46,43 @@ const CASTS: Record<SqlType, string> = {
   date: "timestamptz",
 };
 
-/** A value missing from the request, e.g. `@request.auth.id` without a signed-in caller. */
+/** A missing request value, e.g. `@request.auth.id` when signed out. */
 const BLANK = Symbol("blank");
 
-/** A value known when compiling: a literal, a `@request.*` value or a date macro. */
+/** A literal, a `@request.*` value or a date macro. */
 interface Constant {
   kind: "constant";
   value: unknown;
-  /** Undefined when the value adapts to the other operand, as literals and blanks do. */
+  /** Undefined when it adapts to the other operand. */
   type: SqlType | undefined;
 }
 
 interface RelationStep {
   field: Field & { type: "relation" };
-  /** The collection the step arrives at. */
   target: Collection;
-  /** `comments_via_post`: from a post to the comments whose `post` field points at it. */
+  /** `comments_via_post`: the comments whose `post` points here. */
   back: boolean;
 }
 
-/** A field reached from some rows through zero or more relations. */
 interface Path {
   kind: "path";
-  /** The SQL alias of the rows the path starts from. */
+  /** SQL alias of the starting rows. */
   root: string;
   steps: RelationStep[];
-  /** The collection of the final field. */
   collection: Collection;
   field: Field;
-  /** Keys into a JSON field: `meta.address.city`. */
+  /** `meta.address.city` */
   jsonKeys: string[];
   modifier: "length" | "lower" | undefined;
-  /** `comments_via_post:length`: the number of related records. */
+  /** `comments_via_post:length` */
   count: boolean;
 }
 
 type Resolved = Constant | Path;
 
 /**
- * Compiles a filter or rule on `collection`, whose rows are aliased `alias`,
- * into a parameterized SQL condition. Every value is bound; every name comes
- * from the schema. Returns undefined for an empty expression. Throws
- * FilterError for anything invalid.
+ * Every value is bound and every name comes from the schema. Undefined for an
+ * empty expression; throws FilterError for anything invalid.
  */
 export function compileFilter(
   source: string,
@@ -103,10 +96,7 @@ export function compileFilter(
   return exp(compiler.compile(node, collection, alias), compiler.params);
 }
 
-/**
- * Checks that a stored rule compiles against `schema`, without a request.
- * Returns the problem, or undefined when the rule is valid.
- */
+/** The problem compiling a stored rule, or undefined when valid. */
 export function ruleProblem(
   rule: string | null,
   collection: Collection,
@@ -133,7 +123,7 @@ class Compiler {
   readonly params: Params = {};
   readonly #context: FilterContext;
   #aliases: number;
-  /** `@collection` references: one joined row variable per collection and alias. */
+  /** One joined row variable per `@collection` reference and alias. */
   readonly #joined = new Map<
     string,
     { alias: string; collection: Collection }
@@ -145,10 +135,8 @@ class Compiler {
   }
 
   /**
-   * Compiles a whole expression. With `@collection` references, it holds when
-   * some combination of rows of those collections satisfies it; an empty
-   * collection contributes a row of NULLs, so the rest of the expression still
-   * counts.
+   * With `@collection` references, holds when some row combination satisfies it;
+   * an empty collection contributes a NULL row so the rest still counts.
    */
   compile(node: Node, collection: Collection, alias: string): string {
     const sql = this.#node(node, collection, alias);
@@ -282,8 +270,7 @@ class Compiler {
         if (!back || offLimits(back.field)) throw unknown(i);
         steps.push({ field: back.field, target: back.source, back: true });
         current = back.source;
-        // A path ending at a back-relation compares the related records' ids,
-        // or counts them with :length.
+        // A back-relation compares related ids, or counts them with :length.
         if (last) {
           const id = current.fields.find((f) => f.name === "id") as Field;
           if (modifier !== undefined && modifier !== "length")
@@ -407,7 +394,6 @@ class Compiler {
     );
   }
 
-  /** Compares two constants, e.g. `@request.auth.id != ""`. */
   #compareConstants(left: Constant, op: Operator, right: Constant): string {
     const type =
       left.type ??
@@ -420,7 +406,6 @@ class Compiler {
     return this.#operator(l, type, op, r, true);
   }
 
-  /** Compares a column expression with a constant or with another column. */
   #compareColumn(
     sql: string,
     type: SqlType,
@@ -453,16 +438,15 @@ class Compiler {
       const pattern = value.includes("%")
         ? value
         : `%${value.replace(/[\\%_]/g, "\\$&")}%`;
-      // A bare column, so a trigram index on it can serve the match; only a
-      // column that can be NULL needs COALESCE for `!~` to keep NULL rows.
+      // Bare column so a trigram index can serve it; COALESCE only when nullable,
+      // so `!~` keeps NULL rows.
       const subject = nullable ? `COALESCE(${sql}, '')` : sql;
       return `${subject} ${op === "!~" ? "NOT ILIKE" : "ILIKE"} ${this.#bind(pattern, "text")} ESCAPE '\\'`;
     }
     const value = coerce(right.value, type, nullable);
     if (value === null && op === "=") return `${sql} IS NULL`;
     if (value === null && op === "!=") return `${sql} IS NOT NULL`;
-    // Against a non-NULL value, `=` never needs the NULL-safe form: a NULL
-    // column matches neither way. `!=` does, so NULL counts as different.
+    // Against a non-NULL value only `!=` needs the NULL-safe form.
     return this.#operator(
       sql,
       type,
@@ -472,11 +456,8 @@ class Compiler {
     );
   }
 
-  /**
-   * `nullable`: whether either side can be NULL. Plain `=` and `<>` are used
-   * otherwise, because Postgres can serve them from a btree index and cannot
-   * serve IS [NOT] DISTINCT FROM.
-   */
+  // Plain `=`/`<>` when not nullable: a btree index can serve them, unlike
+  // IS [NOT] DISTINCT FROM.
   #operator(
     left: string,
     type: SqlType,
@@ -560,10 +541,8 @@ class Compiler {
     );
     if (!leftValues) return condition;
 
-    // Walk the relations and the values of multi-valued fields in a
-    // correlated subquery, over every pair when both sides have several
-    // values. ?op: some pair matches. op: both sides have values and every
-    // pair matches.
+    // Correlated subquery over every value pair. ?op: some pair matches.
+    // op: both sides have values and every pair matches.
     const sides = rightValues ? [leftValues, rightValues] : [leftValues];
     const exists = (from: string[], conditions: string[]): string =>
       `EXISTS (SELECT 1 FROM ${from.join(", ")} WHERE ${conditions.join(" AND ") || "TRUE"})`;
@@ -577,10 +556,6 @@ class Compiler {
     ].join(" AND ")})`;
   }
 
-  /**
-   * The values of a path that needs a subquery: FROM items and join
-   * conditions walking its relations, and the SQL of one value.
-   */
   #values(
     path: Path,
     type: SqlType,
@@ -600,7 +575,6 @@ class Compiler {
     return { from, joins, element: `${quote(values)}."v"` };
   }
 
-  /** FROM items and join conditions that walk `steps` from rows aliased `root`. */
   #chain(
     steps: RelationStep[],
     root: string,
@@ -634,7 +608,6 @@ class Compiler {
     return { from, joins, last: previous };
   }
 
-  /** The SQL of a path's final value, on rows aliased `alias`. */
   #column(path: Path, alias: string, type: SqlType): string {
     const { field, collection, modifier, jsonKeys } = path;
     if (path.count) {
@@ -678,11 +651,7 @@ class Compiler {
     return modifier === "lower" ? `lower(${sql})` : sql;
   }
 
-  /**
-   * A value inside a JSON field, as `type`. Keys are bound parameters. A value
-   * of another JSON type, or a missing key, reads as NULL rather than failing
-   * a cast.
-   */
+  // A mistyped or missing value reads as NULL rather than failing a cast.
   #json(col: string, keys: string[], type: SqlType): string {
     if (keys.length === 0) {
       if (type !== "text")
@@ -707,10 +676,7 @@ class Compiler {
     }
   }
 
-  /**
-   * In a client filter, a path into another collection only sees the records
-   * the caller may view, so filters cannot probe records they cannot read.
-   */
+  // So client filters cannot probe records the caller cannot view.
   #visibility(target: Collection, alias: string): string | undefined {
     const { mode, principal } = this.#context;
     if (mode === "rule" || principal.superuser) return undefined;
@@ -776,17 +742,15 @@ function sqlType(field: Field): SqlType {
   }
 }
 
-/** Whether the final field holds several values, compared one by one. */
 function isPlural(path: Path): boolean {
   return !path.count && isMultiple(path.field) && path.modifier !== "length";
 }
 
-/** Whether the path is compared in a correlated subquery rather than as one column. */
 function needsSubquery(path: Path): boolean {
   return !path.count && (path.steps.length > 0 || isPlural(path));
 }
 
-/** The path's type; JSON values take `jsonType`, the type of what they are compared with. */
+/** JSON values take `jsonType`, the type of the other operand. */
 function pathType(path: Path, jsonType: SqlType): SqlType {
   if (path.count || path.modifier === "length") return "number";
   if (path.field.type === "json")
@@ -794,10 +758,6 @@ function pathType(path: Path, jsonType: SqlType): SqlType {
   return sqlType(path.field);
 }
 
-/**
- * Whether the value can be SQL NULL: a blank date or single relation, a
- * missing JSON value, or any column of a view.
- */
 function isNullable(path: Path): boolean {
   const { field, modifier } = path;
   if (path.count || modifier === "length") return false;
@@ -818,7 +778,7 @@ function jsType(value: unknown): SqlType | undefined {
   return undefined;
 }
 
-/** Converts a constant to `type`, or throws. Blanks become the type's blank value. */
+/** Blanks become the type's blank value. */
 function coerce(value: unknown, type: SqlType, nullable: boolean): unknown {
   if (
     value === BLANK ||

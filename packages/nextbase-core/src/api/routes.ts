@@ -83,21 +83,18 @@ import {
 
 interface Context {
   request: Request;
-  /** Decoded path parameters, in order. */
   params: string[];
   db: DB;
   schema: Schema;
   principal: Principal;
   /** Sent by server code through `client()`, not by a browser. */
   inProcess: boolean;
-  /** Milliseconds a records API statement may run, or 0 for no limit. */
+  /** 0 means no limit. */
   statementTimeout: number;
-  /** Which other sites may write through the session cookie. */
   origins: OriginPolicy;
   mailer: Mailer;
   sms: Sms;
   oauth2: OAuth2;
-  /** Reject new passwords found in data breaches. */
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
@@ -215,7 +212,7 @@ export const ROUTES: readonly Route[] = [
     pattern: /^\/batch$/,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
-      // One transaction: every write is saved, or none is.
+      // All or nothing.
       const results = await bounded(context, async (tx) => {
         const replies: Reply[] = [];
         for (const [i, write] of writes.entries()) {
@@ -504,8 +501,7 @@ export const ROUTES: readonly Route[] = [
         checkRedirect(query.get("errorRedirect"), "errorRedirect") || redirect;
       let linkRecordId: string | null = null;
       if (query.get("link") === "true") {
-        // Linking adds a way into the signed-in account, so only this site
-        // may start it.
+        // Linking adds a way into the account, so only this site may start it.
         checkSameOrigin(request, origins);
         if (!principal.record || principal.collection?.id !== collection.id) {
           throw new ApiError(
@@ -551,9 +547,8 @@ export const ROUTES: readonly Route[] = [
       try {
         const state = await oauth2.consumeState(db, request);
         ({ redirect, errorRedirect } = state);
-        // The sign-in must return from the provider it went to. Otherwise a
-        // malicious provider could pass off its response as another
-        // provider's and finish a sign-in it was never part of.
+        // Otherwise a malicious provider could pass off its response as
+        // another provider's.
         if (params[0] !== state.provider) {
           throw new OAuth2Error(
             "oauth2_failed",
@@ -680,8 +675,7 @@ export const ROUTES: readonly Route[] = [
       const collection = authCollection(schema, params[0] as string);
       const { cookie, ...input } = await readRecordBody(request);
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
-      // Chosen here, so the new record can be signed in even when the
-      // caller may not view it.
+      // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
         typeof input.id === "string" && input.id !== ""
           ? input.id
@@ -697,8 +691,7 @@ export const ROUTES: readonly Route[] = [
       try {
         await checkAuthRule(db, schema, collection, id);
       } catch (error) {
-        // Created, but the collection does not let it sign in yet, such as
-        // before verifying its email: 202, accepted but not complete.
+        // Created but not allowed to sign in yet (e.g. unverified email).
         if (error instanceof ApiError && error.status === 403) {
           return new Response(null, { status: 202 });
         }
@@ -812,11 +805,8 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /**
- * Runs records API work in one transaction whose statements Postgres stops
- * after `statementTimeout`, so an expensive filter cannot run unbounded.
- * Set with set_config(..., true), which is SET LOCAL: transaction-scoped, so
- * it works through transaction poolers, unlike a session or startup setting.
- * Writes nest inside as savepoints.
+ * Runs records API work in a transaction bounded by `statementTimeout`. The
+ * timeout is transaction-local (SET LOCAL) so it works through transaction poolers.
  */
 function bounded<T>(context: Context, run: (tx: Tx) => Promise<T>): Promise<T> {
   return context.db.transaction(async (tx) => {
@@ -834,7 +824,7 @@ function parse({ request }: Context): { url: URL } {
   return { url: new URL(request.url) };
 }
 
-/** What rules may read about the request: `@request.method`, `.query`, `.headers` and `.body`. */
+/** The `@request.*` values rules may read. */
 function recordsContext(
   context: Context,
   body: Record<string, unknown>,
@@ -866,7 +856,6 @@ function recordsContext(
   };
 }
 
-/** A status and JSON body: one write's outcome, alone or in a batch. */
 interface Reply {
   status: number;
   body?: unknown;
@@ -886,7 +875,7 @@ interface RecordWrite {
   query: URLSearchParams;
 }
 
-/** Creates, updates or deletes a record. 204 when the caller may not view the result. */
+// 204 when the caller may not view the result.
 async function writeRecord(
   context: Context,
   db: DB | Tx,
@@ -917,11 +906,7 @@ async function writeRecord(
 
 const MAX_BATCH = 50;
 
-/**
- * Validates a batch: `{ requests: [{ method, url, body }] }`, where each url
- * is a records path below the base path, such as `/collections/posts/records`,
- * optionally with `expand` and `fields`.
- */
+// `{ requests: [{ method, url, body }] }`, each url a records path below the base path.
 function parseBatch(input: Record<string, unknown>): RecordWrite[] {
   const { requests } = input;
   if (
@@ -978,10 +963,7 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
   });
 }
 
-/**
- * A POST route for an email flow on an auth collection, answering 204: the
- * same for accounts that exist and ones that do not.
- */
+// Always 204, so it does not reveal which accounts exist.
 function flow(
   name: string,
   run: (
@@ -1012,10 +994,7 @@ function flow(
   ];
 }
 
-/**
- * A POST route for a phone flow on an auth collection, answering 204: the
- * same for phones that belong to accounts and ones that do not.
- */
+// Always 204, so it does not reveal which phones have accounts.
 function phoneFlow(
   name: string,
   run: (
@@ -1051,10 +1030,8 @@ function phoneContext({
 }
 
 /**
- * Starts a session for `record` and answers with it: the token in the body,
- * or with `cookie` in an HttpOnly cookie. A cookie sign-in ends the session
- * in the cookie it replaces, so a session someone planted in the browser
- * before sign-in never becomes signed in.
+ * Answers with the token in the body, or with `cookie` in an HttpOnly cookie.
+ * A cookie sign-in ends the replaced cookie's session, so a planted session never signs in.
  */
 async function startSession(
   { request, db, principal }: Pick<Context, "request" | "db" | "principal">,
@@ -1097,17 +1074,13 @@ function authResponse(
   });
 }
 
-/** The caller's session; session endpoints need a signed-in caller. */
 function requireSession(principal: Principal): Session {
   if (!principal.session)
     throw new ApiError(401, "Sign in to manage sessions.");
   return principal.session;
 }
 
-/**
- * The auth record of a path, which only the record itself and superusers
- * may manage. Anyone else gets 404, so it reveals no records.
- */
+// Only the record itself and superusers; anyone else gets 404 so nothing leaks.
 function ownRecord(
   schema: Schema,
   principal: Principal,
@@ -1133,10 +1106,7 @@ function authCollection(schema: Schema, idOrName: string): AuthCollection {
   return collection;
 }
 
-/**
- * Runs a schema change, reporting data that blocks its DDL (for example a
- * new unique index over duplicate values) as a 400 rather than a server error.
- */
+// Data that blocks the DDL (e.g. duplicates under a new unique index) is a 400, not a 500.
 async function schemaChange<T>(change: () => Promise<T>): Promise<T> {
   try {
     return await change();

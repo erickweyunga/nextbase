@@ -19,28 +19,15 @@ interface Union {
   query: Query;
 }
 
-// Matches an alias at the end of a column or table: `name AS alias` or `name alias`.
+// Trailing alias: `name AS alias` or `name alias`.
 const ALIAS = /(?:\s+as\s+|\s+)([\w\-.]+)$/i;
-// Matches a sort direction at the end of an ORDER BY column.
+// Trailing ORDER BY direction and NULLS ordering.
 const DIRECTION =
   /\s+((?:ASC|DESC)(?:\s+NULLS\s+(?:FIRST|LAST))?|NULLS\s+(?:FIRST|LAST))$/i;
 
 /**
- * A SELECT statement built clause by clause, created by `select()`. Each
- * method sets one clause and returns the query for chaining; the `and...` and
- * `or...` methods add to a clause instead of replacing it. Run it with
- * `all()`, `one()`, `column()` or `row()`, or turn it into a Query with
- * `build()`.
- *
- * ```ts
- * const posts = await db
- *   .select("id", "title")
- *   .from("posts")
- *   .where(hash({ author: id }))
- *   .orderBy("created DESC")
- *   .limit(20)
- *   .all();
- * ```
+ * A SELECT built clause by clause. Setters replace a clause; the `and...` and
+ * `or...` methods extend it.
  */
 export class SelectQuery {
   readonly #builder: Builder;
@@ -73,7 +60,6 @@ export class SelectQuery {
     return this;
   }
 
-  /** Whether to write `SELECT DISTINCT`. */
   distinct(value: boolean): this {
     this.#distinct = value;
     return this;
@@ -106,10 +92,7 @@ export class SelectQuery {
     return this;
   }
 
-  /**
-   * Adds a join of the given type, for example `"CROSS JOIN"`. `table` may
-   * have an alias. Without `on`, the join has no ON clause.
-   */
+  /** `type` is SQL such as `"CROSS JOIN"`. Without `on`, there is no ON clause. */
   join(type: string, table: string, on?: Expression): this {
     this.#joins.push({ type, table, on });
     return this;
@@ -163,47 +146,42 @@ export class SelectQuery {
     return this;
   }
 
-  /**
-   * Appends `UNION (query)`. The query's parameters are added to this one's;
-   * a name bound to a different value in each is renamed, so both keep their
-   * values.
-   */
+  /** Params are merged; a name bound to different values is renamed in the union. */
   union(query: Query): this {
     this.#unions.push({ all: false, query });
     return this;
   }
 
-  /** Appends `UNION ALL (query)`, which keeps duplicate rows. See `union()`. */
+  /** Like `union()`, but keeps duplicate rows. */
   unionAll(query: Query): this {
     this.#unions.push({ all: true, query });
     return this;
   }
 
-  /** A negative limit means no limit. Throws RangeError for a non-integer. */
+  /** Negative means no limit. Throws RangeError for a non-integer. */
   limit(limit: number): this {
     this.#limit = checkInteger("limit", limit);
     return this;
   }
 
-  /** Rows to skip before the first returned row. Throws RangeError for a non-integer. */
+  /** Throws RangeError for a non-integer. */
   offset(offset: number): this {
     this.#offset = checkInteger("offset", offset);
     return this;
   }
 
-  /** Sets values for `{:name}` placeholders used in the query's expressions, replacing earlier ones. */
+  /** Replaces earlier placeholder values. */
   bind(params: Params): this {
     this.#params = { ...params };
     return this;
   }
 
-  /** Adds placeholder values, overriding earlier ones with the same name. */
+  /** Merges over earlier placeholder values. */
   andBind(params: Params): this {
     Object.assign(this.#params, params);
     return this;
   }
 
-  /** Builds the statement into a Query without running it. */
   build(): Query {
     return this.#build(this.#where, this.#limit);
   }
@@ -212,7 +190,7 @@ export class SelectQuery {
     return this.build().all<T>();
   }
 
-  /** Returns the first row, or throws NoRowsError. Fetches one row only. */
+  /** Fetches one row only. Throws NoRowsError if empty. */
   one<T = Row>(): Promise<T> {
     return this.#build(this.#where, this.#firstRowLimit()).one<T>();
   }
@@ -221,16 +199,14 @@ export class SelectQuery {
     return this.build().column<T>();
   }
 
-  /** Returns the first row's values, or throws NoRowsError. Fetches one row only. */
+  /** Fetches one row only. Throws NoRowsError if empty. */
   row<T extends unknown[] = unknown[]>(): Promise<T> {
     return this.#build(this.#where, this.#firstRowLimit()).row<T>();
   }
 
   /**
-   * Returns the row whose primary key is `pk`, or throws NoRowsError. The key
-   * condition is combined with the WHERE clause using AND, without changing
-   * this query. `from()` must name the table; composite keys are not
-   * supported, use `where(hash(...)).one()`.
+   * Row whose key is `pk`, ANDed with WHERE without changing this query. Needs
+   * `from()`; for composite keys use `where(hash(...)).one()`.
    */
   async model<T = Row>(pk: unknown, options: ModelOptions = {}): Promise<T> {
     const key = options.pk ?? "id";
@@ -271,8 +247,7 @@ export class SelectQuery {
     return this.#builder.newQuery(sql).bind(params);
   }
 
-  // A LIMIT inside a UNION applies only to its first part, so it is only
-  // added when there is no union and no explicit limit.
+  // Skipped with a union, where LIMIT would bind to the first part only.
   #firstRowLimit(): number {
     return this.#limit < 0 && this.#unions.length === 0 ? 1 : this.#limit;
   }

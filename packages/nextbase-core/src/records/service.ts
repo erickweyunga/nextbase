@@ -36,29 +36,26 @@ import { serializeRecord } from "./serialize.ts";
 import { prepareWrite } from "./values.ts";
 
 export interface RecordsContext {
-  /** A transaction when the request is part of a batch. */
   db: DB | Tx;
-  /** The pool itself, for writes that must outlive a failed transaction. */
+  /** For writes that must outlive a failed transaction. */
   pool: DB;
   schema: Schema;
   principal: Principal;
   request: RequestInfo;
-  /** Reject new passwords found in data breaches (see auth/breached.ts). */
   rejectBreachedPasswords?: boolean;
-  /** Protected auth fields NextBase itself sets in this write (see values.ts). */
+  /** Protected auth fields NextBase itself sets in this write. */
   vouched?: ReadonlySet<string>;
   /** Required, with `storage`, for writes that change files. */
   effects?: Effects;
   storage?: Storage;
 }
 
-/** The SQL alias of the collection's rows in every records query. Rules compile against it. */
+/** Rules compile against this alias for the collection's rows. */
 const ALIAS = "t0";
 const MAX_PER_PAGE = 1000;
 const DEFAULT_PER_PAGE = 30;
 const MAX_EXPAND_DEPTH = 6;
 const SUPERUSERS = "_superusers";
-/** Records listed per back-relation in `expand`. */
 const MAX_BACK_RELATIONS = 1000;
 
 type Rule = string | null;
@@ -142,7 +139,7 @@ async function view(
   return record;
 }
 
-/** Creates a record. Returns it, or undefined when the caller may not view it. */
+/** Returns the record, or undefined when the caller may not view it. */
 export async function newRecord(
   ctx: RecordsContext,
   collection: Collection,
@@ -161,8 +158,8 @@ export async function newRecord(
         ...(ctx.vouched && { vouched: ctx.vouched }),
         storage: ctx.storage,
       });
-      // Checked on the would-be row before inserting, so a caller without
-      // permission never learns anything from a constraint error.
+      // Checked before inserting, so a denied caller learns nothing from a
+      // constraint error.
       if (!ctx.principal.superuser && collection.createRule !== "") {
         const rule = compile(
           { ...ctx, request: { ...ctx.request, body: prepared.body } },
@@ -189,7 +186,7 @@ export async function newRecord(
   );
 }
 
-/** Updates a record. Returns it, or undefined when the caller may not view it. */
+/** Returns the record, or undefined when the caller may not view it. */
 export async function updateRecord(
   ctx: RecordsContext,
   collection: Collection,
@@ -225,9 +222,8 @@ export async function updateRecord(
       } catch (error) {
         invalid = error;
       }
-      // The rule decides first: a caller it rejects gets a 404, never the
-      // validation errors that would confirm the record exists. Bare fields
-      // are the stored row; @request.body is the submitted values.
+      // Rule first: a rejected caller gets 404, never validation errors that
+      // would confirm the record exists.
       if (!ctx.principal.superuser && collection.updateRule !== "") {
         const body = prepared?.body ?? {};
         const rule = compile(
@@ -261,8 +257,7 @@ export async function updateRecord(
           to: existing.email as string,
         });
       }
-      // A new tokenKey (password or email change) ends the record's other
-      // sessions; the caller's own stays signed in.
+      // A new tokenKey ends the record's other sessions; the caller's stays.
       const { tokenKey } = prepared.values;
       if (collection.type === "auth" && typeof tokenKey === "string") {
         const { principal } = ctx;
@@ -319,10 +314,7 @@ async function keepFiles(
   await storeFiles(tx, ctx.storage, ctx.effects, collection, id, files);
 }
 
-/**
- * Checks a new password against data breaches, when enabled. Before the
- * write's transaction, so no row stays locked while the service answers.
- */
+// Runs before the write's transaction, so no row stays locked during the lookup.
 async function checkNewPassword(
   ctx: RecordsContext,
   collection: Collection,
@@ -334,10 +326,7 @@ async function checkNewPassword(
   if (typeof password === "string") await checkBreached(password);
 }
 
-/**
- * Record ids are 15 lowercase letters or digits; anything else cannot exist.
- * A view's ids come from its query and can be any text.
- */
+// A view's ids come from its query and can be any text.
 function checkId(collection: Collection, id: string): void {
   const valid =
     collection.type === "view"
@@ -346,10 +335,7 @@ function checkId(collection: Collection, id: string): void {
   if (!valid) throw new ApiError(404, "Record not found.");
 }
 
-/**
- * Runs a read. A view collection's rows come from its query, which must run
- * as the view role, whose privileges keep it from what views may not read.
- */
+// View queries run as the view role, whose privileges limit what they can read.
 function reading<T>(
   ctx: RecordsContext,
   collection: Collection,
@@ -361,11 +347,8 @@ function reading<T>(
   );
 }
 
-/**
- * Checks the current password a password change gives, through the same
- * per-account throttle as login, counted outside the update's transaction so
- * a rejected change still counts.
- */
+// Throttled like login, counted outside the update's transaction so a rejected
+// attempt still counts.
 async function checkOldPassword(
   ctx: RecordsContext,
   collection: Collection,
@@ -385,18 +368,13 @@ async function checkOldPassword(
   await clearAttempts(ctx.pool, keys);
 }
 
-/** Views are read-only: their records are rows of a query. */
 function checkWritable(collection: Collection): void {
   if (collection.type === "view") {
     throw new ApiError(400, "View collections are read-only.");
   }
 }
 
-/**
- * Refuses to delete the last superuser, which would lock everyone out of the
- * instance. Locks every superuser row first, so two concurrent deletes cannot
- * both see one other superuser left.
- */
+// Locks every superuser row so two concurrent deletes cannot both see one left.
 async function keepOneSuperuser(tx: Builder, id: string): Promise<void> {
   const ids = await tx
     .newQuery(`SELECT id FROM {{${table(SUPERUSERS)}}} ORDER BY id FOR UPDATE`)
@@ -414,7 +392,7 @@ function denyNullRule(ctx: RecordsContext, rule: Rule): void {
   }
 }
 
-/** A rule as a condition on ALIAS rows: none for superusers and empty rules, 403 for null rules. */
+/** None for superusers and empty rules; 403 for null rules. */
 function ruleCondition(
   ctx: RecordsContext,
   collection: Collection,
@@ -444,7 +422,7 @@ function compile(
   }
 }
 
-/** Whether the manageRule lets the caller change protected auth fields of record `id`. */
+/** Whether manageRule lets the caller change protected auth fields of `id`. */
 async function canManage(
   q: Builder,
   ctx: RecordsContext,
@@ -481,7 +459,7 @@ async function matchesStoredRow(
   return rows.length > 0;
 }
 
-/** Evaluates a create rule on the row about to be inserted, as a one-row CTE named ALIAS. */
+/** Evaluates a create rule on the pending row, as a one-row CTE named ALIAS. */
 async function matchesNewRow(
   q: Builder,
   collection: Collection,
@@ -504,11 +482,8 @@ async function matchesNewRow(
 }
 
 /**
- * The records of `target` whose relation `field` points at each of `ids`, at
- * most MAX_BACK_RELATIONS per id, in id order. The limit applies per id in
- * the query itself, through a LATERAL subquery, so a record with millions of
- * related records costs no more than one with a thousand. A related record
- * can come back once per id it points at.
+ * At most MAX_BACK_RELATIONS per id, limited in a LATERAL subquery so a huge
+ * fan-out stays cheap. A record can come back once per id it points at.
  */
 async function backRelated(
   q: Builder,
@@ -575,11 +550,8 @@ async function viewable(
 
 // --- deletes ---------------------------------------------------------------
 
-/**
- * Deletes a record after resolving the relations that point at it: cascading
- * fields delete their records, others drop the reference, and a required
- * field that would be left blank blocks the delete.
- */
+// Cascading relations delete, others drop the reference, and a required field
+// that would be left blank blocks the delete.
 async function deleteWithReferences(
   tx: Builder,
   schema: Schema,
@@ -711,10 +683,7 @@ function pathTree(list: string, maxDepth: number, param: string): PathTree {
   return root;
 }
 
-/**
- * Loads related records into `expand`, level by level, one query per relation
- * field. Related records the caller may not view are left out.
- */
+// One query per relation field per level; records the caller may not view are left out.
 async function expandItems(
   q: Builder,
   ctx: RecordsContext,
@@ -750,8 +719,7 @@ async function expandItems(
     ];
     if (ids.length === 0) continue;
 
-    // One array parameter, whatever the number of ids: Postgres allows at
-    // most 65535 parameters per statement.
+    // One array parameter: Postgres allows at most 65535 parameters per statement.
     const rows = back
       ? await backRelated(q, ctx, target, field, ids)
       : await q
@@ -765,8 +733,7 @@ async function expandItems(
           )
           .orderBy(`${ALIAS}.id`)
           .all();
-    // Once each, in id order: a record pointing at several parents comes
-    // back once per parent.
+    // A record pointing at several parents comes back once per parent.
     const unique = [...new Map(rows.map((row) => [row.id, row])).values()];
     if (back)
       unique.sort((a, b) => ((a.id as string) < (b.id as string) ? -1 : 1));
@@ -807,7 +774,7 @@ function references(value: unknown): string[] {
   return typeof value === "string" && value !== "" ? [value] : [];
 }
 
-/** Keeps the listed keys; `*` keeps every key at its level. */
+/** `*` keeps every key at its level. */
 function pick(value: unknown, tree: PathTree): unknown {
   if (Array.isArray(value)) return value.map((v) => pick(v, tree));
   if (!isRecord(value) || tree.size === 0) return value;
@@ -857,8 +824,8 @@ function sortColumns(
   ) {
     columns.push(`${ALIAS}.created DESC`);
   }
-  // A unique tiebreaker keeps pages stable. It follows the last column's
-  // direction, so one (column, id) index serves the whole sort.
+  // Unique tiebreaker for stable pages, in the last column's direction so one
+  // (column, id) index serves the whole sort.
   columns.push(
     `${ALIAS}.id ${columns.at(-1)?.endsWith(" DESC") ? "DESC" : "ASC"}`,
   );
@@ -905,7 +872,7 @@ function columnCast(field: Field): string {
   }
 }
 
-/** The value node-postgres should send. JSON is serialized here: it would turn arrays into Postgres arrays. */
+// JSON is serialized here: node-postgres would turn arrays into Postgres arrays.
 function columnValue(field: Field, value: unknown): unknown {
   if (value instanceof Date) return timestampParam(value);
   if (field.type === "json")
@@ -925,7 +892,7 @@ function columnValues(
   return out;
 }
 
-/** Runs a write, reporting a unique-index violation as a 400 on the indexed fields. */
+// A unique-index violation becomes a 400 on the indexed fields.
 async function writing<T>(
   collection: Collection,
   write: () => Promise<T>,
