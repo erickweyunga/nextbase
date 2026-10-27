@@ -1,6 +1,11 @@
 import { randomBytes, scryptSync } from "node:crypto";
+import { DB, hash } from "@nextbasejs/dbx";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { findSession } from "../src/auth/sessions.ts";
+import { table } from "../src/db/system.ts";
+import { TYPES } from "../src/db/types.ts";
 import { type CookieStore, hasSessionCookie, NextBase } from "../src/index.ts";
+import { SchemaCache } from "../src/schema/cache.ts";
 import { call, origin } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
 
@@ -812,6 +817,205 @@ describe("sessions", () => {
         )
         .column<number>();
       expect(Number(hours)).toBeLessThan(1.1);
+    });
+  });
+
+  describe("session checks", () => {
+    /** A second NextBase, like another server process, that counts the queries it sends. */
+    const counted = (): { nextbase: NextBase; queries: () => number } => {
+      let count = 0;
+      const pool = new Proxy(t.pool, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (typeof value !== "function") return value;
+          if (prop !== "query") return value.bind(target);
+          return (...args: unknown[]) => {
+            count++;
+            return value.apply(target, args);
+          };
+        },
+      });
+      return {
+        nextbase: new NextBase({ database: pool }),
+        queries: () => {
+          const n = count;
+          count = 0;
+          return n;
+        },
+      };
+    };
+    const page = (headers: Record<string, string> = {}) =>
+      new Request(`${origin}/dashboard`, { headers });
+    const bearer = (token: string) =>
+      page({ authorization: `Bearer ${token}` });
+
+    const signUpTo = async (collection: string, email: string) => {
+      const reply = await call(
+        nextbase,
+        "POST",
+        `/collections/${collection}/records`,
+        {
+          token: admin,
+          body: {
+            email,
+            password: "password 123 456",
+            passwordConfirm: "password 123 456",
+          },
+        },
+      );
+      expect(reply.status).toBe(200);
+      const signIn = await call(
+        nextbase,
+        "POST",
+        `/collections/${collection}/auth-with-password`,
+        { body: { identity: email, password: "password 123 456" } },
+      );
+      return {
+        id: reply.body.id as string,
+        token: signIn.body.token as string,
+      };
+    };
+
+    it("takes one query, and a second only to renew the session", async () => {
+      await signUp("robin@example.com");
+      const cookie = await cookieLogin("robin@example.com");
+      const token = await login("robin@example.com");
+      const { nextbase: other, queries } = counted();
+      const withCookie = page({ cookie: `nextbase_session=${cookie}` });
+      // The first requests run migrations and load the schema, so they are not counted.
+      await other.getSession(withCookie);
+      await other.handle(
+        new Request(`${origin}/api/nextbase/session`, {
+          headers: { cookie: `nextbase_session=${cookie}` },
+        }),
+      );
+      queries();
+
+      expect((await other.getSession(withCookie))?.record).toMatchObject({
+        email: "robin@example.com",
+      });
+      expect(queries()).toBe(1);
+      expect((await other.getSession(bearer(token)))?.record).toMatchObject({
+        email: "robin@example.com",
+      });
+      expect(queries()).toBe(1);
+      expect(await other.getSession(bearer("made-up"))).toBeNull();
+      expect(queries()).toBe(1);
+      expect((await call(other, "GET", "/session")).body).toBeNull();
+      expect(queries()).toBe(1);
+
+      await t.db
+        .newQuery(
+          "UPDATE nextbase._sessions SET expires = now() + interval '1 hour' WHERE collection_id <> '_superusers'",
+        )
+        .execute();
+      queries();
+      const renewed = await other.handle(
+        new Request(`${origin}/api/nextbase/session`, {
+          headers: { cookie: `nextbase_session=${cookie}` },
+        }),
+      );
+      expect(renewed.headers.get("set-cookie")).toContain("nextbase_session=");
+      expect(queries()).toBe(2);
+
+      // A session signed out through the first instance stops working here at once.
+      await call(nextbase, "DELETE", "/session", { token });
+      expect(await other.getSession(bearer(token))).toBeNull();
+    });
+
+    it("sees collections renamed and fields added elsewhere on the next check", async () => {
+      const created = await call(nextbase, "POST", "/collections", {
+        token: admin,
+        body: { name: "people", type: "auth", createRule: "" },
+      });
+      expect(created.status).toBe(200);
+      const { token } = await signUpTo("people", "pat@example.com");
+      const { nextbase: other, queries } = counted();
+      expect((await other.getSession(bearer(token)))?.record).toMatchObject({
+        email: "pat@example.com",
+      });
+
+      // The second instance still has the old collection name cached.
+      await call(nextbase, "PATCH", "/collections/people", {
+        token: admin,
+        body: { name: "members" },
+      });
+      expect((await other.getSession(bearer(token)))?.record).toMatchObject({
+        email: "pat@example.com",
+      });
+
+      const fields = (
+        await call(nextbase, "GET", "/collections/members", { token: admin })
+      ).body.fields as object[];
+      await call(nextbase, "PATCH", "/collections/members", {
+        token: admin,
+        body: { fields: [...fields, { name: "nickname", type: "text" }] },
+      });
+      expect((await other.getSession(bearer(token)))?.record).toHaveProperty(
+        "nickname",
+        "",
+      );
+      queries();
+      await other.getSession(bearer(token));
+      expect(queries()).toBe(1);
+    });
+
+    it("reads the record exactly as a plain select does", async () => {
+      const created = await call(nextbase, "POST", "/collections", {
+        token: admin,
+        body: {
+          name: "everything",
+          type: "auth",
+          createRule: "",
+          fields: [
+            { name: "title", type: "text" },
+            { name: "score", type: "number" },
+            { name: "ratio", type: "number" },
+            { name: "active", type: "bool" },
+            { name: "site", type: "url" },
+            { name: "mobile", type: "phone" },
+            { name: "born", type: "date" },
+            { name: "ends", type: "date" },
+            { name: "never", type: "date" },
+            { name: "tags", type: "select", values: ["a", "b"], maxSelect: 2 },
+            { name: "level", type: "select", values: ["x", "y"] },
+            { name: "photos", type: "file", maxSelect: 3 },
+            { name: "friend", type: "relation", collectionId: "_superusers" },
+            { name: "meta", type: "json" },
+            { name: "note", type: "json" },
+            { name: "secret", type: "text", hidden: true },
+          ],
+        },
+      });
+      expect(created.status).toBe(200);
+      const { id, token } = await signUpTo("everything", "eve@example.com");
+      // Values that JSON writes differently from a normal select: BC and far-future
+      // dates, fractions of a second, and NaN.
+      await t.db
+        .newQuery(
+          `UPDATE nextbase.everything SET title = 'Eve', score = 0.1, ratio = 'NaN',
+             active = true, site = 'https://example.com', born = '0044-03-15 12:00:00.123456+00 BC',
+             ends = '12000-01-01 00:00:00+05:30', tags = '{a,b}', level = 'y',
+             photos = '{one_0123456789.png}', meta = '{"k":[1,"two",null]}', note = '"plain"',
+             secret = 's'
+           WHERE id = {:id}`,
+        )
+        .bind({ id })
+        .execute();
+
+      const db = new DB(t.pool, { types: TYPES });
+      const { active } = await findSession(db, new SchemaCache(), token, {
+        extend: false,
+      });
+      const [selected] = await db
+        .select()
+        .from(table("everything"))
+        .where(hash({ id }))
+        .all();
+      expect(active?.record).toEqual(selected);
+      expect(Object.keys(active?.record ?? {})).toEqual(
+        Object.keys(selected ?? {}),
+      );
     });
   });
 });

@@ -64,14 +64,26 @@ export async function readSchemaVersion(q: Builder): Promise<number> {
   return Number(version);
 }
 
+/** Postgres errors for a missing table or column, as when a query uses names from an outdated schema. */
+export const SCHEMA_RACE: ReadonlySet<string> = new Set(["42P01", "42703"]);
+
 // Every `get` checks the version (one primary-key lookup): a stale cache would
 // enforce outdated access rules.
 export class SchemaCache {
   #schema: Schema | undefined;
   #loading: Promise<Schema> | undefined;
 
-  async get(db: DB): Promise<Schema> {
-    const version = await readSchemaVersion(db);
+  /**
+   * The last loaded schema, which may be outdated. Use it only for a query
+   * that also reads the schema version, so the result can be checked.
+   */
+  get cached(): Schema | undefined {
+    return this.#schema;
+  }
+
+  /** Pass `version` if you have just read it, so it is not read again. */
+  async get(db: DB, version?: number): Promise<Schema> {
+    version ??= await readSchemaVersion(db);
     for (;;) {
       if (this.#schema && this.#schema.version >= version) return this.#schema;
       // Concurrent requests share one reload.

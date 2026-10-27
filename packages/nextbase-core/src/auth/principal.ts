@@ -1,7 +1,7 @@
 import type { AuthCollection } from "@nextbasejs/client";
 import type { DB, Row } from "@nextbasejs/dbx";
 import { ApiError } from "../errors.ts";
-import type { Schema } from "../schema/cache.ts";
+import type { Schema, SchemaCache } from "../schema/cache.ts";
 import {
   bearerToken,
   findSession,
@@ -21,6 +21,8 @@ export interface Principal {
 
 export interface Resolved {
   principal: Principal;
+  /** The current schema, checked during the session lookup. */
+  schema: Schema;
   /** A renewed or removed session cookie the response must carry. */
   setCookie?: string;
 }
@@ -37,16 +39,16 @@ const SUPERUSERS = "_superusers";
 export async function resolvePrincipal(
   request: Request,
   db: DB,
-  schema: Schema,
+  schemas: SchemaCache,
   { extend }: { extend: boolean },
 ): Promise<Resolved> {
   const bearer = bearerToken(request);
   const cookie = bearer === undefined ? sessionCookie(request) : undefined;
   const token = bearer ?? cookie;
-  if (token === undefined) return { principal: ANONYMOUS };
-
-  const active =
-    token === "" ? undefined : await findSession(db, schema, token, { extend });
+  const { schema, active } = token
+    ? await findSession(db, schemas, token, { extend })
+    : { schema: await schemas.get(db), active: undefined };
+  if (token === undefined) return { principal: ANONYMOUS, schema };
   if (!active) {
     if (cookie === undefined) {
       throw new ApiError(
@@ -56,11 +58,13 @@ export async function resolvePrincipal(
     }
     return {
       principal: ANONYMOUS,
+      schema,
       setCookie: setSessionCookie(request),
     };
   }
   const { session, collection, record, extended } = active;
   return {
+    schema,
     principal: {
       collection,
       record,

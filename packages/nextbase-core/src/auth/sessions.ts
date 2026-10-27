@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthCollection, SessionModel } from "@nextbasejs/client";
-import { type Builder, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
+import { decodeRecordJson } from "../db/types.ts";
 import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import type { Schema } from "../schema/cache.ts";
+import { SCHEMA_RACE, type Schema, type SchemaCache } from "../schema/cache.ts";
 
 /**
  * `__Host-` stops sibling subdomains from setting or overwriting the cookie;
@@ -89,31 +90,98 @@ export async function createSession(
   return { token, session: session as Session };
 }
 
-export async function findSession(
-  q: Builder,
+interface SessionRow {
+  schemaVersion: string;
+  // Null when no valid session has this token; the same goes for the other session columns.
+  id: string | null;
+  collectionId: string;
+  recordId: string;
+  created: Date;
+  expires: Date;
+  userAgent: string;
+  keyHash: string;
+  now: Date;
+  record: Row | null;
+}
+
+/**
+ * Reads the schema version, the session and the signed-in record with a
+ * single query. The record can be in any auth collection, so the query has
+ * one branch per auth collection in `schema`. It always returns one row, so
+ * the schema version comes back even when the token is unknown.
+ */
+async function readSession(
+  db: DB,
   schema: Schema,
+  hashed: string,
+): Promise<SessionRow> {
+  const params: Record<string, string> = { tokenHash: hashed };
+  const branches = schema.collections
+    .filter((c) => c.type === "auth")
+    .map((c, i) => {
+      params[`c${i}`] = c.id;
+      return `WHEN {:c${i}} THEN (SELECT to_json(r) FROM {{${table(c.name)}}} r WHERE r.id = s.record_id)`;
+    });
+  const [row] = await db
+    .newQuery(
+      `SELECT m.schema_version AS "schemaVersion",
+              s.id, s.collection_id AS "collectionId", s.record_id AS "recordId",
+              s.created, s.expires, s.user_agent AS "userAgent",
+              s.key_hash AS "keyHash", now() AS now,
+              CASE s.collection_id ${branches.join(" ")} END AS record
+       FROM {{${table("_meta")}}} m
+       LEFT JOIN {{${table("_sessions")}}} s
+         ON s.token_hash = {:tokenHash} AND s.expires > now()`,
+    )
+    .bind(params)
+    .all<SessionRow>();
+  return row as SessionRow;
+}
+
+/**
+ * Finds the token's session and returns it with the current schema. This
+ * takes one query. When the schema changed since it was cached, the schema
+ * is reloaded and the record is read again, which takes a few more.
+ */
+export async function findSession(
+  db: DB,
+  schemas: SchemaCache,
   token: string,
   { extend }: { extend: boolean },
-): Promise<ActiveSession | undefined> {
-  const [row] = await q
-    .newQuery(
-      `SELECT ${COLUMNS}, key_hash AS "keyHash", now() AS now
-       FROM {{${table("_sessions")}}}
-       WHERE token_hash = {:tokenHash} AND expires > now()`,
-    )
-    .bind({ tokenHash: tokenHash(token) })
-    .all<Session & { keyHash: string; now: Date }>();
-  if (!row) return undefined;
-  const { keyHash, now, ...session } = row;
+): Promise<{ schema: Schema; active: ActiveSession | undefined }> {
+  const hashed = tokenHash(token);
+  let built = schemas.cached ?? (await schemas.get(db));
+  let row: SessionRow;
+  try {
+    row = await readSession(db, built, hashed);
+  } catch (error) {
+    // A collection was renamed or deleted after the schema was cached, so its table is gone.
+    // Reload the schema and try once more.
+    if (!SCHEMA_RACE.has((error as { code?: string }).code ?? "")) throw error;
+    built = await schemas.get(db);
+    row = await readSession(db, built, hashed);
+  }
+  const schema = await schemas.get(db, Number(row.schemaVersion));
+  const { schemaVersion, id, keyHash, now, record: json, ...rest } = row;
+  if (id === null) return { schema, active: undefined };
+  const session: Session = { id, ...rest };
 
   const collection = schema.find(session.collectionId);
-  if (collection?.type !== "auth") return undefined;
-  const [record] = await q
-    .select()
-    .from(table(collection.name))
-    .where(hash({ id: session.recordId }))
-    .all();
-  if (!record || sessionKey(collection, record) !== keyHash) return undefined;
+  if (collection?.type !== "auth") return { schema, active: undefined };
+  // When the schema changed, the record may come from the wrong table, so read it again.
+  const record =
+    schema.version === built.version
+      ? json && decodeRecordJson(collection, json)
+      : (
+          await db
+            .select()
+            .from(table(collection.name))
+            .where(hash({ id: session.recordId }))
+            .all()
+        )[0];
+  if (!record || sessionKey(collection, record) !== keyHash) {
+    return { schema, active: undefined };
+  }
 
   const { duration } = collection.tokens.auth;
   const remaining = (session.expires.getTime() - now.getTime()) / 1000;
@@ -123,8 +191,8 @@ export async function findSession(
     remaining < duration - Math.min(UPDATE_AGE, duration / 2) &&
     session.expires.getTime() < cap;
   if (extended)
-    session.expires = await extendSession(q, collection, session.id);
-  return { session, collection, record, extended };
+    session.expires = await extendSession(db, collection, session.id);
+  return { schema, active: { session, collection, record, extended } };
 }
 
 /** Never past the session's absolute end. */
