@@ -7,11 +7,11 @@ import { createCollectionTable } from "../schema/sync.ts";
 import { renameRuleField } from "./rename-rule-field.ts";
 import { lockSchema, SCHEMA, table } from "./system.ts";
 
-/** Postgres 16: pg_input_is_valid, and the CREATEROLE rules view roles rely on. */
+// Postgres 16: pg_input_is_valid and the CREATEROLE rules view roles rely on.
 const MIN_SERVER_VERSION = 160_000;
 
 interface Migration {
-  /** Unique and permanent. A released migration is never edited or removed. */
+  /** Unique and permanent: never edit or remove a released migration. */
   name: string;
   up(tx: Tx): Promise<void>;
 }
@@ -71,9 +71,8 @@ const MIGRATIONS: readonly Migration[] = [
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
-      // Signed-in sessions of auth records. Tokens are stored as SHA-256
-      // hashes; key_hash binds a session to its record's tokenKey and its
-      // collection's auth secret (see auth/sessions.ts).
+      // Tokens are stored hashed; key_hash binds a session to its record's
+      // tokenKey and collection secret.
       await exec(`
         CREATE TABLE {{${table("_sessions")}}} (
           id            text PRIMARY KEY,
@@ -96,11 +95,8 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: "0003_parse_timestamptz",
     async up(tx) {
-      // Reads an ISO 8601 timestamp from JSON, for filters comparing JSON
-      // values with dates. Returns NULL for anything else or an impossible
-      // date, checked with pg_input_is_valid rather than by failing a cast.
-      // A missing zone means UTC, as NextBase stores dates. PL/pgSQL rather
-      // than SQL, so the planner never folds the casts of a constant.
+      // JSON to timestamp for filters, NULL when invalid; a missing zone means
+      // UTC. PL/pgSQL so the planner never folds the casts of a constant.
       await tx
         .newQuery(
           `CREATE FUNCTION {{${table("parse_timestamptz")}}}(value text)
@@ -146,9 +142,8 @@ const MIGRATIONS: readonly Migration[] = [
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
-      // OAuth2 sign-ins in progress, one per redirect to a provider. Keyed by
-      // the SHA-256 of the state the browser also holds in a cookie, so a
-      // database leak cannot finish anyone's sign-in (see auth/oauth2.ts).
+      // Keyed by a hash of the state the browser holds in a cookie, so a
+      // database leak cannot finish anyone's sign-in.
       await exec(`
         CREATE TABLE {{${table("_oauth2_states")}}} (
           id             text PRIMARY KEY,
@@ -161,8 +156,7 @@ const MIGRATIONS: readonly Migration[] = [
           link_record_id text,
           expires        timestamptz NOT NULL
         )`);
-      // Provider accounts linked to auth records: at most one per provider
-      // and record, and each provider account to one record.
+      // At most one per provider and record; each provider account to one record.
       await exec(`
         CREATE TABLE {{${table("_linked_accounts")}}} (
           id            text PRIMARY KEY,
@@ -179,9 +173,7 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: "0006_phone",
     async up(tx) {
-      // Codes texted to phones, one live code per phone and purpose. Codes are
-      // stored as SHA-256 hashes; a verification code also names the record
-      // it was requested by (see auth/phone.ts).
+      // One live code per phone and purpose, stored hashed.
       await tx
         .newQuery(
           `CREATE TABLE {{${table("_phone_codes")}}} (
@@ -196,9 +188,7 @@ const MIGRATIONS: readonly Migration[] = [
            )`,
         )
         .execute();
-      // Auth collections gain the phone and phoneVerified system fields, after
-      // verified, and the phoneSignIn option, off. Collections created since
-      // already have them.
+      // Adds phone fields and phoneSignIn to auth collections created before them.
       const collections = await tx
         .newQuery(
           `SELECT id, name, fields FROM {{${table("_collections")}}} WHERE type = 'auth'`,
@@ -263,9 +253,8 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: "0007_email_verified",
     async up(tx) {
-      // An auth collection's `verified` becomes `emailVerified`, beside
-      // `phoneVerified`. The field keeps its id, so indexes on it stay; rules
-      // that refer to it are rewritten (see rename-rule-field.ts).
+      // `verified` becomes `emailVerified`. The id stays, so indexes survive;
+      // rules referring to it are rewritten.
       const collections = await loadCollections(tx);
       const auth = collections.filter(
         (c) =>
@@ -309,20 +298,42 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: "0008_uploads",
+    async up(tx) {
+      // Direct uploads awaiting a record, each for one file field and exact
+      // size, until it expires.
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table("_uploads")}}} (
+             id            text PRIMARY KEY,
+             collection_id text NOT NULL,
+             field_id      text NOT NULL,
+             filename      text NOT NULL,
+             size          bigint NOT NULL,
+             content_type  text NOT NULL,
+             expires       timestamptz NOT NULL
+           )`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_uploads_expires" ON {{${table("_uploads")}}} (expires)`,
+        )
+        .execute();
+    },
+  },
 ];
 
-/**
- * Brings the system tables up to date. Safe to call from many instances at
- * once: the work runs in one transaction under the schema lock, and instances
- * that find nothing to do return without taking it.
- */
+// Safe to run concurrently: one transaction under the schema lock, skipped
+// without locking when already up to date.
 export async function migrate(db: DB): Promise<void> {
   await checkSettings(db);
   if (await isUpToDate(db)) return;
   await db.transaction(async (tx) => {
     await lockSchema(tx);
-    // Checked first: CREATE SCHEMA IF NOT EXISTS needs the database-level CREATE
-    // privilege even when the schema exists, which restricted roles lack.
+    // CREATE SCHEMA IF NOT EXISTS needs database CREATE even if the schema
+    // exists, which restricted roles lack.
     const exists = await tx
       .newQuery("SELECT 1 FROM pg_namespace WHERE nspname = {:schema}")
       .bind({ schema: SCHEMA })
@@ -349,12 +360,8 @@ export async function migrate(db: DB): Promise<void> {
   });
 }
 
-/**
- * Fails fast on server settings NextBase depends on, rather than misreading
- * data later: timestamps are parsed from ISO output, and quoted literals
- * assume standard strings. Database- or role-level settings apply to every
- * connection, so checking one is enough.
- */
+// Fails fast rather than misreading data later: timestamps are parsed as ISO
+// and literals assume standard strings.
 async function checkSettings(db: DB): Promise<void> {
   const [dateStyle, standardStrings, version] = await db
     .newQuery(

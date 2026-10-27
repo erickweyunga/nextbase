@@ -7,23 +7,17 @@ import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 
 /**
- * Names of the cookie holding a session token. Over HTTPS the `__Host-`
- * prefix makes browsers refuse it unless it is Secure, host-only and on
- * `Path=/`, so a site on a sibling subdomain cannot set or overwrite it.
- * Plain HTTP, in development, cannot use the prefix.
+ * `__Host-` stops sibling subdomains from setting or overwriting the cookie;
+ * plain HTTP in development cannot use the prefix.
  */
 export const SESSION_COOKIES = {
   secure: "__Host-nextbase_session",
   plain: "nextbase_session",
 } as const;
 
-// A session in use is extended once it is this old, at most once a day, so
-// active users stay signed in without a write on every request.
+// Extend at most once a day, so active users stay signed in without a write per request.
 const UPDATE_AGE = 86_400;
-/**
- * However active, a session ends this long after sign-in, so a stolen session
- * cannot be kept alive forever by using it.
- */
+/** Absolute lifetime, so a stolen session cannot be kept alive forever by using it. */
 const MAX_AGE = 30 * 86_400;
 const MAX_USER_AGENT = 512;
 
@@ -37,12 +31,11 @@ export interface Session {
   userAgent: string;
 }
 
-/** A valid session with the record it belongs to. */
 export interface ActiveSession {
   session: Session;
   collection: AuthCollection;
   record: Row;
-  /** Whether this lookup extended the session, so a cookie should be renewed. */
+  /** This lookup extended the session, so its cookie should be renewed. */
   extended: boolean;
 }
 
@@ -52,10 +45,8 @@ function tokenHash(token: string): string {
 }
 
 /**
- * Binds a session to the record's `tokenKey` and the collection's auth
- * secret. Rotating either (on a password or email change, or to revoke all of
- * a collection's sessions) invalidates the session, and so does a deleted
- * record whose id is later reused.
+ * Rotating the record's `tokenKey` or the collection's secret invalidates the
+ * session, as does a deleted record whose id is later reused.
  */
 function sessionKey(collection: AuthCollection, record: Row): string {
   return createHash("sha256")
@@ -66,14 +57,13 @@ function sessionKey(collection: AuthCollection, record: Row): string {
 const COLUMNS = `id, collection_id AS "collectionId", record_id AS "recordId",
   created, expires, user_agent AS "userAgent"`;
 
-/** Starts a session for `record`. Returns its token, which is shown only once. */
+/** The returned token is shown only once. */
 export async function createSession(
   q: Builder,
   collection: AuthCollection,
   record: Row,
   userAgent: string,
 ): Promise<{ token: string; session: Session }> {
-  // Expired sessions are cleaned up here, where sessions are created.
   await q
     .newQuery(`DELETE FROM {{${table("_sessions")}}} WHERE expires <= now()`)
     .execute();
@@ -99,10 +89,6 @@ export async function createSession(
   return { token, session: session as Session };
 }
 
-/**
- * Finds the live session for `token`, extending it when it is due. Returns
- * undefined for unknown, expired or revoked sessions.
- */
 export async function findSession(
   q: Builder,
   schema: Schema,
@@ -141,10 +127,7 @@ export async function findSession(
   return { session, collection, record, extended };
 }
 
-/**
- * Resets a session's lifetime to the collection's full auth duration, never
- * past its absolute end.
- */
+/** Never past the session's absolute end. */
 export async function extendSession(
   q: Builder,
   collection: AuthCollection,
@@ -162,7 +145,6 @@ export async function extendSession(
   return expires as Date;
 }
 
-/** The sessions of one record, newest first. */
 export async function listSessions(
   q: Builder,
   collectionId: string,
@@ -178,7 +160,6 @@ export async function listSessions(
     .all<Session>();
 }
 
-/** Ends one of a record's sessions. Returns whether it existed. */
 export async function deleteSession(
   q: Builder,
   session: { id: string; collectionId: string; recordId: string },
@@ -194,7 +175,6 @@ export async function deleteSession(
   return deleted.length > 0;
 }
 
-/** Ends every session of a record but `keep`, such as on lost devices. */
 export async function deleteOtherSessions(
   q: Builder,
   keep: { id: string; collectionId: string; recordId: string },
@@ -208,11 +188,7 @@ export async function deleteOtherSessions(
     .execute();
 }
 
-/**
- * After a record's `tokenKey` changed: ends its other sessions and keeps the
- * caller's own (`keep`) valid under the new key, so changing your password
- * signs out every other device but not this one.
- */
+/** After a tokenKey rotation, re-binds `keep` so changing your password signs out only other devices. */
 export async function rekeySessions(
   q: Builder,
   collection: AuthCollection,
@@ -248,7 +224,6 @@ export function sessionModel(session: Session, current: boolean): SessionModel {
   };
 }
 
-/** The token of an `Authorization: Bearer` header, or undefined without one. */
 export function bearerToken(request: Request): string | undefined {
   const header = request.headers.get("authorization");
   if (header === null) return undefined;
@@ -257,7 +232,6 @@ export function bearerToken(request: Request): string | undefined {
   return match?.[1] ?? "";
 }
 
-/** Whether a request's cookies are Secure, and so `__Host-` prefixed. */
 export function isSecure(request: Request): boolean {
   return (
     new URL(request.url).protocol === "https:" ||
@@ -265,7 +239,6 @@ export function isSecure(request: Request): boolean {
   );
 }
 
-/** The session cookie's value, or undefined without one. */
 export function sessionCookie(request: Request): string | undefined {
   return readCookie(
     request,
@@ -273,7 +246,6 @@ export function sessionCookie(request: Request): string | undefined {
   );
 }
 
-/** A cookie's value, or undefined without it. */
 export function readCookie(
   request: Request,
   wanted: string,
@@ -286,9 +258,8 @@ export function readCookie(
 }
 
 /**
- * A `Set-Cookie` header for a session token, or one that removes the cookie
- * when `token` is undefined. HttpOnly keeps it from scripts; SameSite=Lax keeps
- * other sites' requests from carrying it, except top-level navigations.
+ * Removes the cookie when `token` is undefined. HttpOnly hides it from
+ * scripts; SameSite=Lax limits cross-site sends to top-level navigations.
  */
 export function setSessionCookie(
   request: Request,
@@ -309,26 +280,20 @@ export function setSessionCookie(
   ].join("; ");
 }
 
-/** Which other sites may write through the session cookie, and how to know this one. */
 export interface OriginPolicy {
   /**
-   * Hosts besides this one, as in Next.js's `serverActions.allowedOrigins`:
-   * `app.example.com`, `*.example.com` (one label) or `**.example.com`.
+   * Extra hosts allowed to write via the cookie: `app.example.com`,
+   * `*.example.com` (one label) or `**.example.com`.
    */
   trustedOrigins: readonly string[];
-  /** Read this host from X-Forwarded-Host, set by a proxy in front. */
+  /** Read this host from X-Forwarded-Host; only behind a proxy you run. */
   trustProxy: boolean;
 }
 
 /**
- * Rejects cross-site requests that would act through the session cookie:
- * browsers attach cookies to requests other sites make too, so a page on
- * another site could otherwise make changes as the signed-in user. Checked by
- * `Sec-Fetch-Site` where the browser sends it, and otherwise by `Origin`,
- * which browsers send on such writes. The request must come from this host or
- * a trusted one.
- * Hosts are compared rather than full origins, as Next.js does for server
- * actions, since proxies often change the scheme the app sees.
+ * Browsers attach the cookie to requests other sites make, so writes must come
+ * from this host or a trusted one (`Sec-Fetch-Site`, else `Origin`). Hosts,
+ * not full origins, are compared since proxies often change the scheme.
  */
 export function checkSameOrigin(request: Request, policy: OriginPolicy): void {
   const site = request.headers.get("sec-fetch-site");
@@ -344,19 +309,14 @@ export function checkSameOrigin(request: Request, policy: OriginPolicy): void {
   }
   if (originHost !== undefined) {
     if (policy.trustedOrigins.some((p) => matchesHost(originHost, p))) return;
-    // A cross-site or same-site request comes from another origin, so only a
-    // trusted origin passes; same-site includes sibling subdomains.
+    // Same-site includes sibling subdomains, so it must be trusted too.
     if (site === null && originHost.toLowerCase() === thisHost(request, policy))
       return;
   }
   throw new ApiError(403, "Cross-site requests cannot use the session cookie.");
 }
 
-/**
- * This server's host: Host by default, which platforms such as Vercel set to
- * the domain the client used. X-Forwarded-Host only behind a proxy you run,
- * since anyone else can send that header with any value.
- */
+/** X-Forwarded-Host only behind a proxy you run, since any client can send it. */
 function thisHost(request: Request, policy: OriginPolicy): string {
   const forwarded = policy.trustProxy
     ? request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
@@ -368,11 +328,7 @@ function thisHost(request: Request, policy: OriginPolicy): string {
   ).toLowerCase();
 }
 
-/**
- * Whether `host` matches `pattern` the way Next.js matches allowedOrigins:
- * case-insensitive, `*` is one label, a leading `**` is one or more, and a
- * wildcard alone matches nothing.
- */
+/** Case-insensitive; `*` is one label, a leading `**` one or more; a bare wildcard matches nothing. */
 function matchesHost(host: string, pattern: string): boolean {
   const hostParts = host.toLowerCase().split(".");
   const patternParts = pattern.toLowerCase().split(".");

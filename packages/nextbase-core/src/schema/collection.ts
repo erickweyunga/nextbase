@@ -46,17 +46,12 @@ const DEFAULT_TOKEN_DURATIONS: Readonly<Record<TokenType, number>> = {
 const TOKEN_TYPES = Object.keys(DEFAULT_TOKEN_DURATIONS) as TokenType[];
 
 export interface CollectionContext {
-  /** The collection being updated; undefined when creating one. */
+  /** Undefined when creating. */
   existing?: Collection | undefined;
-  /** Every other collection. */
   others: readonly Collection[];
 }
 
-/**
- * Validates an untrusted collection definition, for creation or for updating
- * `context.existing`, and fills in defaults. Throws a 400 ApiError listing every
- * problem.
- */
+/** Validates untrusted input and fills in defaults; throws a 400 listing every problem. */
 export function parseCollection(
   input: unknown,
   context: CollectionContext,
@@ -161,7 +156,7 @@ export function parseCollection(
   return collection;
 }
 
-/** The built-in collection of NextBase administrators. Its rules stay `null`. */
+/** Its rules stay `null`. */
 export function superusersCollection(): AuthCollection {
   const tokens = parseTokens(new Reader({}, [], new Issues()), undefined);
   tokens.auth.duration = DAY;
@@ -347,7 +342,7 @@ function systemFields(type: Collection["type"]): Field[] {
   ];
 }
 
-/** `created` and `updated`, added when a collection is created without fields. */
+/** For a collection created without fields. */
 function defaultFields(): AutodateField[] {
   const autodate = (name: string, onUpdate: boolean): AutodateField => ({
     id: randomString(10, LOWER_ALPHANUMERIC),
@@ -452,11 +447,7 @@ function matchSystemField(
   return [...systemById.values()].find((f) => f.name === item.name);
 }
 
-/**
- * Applies the few options a system field allows to change. Other properties,
- * which clients echo back unchanged, are ignored; a different name or type is
- * an error.
- */
+// Other properties, which clients echo back, are ignored; a new name or type is an error.
 function parseSystemField(r: Reader, field: Field): Field {
   if (r.has("name") && r.input.name !== field.name) {
     r.fail("name", "validation_immutable", "System fields cannot be renamed.");
@@ -479,8 +470,7 @@ function parseIndexes(
   collectionName: string,
   { existing, others }: CollectionContext,
 ): Index[] {
-  // Existing indexes are revalidated too, so an index on a removed field is
-  // reported rather than silently dropped.
+  // Revalidated so an index on a removed field is reported, not silently dropped.
   const input: unknown = r.has("indexes")
     ? r.input.indexes
     : (existing?.indexes ?? []);

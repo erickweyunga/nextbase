@@ -5,12 +5,11 @@ import { ApiError } from "../errors.ts";
 import { NextBase } from "../index.ts";
 import { typegen } from "./typegen.ts";
 
-/** What the CLI reads and writes, so it can run in tests without a terminal. */
+/** Abstracted so the CLI runs in tests without a terminal. */
 export interface Io {
   env: Readonly<Record<string, string | undefined>>;
   out(line: string): void;
   err(line: string): void;
-  /** Asks a question; `hidden` input is not echoed, for passwords. */
   prompt(question: string, hidden: boolean): Promise<string>;
 }
 
@@ -28,7 +27,7 @@ Options:
   --database URL        Postgres connection string. Defaults to DATABASE_URL,
                         from the environment, .env.local or .env.`;
 
-/** Runs a CLI command and returns the process exit code. */
+/** Returns the process exit code. */
 export async function run(argv: readonly string[], io: Io): Promise<number> {
   let parsed: ReturnType<typeof parse>;
   try {
@@ -60,7 +59,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     return 1;
   }
 
-  // A pool of its own, ended afterwards, so the process exits promptly.
+  // Its own pool, ended afterwards, so the process exits promptly.
   const pool = new pg.Pool({ connectionString: database });
   const nextbase = new NextBase({ database: pool });
   try {
@@ -123,7 +122,6 @@ async function superuser(
   return 0;
 }
 
-/** An error as the person at the terminal needs it, with field problems. */
 function describe(error: unknown): string {
   if (!(error instanceof ApiError)) return (error as Error).message;
   const fields = Object.entries(error.data).map(([name, problem]) =>

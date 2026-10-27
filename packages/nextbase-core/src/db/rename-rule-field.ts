@@ -1,22 +1,14 @@
 import type { Collection } from "@nextbasejs/client";
 
-// Rewrites references to a renamed auth system field inside rule and filter
-// expressions, for a migration. It follows the filter language as the
-// parser reads it: string literals are copied untouched, and an identifier's
-// segments are renamed only where they resolve to the field of an auth
-// collection: on the rule's own collection, through relations and
-// back-relations, `@collection.<name>`, `@request.auth` and `@request.body`.
-// A field of the same name on another kind of collection is left alone.
+// For migrations: renames an auth system field inside rules. String literals
+// are untouched, and a segment is renamed only where it resolves to an auth
+// collection's field; same-named fields elsewhere are left alone.
 
 const IDENTIFIER =
   /@?[A-Za-z_][A-Za-z0-9_]*(:[A-Za-z_][A-Za-z0-9_]*)?(\.[A-Za-z0-9_]+(:[A-Za-z_][A-Za-z0-9_]*)?)*/y;
 const NUMBER = /-?\d+(\.\d+)?(?![\w.])/y;
 
-/**
- * Returns `rule` with references to the auth system field `from` renamed to
- * `to`, for a rule of `collection`. Rules that do not tokenize, which no
- * stored rule should be, are returned unchanged.
- */
+// Rules that do not tokenize are returned unchanged.
 export function renameRuleField(
   rule: string,
   collection: Collection,

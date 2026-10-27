@@ -1,4 +1,5 @@
 import { ClientError } from "./client-error.ts";
+import { hasFiles, toFormData } from "./files.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
 import type {
   AuthMethods,
@@ -16,7 +17,7 @@ export interface RecordOptions extends SendOptions {
 }
 
 export interface AuthOptions extends RecordOptions {
-  /** Keep the session in an HttpOnly cookie rather than returning its token. */
+  /** Keep the session in an HttpOnly cookie instead of returning a token. */
   cookie?: boolean;
 }
 
@@ -25,22 +26,19 @@ export interface ListOptions extends RecordOptions {
   filter?: string;
   /** Comma-separated fields, `-` for descending, e.g. `-created,title`. */
   sort?: string;
-  /** Skips counting the matches: faster, with `totalItems` and `totalPages` -1. */
+  /** Skip counting matches: faster, but `totalItems` and `totalPages` are -1. */
   skipTotal?: boolean;
 }
 
 export interface FullListOptions extends ListOptions {
-  /** Records fetched per request. Defaults to 1000, the server's maximum. */
+  /** Records per request. Defaults to 1000, the server's maximum. */
   batch?: number;
 }
 
 export interface OAuth2Options {
-  /** Path on your app to return to afterwards, such as `/dashboard`. */
+  /** App path to return to afterwards, such as `/dashboard`. */
   redirect?: string;
-  /**
-   * Path to return to with `?error=` when the sign-in fails, such as
-   * `/sign-in`. Defaults to `redirect`.
-   */
+  /** App path to return to with `?error=` on failure. Defaults to `redirect`. */
   errorRedirect?: string;
 }
 
@@ -87,7 +85,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     }
   }
 
-  /** The first record matching `filter`. Throws a 404 {@link ClientError} when none does. */
+  /** The first record matching `filter`. Throws a 404 {@link ClientError} if none. */
   async getFirstListItem(
     filter: string,
     options: ListOptions = {},
@@ -112,10 +110,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return this.#send(`/records/${encodeURIComponent(id)}`, options);
   }
 
-  /**
-   * Creates a record. Returns it, or `null` when it was created but the
-   * caller may not view it.
-   */
+  /** Creates a record. Returns null when the caller may not view it. */
   async create(
     body: Record<string, unknown>,
     options?: RecordOptions,
@@ -123,15 +118,14 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const record = await this.#send<T | undefined>("/records", {
       ...options,
       method: "POST",
-      body,
+      body: await this.#body(body, options),
     });
     return record ?? null;
   }
 
   /**
-   * Updates a record. Returns it, or `null` when it was updated but the
-   * caller may no longer view it. Updating the signed-in record refreshes it
-   * in the auth store.
+   * Updates a record. Returns null when the caller may no longer view it.
+   * Updating the signed-in record refreshes it in the auth store.
    */
   async update(
     id: string,
@@ -140,7 +134,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<T | null> {
     const record = await this.#send<T | undefined>(
       `/records/${encodeURIComponent(id)}`,
-      { ...options, method: "PATCH", body },
+      { ...options, method: "PATCH", body: await this.#body(body, options) },
     );
     const store = this.#client.authStore;
     if (record && this.#isSignedIn(record)) {
@@ -163,11 +157,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Creates an account and signs it in, in one request, under the
-   * collection's create rule: `body` holds the record's fields, `password`
-   * and `passwordConfirm`. Saves the session like `signInWithPassword`, and
-   * takes the same `cookie` option. Returns null when the account was created
-   * but may not sign in yet, such as before verifying its email.
+   * Creates an account and signs it in, saving the session like `signInWithPassword`.
+   * Returns null when the account may not sign in yet, e.g. before email verification.
    */
   async signUp(
     body: Record<string, unknown>,
@@ -177,16 +168,17 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const response = await this.#send<AuthResponse<T> | undefined>("/sign-up", {
       ...rest,
       method: "POST",
-      body: { ...body, ...(cookie && { cookie: true }) },
+      body: await this.#body(
+        { ...body, ...(cookie && { cookie: true }) },
+        rest,
+      ),
     });
     return response ? this.#saveAuth(response) : null;
   }
 
   /**
-   * Signs in and saves the record, and the token, in the auth store. With
-   * `cookie: true` the session goes into an HttpOnly cookie instead, out of
-   * reach of scripts and readable by server components; the response and
-   * the store then hold no token.
+   * Signs in and saves the session in the auth store. With `cookie: true` it goes
+   * in an HttpOnly cookie instead, and the response and store hold no token.
    */
   async signInWithPassword(
     identity: string,
@@ -203,7 +195,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Extends the current session to its full lifetime and reloads the record. */
+  /** Extends the session to its full lifetime and reloads the record. */
   async refreshSession(options?: RecordOptions): Promise<AuthResponse<T>> {
     return this.#saveAuth(
       await this.#send<AuthResponse<T>>("/auth-refresh", {
@@ -214,10 +206,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * The URL that signs in with an OAuth2 provider, such as `google`: open it
-   * in the browser, as a link or a redirect. The server sends the browser
-   * to the provider and back to `redirect` signed in with a session cookie,
-   * or with `?error=` naming what went wrong.
+   * A URL to open in the browser that signs in with an OAuth2 provider such as `google`,
+   * returning to `redirect` with a session cookie, or with `?error=` on failure.
    */
   oauth2Url(
     provider: string,
@@ -236,7 +226,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Signs in with an OAuth2 provider by sending the browser to {@link oauth2Url}. */
+  /** Signs in with an OAuth2 provider by navigating to {@link oauth2Url}. Browser only. */
   signInWithOAuth2(provider: string, options: OAuth2Options = {}): void {
     if (typeof location === "undefined") {
       throw new Error(
@@ -246,11 +236,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     location.assign(this.oauth2Url(provider, options));
   }
 
-  /**
-   * Links an OAuth2 provider to the signed-in account, by sending the
-   * browser to the provider; the session stays as it is. Comes back to
-   * `redirect`, or to `errorRedirect` with `?error=`.
-   */
+  /** Links an OAuth2 provider to the signed-in account by navigating to it. Browser only. */
   linkOAuth2(provider: string, options: OAuth2Options = {}): void {
     if (typeof location === "undefined") {
       throw new Error(
@@ -260,7 +246,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     location.assign(this.oauth2Url(provider, { ...options, link: true }));
   }
 
-  /** The OAuth2 providers linked to a record: the signed-in record's own, or any for superusers. */
+  /** OAuth2 providers linked to a record. Only its own record, unless a superuser. */
   async listLinkedAccounts(
     recordId: string,
     options?: SendOptions,
@@ -285,15 +271,12 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** How records of this auth collection sign in, for a login page. */
+  /** The sign-in methods of this auth collection, for a login page. */
   listAuthMethods(options?: SendOptions): Promise<AuthMethods> {
     return this.#send("/auth-methods", options);
   }
 
-  /**
-   * Emails a verification link to `email`, if it belongs to an unverified
-   * account. Resolves the same either way, so it reveals no accounts.
-   */
+  /** Emails a verification link if `email` is an unverified account. Never reveals which. */
   async requestEmailVerification(
     email: string,
     options?: SendOptions,
@@ -301,7 +284,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/request-email-verification", { email }, options);
   }
 
-  /** Verifies the account of a verification link's token. */
+  /** Verifies an account with a verification link's token. */
   async confirmEmailVerification(
     token: string,
     options?: SendOptions,
@@ -309,10 +292,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/confirm-email-verification", { token }, options);
   }
 
-  /**
-   * Emails a password reset link to `email`, if it belongs to an account.
-   * Resolves the same either way.
-   */
+  /** Emails a password reset link if `email` is an account. Never reveals which. */
   async requestPasswordReset(
     email: string,
     options?: SendOptions,
@@ -320,10 +300,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/request-password-reset", { email }, options);
   }
 
-  /**
-   * Sets a new password with a reset link's token. Every session of the
-   * account ends; sign in again with the new password.
-   */
+  /** Sets a new password with a reset link's token. Ends every session of the account. */
   async confirmPasswordReset(
     token: string,
     password: string,
@@ -337,7 +314,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Emails a link to `newEmail` that moves the signed-in account to it. */
+  /** Emails `newEmail` a link that moves the signed-in account to it. */
   async requestEmailChange(
     newEmail: string,
     options?: SendOptions,
@@ -345,10 +322,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/request-email-change", { newEmail }, options);
   }
 
-  /**
-   * Moves the account to the new email of an email change link's token,
-   * given its current password. Every session of the account ends.
-   */
+  /** Confirms an email change with its token and the current password. Ends every session. */
   async confirmEmailChange(
     token: string,
     password: string,
@@ -358,18 +332,14 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Texts a sign-in code to `phone`, in international format such as
-   * `+255712345678`; a new phone signs up. Resolves the same either way, so
-   * it reveals no accounts.
+   * Texts a sign-in code to `phone`, such as `+255712345678`; a new phone signs up.
+   * Never reveals whether an account exists.
    */
   async requestPhoneCode(phone: string, options?: SendOptions): Promise<void> {
     await this.#post("/request-phone-code", { phone }, options);
   }
 
-  /**
-   * Texts a password reset code to `phone`, if it is an account's verified
-   * phone. Resolves the same either way, so it reveals no accounts.
-   */
+  /** Texts a password reset code if `phone` is an account's verified phone. Never reveals which. */
   async requestPasswordResetByPhone(
     phone: string,
     options?: SendOptions,
@@ -378,9 +348,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Signs in with a code from {@link requestPhoneCode}, creating the account
-   * for a new phone under the collection's create rule. Saves the session
-   * like `signInWithPassword`, and takes the same `cookie` option.
+   * Signs in with a code from {@link requestPhoneCode}, creating the account for a new
+   * phone. Saves the session like `signInWithPassword`.
    */
   async signInWithPhoneCode(
     phone: string,
@@ -397,10 +366,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /**
-   * Sets a new password with a code texted for a password reset. Every
-   * session of the account ends; sign in again with the new password.
-   */
+  /** Sets a new password with a texted reset code. Ends every session of the account. */
   async confirmPasswordResetByPhone(
     phone: string,
     code: string,
@@ -415,7 +381,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Texts a code to `phone` that verifies it as the signed-in account's phone. */
+  /** Texts a code that verifies `phone` for the signed-in account. */
   async requestPhoneVerification(
     phone: string,
     options?: SendOptions,
@@ -423,10 +389,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post("/request-phone-verification", { phone }, options);
   }
 
-  /**
-   * Makes `phone` the signed-in account's verified phone, given the code
-   * texted to it. Changing the phone signs out the account's other devices.
-   */
+  /** Verifies `phone` for the signed-in account. Changing it signs out other devices. */
   async confirmPhoneVerification(
     phone: string,
     code: string,
@@ -459,12 +422,20 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Whether a record from the auth store belongs to this collection. */
   #matches(record: RecordModel): boolean {
     return (
       record.collectionId === this.#collection ||
       record.collectionName === this.#collection
     );
+  }
+
+  #body(
+    body: Record<string, unknown>,
+    options: SendOptions = {},
+  ): Promise<Record<string, unknown> | FormData> | Record<string, unknown> {
+    return hasFiles(body)
+      ? toFormData(this.#client, this.#collection, body, options)
+      : body;
   }
 
   #send<R>(path: string, options: RecordOptions = {}): Promise<R> {

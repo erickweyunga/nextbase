@@ -11,3 +11,6 @@ dist/
 next-env.d.ts
 .docusaurus/
 build/
+
+# Files uploaded during development (local storage)
+.nextbase/

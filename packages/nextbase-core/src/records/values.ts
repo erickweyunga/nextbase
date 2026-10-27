@@ -3,6 +3,12 @@ import type { Builder, Row } from "@nextbasejs/dbx";
 import { hashPassword } from "../auth/password.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
+import {
+  type FileChanges,
+  fileNames,
+  prepareFileField,
+} from "../files/files.ts";
+import type { Storage } from "../files/storage.ts";
 import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
@@ -11,7 +17,6 @@ import { Issues } from "../schema/input.ts";
 import { hasNul, isStorableTime } from "../storable.ts";
 
 const ID_PATTERN = /^[a-z0-9]{15}$/;
-/** A plausible email address: something, @, a domain with a dot. */
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
@@ -25,35 +30,32 @@ const INVALID = Symbol("invalid");
 export interface WriteOptions {
   collection: Collection;
   schema: Schema;
-  /** The stored row, when updating. */
   existing?: Row | undefined;
-  /** Superusers, and callers passing an auth collection's manageRule, may change protected auth fields. */
+  /** Superusers and callers passing manageRule may change protected auth fields. */
   privileged: boolean;
-  /**
-   * Protected auth fields NextBase itself sets in this write, such as the
-   * phone a sign-in code just proved, which the caller may not set alone.
-   */
+  /** Protected auth fields NextBase itself sets, such as a phone a code just proved. */
   vouched?: ReadonlySet<string>;
+  storage?: Storage | undefined;
 }
 
 export interface PreparedWrite {
-  /** Column values to write: every column on create, changed columns on update. */
+  /** Every column on create, changed columns on update. */
   values: Record<string, unknown>;
-  /** The full row after the write, for checking the create rule before inserting. */
+  /** The full row after the write, for the create rule. */
   row: Record<string, unknown>;
-  /** The submitted values, normalized, for `@request.body.*` in rules. */
+  /** Normalized input, for `@request.body.*` in rules. */
   body: Record<string, unknown>;
   /**
-   * The `oldPassword` a password change must be checked against. Checked by
-   * the caller after the update rule passed, through the login throttle, so
-   * someone the rule rejects can neither guess it nor lock the account.
+   * Checked by the caller after the update rule passes, through the login
+   * throttle, so someone the rule rejects can neither guess it nor lock the account.
    */
   oldPassword?: string;
+  /** Stored once the write is allowed. */
+  files: FileChanges;
 }
 
 /**
- * Normalizes and validates submitted values against the collection's fields,
- * applying `field+`, `+field` and `field-` modifiers. Unknown keys are ignored.
+ * Applies `field+`, `+field` and `field-` modifiers and ignores unknown keys.
  * Throws a 400 listing every problem.
  */
 export async function prepareWrite(
@@ -70,6 +72,7 @@ export async function prepareWrite(
   const values: Record<string, unknown> = {};
   const body: Record<string, unknown> = {};
   let oldPassword: string | undefined;
+  const files: FileChanges = { added: [], removed: [] };
   const set = (field: Field, value: unknown): void => {
     row[field.name] = value;
     values[field.name] = value;
@@ -122,17 +125,34 @@ export async function prepareWrite(
       continue;
     }
     if (field.type === "file") {
-      if (
-        [name, `${name}+`, `+${name}`, `${name}-`].some(
-          (k) => input[k] !== undefined,
-        )
-      ) {
+      const touched = [name, `${name}+`, `+${name}`, `${name}-`].some(
+        (k) => input[k] !== undefined,
+      );
+      if (!touched) continue;
+      if (!options.storage) {
         issues.add(
           [name],
           "validation_unsupported",
-          "File uploads are not supported yet.",
+          "Files cannot be set here.",
         );
+        continue;
       }
+      const prepared = await prepareFileField(
+        q,
+        options.storage,
+        collection,
+        field,
+        input,
+        fileNames(field, existing?.[name]),
+        ({ code, message }) => issues.add([name], code, message),
+      );
+      if (!prepared) continue;
+      set(
+        field,
+        isMultiple(field) ? prepared.value : (prepared.value[0] ?? ""),
+      );
+      files.added.push(...prepared.changes.added);
+      files.removed.push(...prepared.changes.removed);
       continue;
     }
 
@@ -157,9 +177,8 @@ export async function prepareWrite(
     }
     if (!changed || value === INVALID) continue;
     if (validate(field, value, issues)) {
-      // Auth fields that only privileged callers may change directly. A
-      // phone gets onto a record only through a code sent to it, so nobody
-      // can register someone else's number with a password they know.
+      // A phone gets onto a record only via a code sent to it, so nobody can
+      // register someone else's number.
       if (
         collection.type === "auth" &&
         field.system &&
@@ -236,10 +255,10 @@ export async function prepareWrite(
     row,
     body,
     ...(oldPassword !== undefined && { oldPassword }),
+    files,
   };
 }
 
-/** The value a column holds when nothing was written to it. */
 function blankValue(field: Field): unknown {
   if (isMultiple(field)) return [];
   switch (field.type) {
@@ -329,7 +348,6 @@ function modifierKeys(field: Field): [string, Modifier][] {
   ];
 }
 
-/** Converts submitted JSON to the column's value, or records an issue. */
 function normalize(field: Field, raw: unknown, issues: Issues): unknown {
   const fail = (message: string): typeof INVALID => {
     issues.add([field.name], "validation_invalid_type", message);
@@ -408,11 +426,8 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
 
 const MAX_JSON_DEPTH = 64;
 
-/**
- * What would make Postgres reject a submitted value: a NUL character in any
- * string or key, or JSON nested deeper than it can process. Walked with an
- * explicit stack, so hostile nesting cannot overflow the call stack.
- */
+// NULs and deep JSON, which Postgres rejects. An explicit stack keeps hostile
+// nesting from overflowing the call stack.
 function unstorable(value: unknown): string | undefined {
   const stack: [unknown, number][] = [[value, 0]];
   for (let next = stack.pop(); next; next = stack.pop()) {
@@ -431,7 +446,6 @@ function unstorable(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Checks a normalized value against the field's options. */
 function validate(field: Field, value: unknown, issues: Issues): boolean {
   const fail = (code: string, message: string): false => {
     issues.add([field.name], code, message);
@@ -574,10 +588,7 @@ function checkList(
   return true;
 }
 
-/**
- * Validates a new password and stages its hash. Returns the oldPassword the
- * change must still be checked against, when the caller needs one.
- */
+// Returns the oldPassword the change must still be checked against, if any.
 function preparePassword(
   input: Record<string, unknown>,
   field: Field & { type: "password" },
@@ -588,8 +599,7 @@ function preparePassword(
 ): string | undefined {
   const { password, passwordConfirm, oldPassword } = input;
   if (password === undefined) return undefined;
-  // Counts characters as people see them: an emoji or accented letter is one
-  // character, though JavaScript's `length` may count it as two.
+  // Counts characters as people see them, unlike `length` (emoji, accents).
   const length = typeof password === "string" ? [...password].length : 0;
   if (
     typeof password !== "string" ||
@@ -630,11 +640,7 @@ function preparePassword(
   return check;
 }
 
-/**
- * Checks that referenced records exist, and locks them against deletion until
- * the transaction ends, so a concurrent delete cannot leave this write
- * pointing at nothing.
- */
+// Locks referenced records until commit so a concurrent delete cannot leave a dangling reference.
 async function checkRelations(
   q: Builder,
   schema: Schema,

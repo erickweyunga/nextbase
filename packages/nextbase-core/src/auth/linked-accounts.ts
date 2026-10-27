@@ -14,30 +14,23 @@ import type { Schema } from "../schema/cache.ts";
 import { findByEmail } from "./flows.ts";
 import { type Identity, OAuth2Error } from "./oauth2.ts";
 
-// Provider accounts linked to auth records. A sign-in finds its record by the
-// provider's permanent account id, never by email. When a new provider
-// account has the email of an existing record, they are linked only if both
-// the provider and NextBase verified that email, and the owner is told.
-// Anything weaker could hand your account to someone who created a provider
-// account with your email address.
+// Sign-ins find their record by the provider's permanent account id, never by
+// email. A new provider account is auto-linked to an existing record by email
+// only if both sides verified that email, and the owner is told; anything
+// weaker hands your account to whoever registers your email at a provider.
 
 export interface AccountContext {
   db: DB;
   schema: Schema;
 }
 
-/** The record a provider sign-in belongs to, and the address to tell of a new link. */
 export interface Account {
   record: Row;
-  /** Set when this sign-in linked the provider: the owner should be told. */
+  /** Set when this sign-in linked the provider, so the owner can be told. */
   linkedTo?: string;
 }
 
-/**
- * Finds or creates the record for a provider account, linking it to
- * `linkRecordId` when a signed-in record asked to link. New records follow
- * the collection's create rule, as a sign-up does.
- */
+/** New records go through the collection's create rule, as a sign-up does. */
 export async function accountFor(
   ctx: AccountContext,
   collection: AuthCollection,
@@ -87,7 +80,6 @@ export async function accountFor(
   });
 }
 
-/** The providers linked to a record, oldest first. */
 export async function listLinkedAccounts(
   q: Builder,
   collectionId: string,
@@ -104,7 +96,6 @@ export async function listLinkedAccounts(
   return rows.map((row) => ({ ...row, created: row.created.toISOString() }));
 }
 
-/** Unlinks a provider from a record. Returns whether it was linked. */
 export async function unlinkAccount(
   q: Builder,
   collectionId: string,
@@ -187,11 +178,7 @@ async function link(
   if (inserted.length === 0) throw alreadyLinked();
 }
 
-/**
- * Creates a record for a provider account, as an anonymous sign-up under
- * the create rule. Its password is random and never shown, so it signs in
- * through the provider until it sets one with a password reset.
- */
+// The random password is never shown; the owner can set one via password reset.
 async function signUp(
   ctx: { db: Tx; pool: DB; schema: Schema },
   collection: AuthCollection,

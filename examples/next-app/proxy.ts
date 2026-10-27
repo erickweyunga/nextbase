@@ -1,9 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { nextbase } from "@/lib/nextbase";
 
-// Redirects signed-out visitors before protected pages render, so the pages
-// need no checks of their own. This is not what protects the data: every
-// read through NextBase is filtered by its collection's rules.
+// Redirects signed-out visitors early. It does not protect data: collection rules do.
 export async function proxy(request: NextRequest) {
   if (await nextbase.getSession(request)) return NextResponse.next();
   const signIn = new URL("/sign-in", request.url);
@@ -11,8 +9,8 @@ export async function proxy(request: NextRequest) {
   return NextResponse.redirect(signIn);
 }
 
-// Only the routes that need a session: proxy runs for every matched request,
-// prefetches included, and this check reads the database.
+// Match only routes that need a session: this check reads the database on every
+// matched request, prefetches included.
 export const config = {
   matcher: ["/dashboard/:path*"],
 };

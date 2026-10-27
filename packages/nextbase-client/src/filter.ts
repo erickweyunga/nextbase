@@ -1,4 +1,4 @@
-/** A value `filter()` can place into an expression. */
+/** A value `filter()` can substitute into an expression. */
 export type FilterValue =
   | string
   | number
@@ -13,10 +13,8 @@ export type FilterValue =
 const PLACEHOLDER = /\{:(\w+)\}/g;
 
 /**
- * Builds a filter expression, replacing each `{:name}` with `params.name` as
- * a safely quoted literal: `filter("title ~ {:q}", { q })`. Strings and dates
- * become quoted strings, numbers decimals, booleans and nullish values the
- * literals `true`, `false` and `null`, and other objects quoted JSON.
+ * Builds a filter expression, replacing each `{:name}` with `params.name` as a
+ * safely quoted literal: `filter("title ~ {:q}", { q })`. Objects become quoted JSON.
  */
 export function filter(
   expression: string,
@@ -54,12 +52,11 @@ function literal(value: FilterValue, name: string): string {
   return quote(JSON.stringify(value));
 }
 
-/** A string literal: a backslash escapes the next character. */
 function quote(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-/** A number in plain decimal notation, since filters have no exponent syntax. */
+// Filters have no exponent syntax, so expand to plain decimals.
 function decimal(value: number): string {
   if (Object.is(value, -0)) return "0";
   const text = String(value);

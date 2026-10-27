@@ -5,7 +5,7 @@ import { useNextBase } from "@nextbasejs/react";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState, useTransition } from "react";
 
-/** Sign-in with a code texted to a phone: number first, then the code. */
+/** Sign-in with a code texted to a phone. */
 export function PhoneSignIn({ redirect }: { redirect: string }) {
   const nb = useNextBase();
   const router = useRouter();

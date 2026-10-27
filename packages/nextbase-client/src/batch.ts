@@ -12,16 +12,12 @@ interface BatchRequest {
   body?: Record<string, unknown>;
 }
 
-/** Query options a batched write takes. */
 export interface BatchWriteOptions {
   expand?: string;
   fields?: string;
 }
 
-/**
- * Collects record writes and sends them as one request that runs in a single
- * transaction: every write is saved, or none is. At most 50 writes.
- */
+/** Record writes sent as one request and saved in a single transaction. At most 50 writes. */
 export class Batch {
   readonly #client: NextBaseClient;
   readonly #requests: BatchRequest[] = [];
@@ -36,9 +32,8 @@ export class Batch {
   }
 
   /**
-   * Sends the queued writes. Resolves with one result per write, in order, or
-   * rejects with a 400 ClientError naming the failed write; then nothing was
-   * saved, and `data.requests[index]` holds that write's field errors.
+   * Sends the writes and resolves with one result each, in order. On failure nothing
+   * is saved and the 400 ClientError's `data.requests[index]` holds the field errors.
    */
   send(options?: SendOptions): Promise<BatchResult[]> {
     return this.#client.send("/batch", {
@@ -49,7 +44,7 @@ export class Batch {
   }
 }
 
-/** Queues writes to one collection. Each method returns the batch, to chain on. */
+/** Queues writes to one collection. Each method returns the batch for chaining. */
 export class BatchCollection {
   readonly #batch: Batch;
   readonly #requests: BatchRequest[];

@@ -3,18 +3,14 @@ import type { Params } from "./query.ts";
 import { bindParam, mergeParams, quoteIdentifierPath } from "./sql.ts";
 
 /**
- * A SQL fragment used as a WHERE, HAVING or JOIN ON condition, or as a value
- * in insert, update and upsert. Built with the functions in this module, such
- * as `hash({ status: "active" })` or `exp("age > {:min}", { min: 18 })`.
- *
- * `build` returns the SQL text and adds the values it needs to `params`. It
- * returns an empty string when the expression has no effect, so callers skip it.
+ * A SQL fragment for a condition or a written value. `build` adds its values to
+ * `params` and returns "" when it has no effect, so callers skip it.
  */
 export interface Expression {
   build(builder: Builder, params: Params): string;
 }
 
-/** Whether `value` is an object with a `build` method, which is used as SQL instead of bound as a value. */
+/** Values with a `build` method are used as SQL instead of bound. */
 export function isExpression(value: unknown): value is Expression {
   return (
     typeof value === "object" &&
@@ -50,8 +46,7 @@ class HashExp implements Expression {
     const parts: string[] = [];
     for (const [name, value] of Object.entries(this.#values)) {
       if (value === undefined) {
-        // Skipping it would silently widen the condition, for example turning
-        // a delete of one row into a delete of every row.
+        // Skipping it would widen the condition, e.g. delete every row.
         throw new TypeError(`dbx: hash value for "${name}" is undefined.`);
       }
       if (value === null) {
@@ -118,8 +113,7 @@ class InExp implements Expression {
     this.#not = not;
   }
 
-  // `col = NULL` and `col IN (..., NULL)` never match, so a null value becomes
-  // an explicit IS NULL / IS NOT NULL test, as in hash().
+  // `= NULL` never matches, so null becomes an explicit IS [NOT] NULL test.
   build(builder: Builder, params: Params): string {
     if (this.#values.length === 0) return this.#not ? "" : "0=1";
 
@@ -160,9 +154,8 @@ export const DEFAULT_LIKE_ESCAPE: readonly string[] = [
 ];
 
 /**
- * A LIKE condition, from `like()`, `notLike()`, `orLike()` or `orNotLike()`.
- * By default each value is escaped and wrapped in `%`, so it matches as a
- * literal substring; `escape()` and `match()` change that.
+ * By default each value is escaped and wrapped in `%`, matching a literal
+ * substring; `escape()` and `match()` change that.
  */
 export class LikeExp implements Expression {
   readonly #col: string;
@@ -186,10 +179,7 @@ export class LikeExp implements Expression {
     this.#or = or;
   }
 
-  /**
-   * Sets the replacement pairs applied to each value: `escape(from1, to1,
-   * from2, to2, ...)`. Call with no arguments to match values as patterns.
-   */
+  /** Replacement pairs `(from, to, ...)`; none matches values as raw patterns. */
   escape(...chars: string[]): this {
     if (chars.length % 2 !== 0) {
       throw new TypeError(
@@ -200,7 +190,7 @@ export class LikeExp implements Expression {
     return this;
   }
 
-  /** Matches regardless of case, using Postgres `ILIKE`. */
+  /** Uses `ILIKE`. */
   caseInsensitive(value = true): this {
     this.#caseInsensitive = value;
     return this;
@@ -271,17 +261,14 @@ class BetweenExp implements Expression {
   }
 }
 
-/**
- * A raw SQL expression. It may contain `{:name}` placeholders, `{{table}}` and
- * `[[column]]`; `params` supplies the placeholder values.
- */
+/** Raw SQL with `{:name}`, `{{table}}` and `[[column]]`; `params` binds the values. */
 export function exp(sql: string, params?: Params): Expression {
   return new Exp(sql, params);
 }
 
 /**
- * Equality conditions joined by AND. A `null` value means `IS NULL`, an array
- * means `IN`, and an Expression is used as is. An `undefined` value throws.
+ * Equality conditions joined by AND: `null` is IS NULL, an array is IN, an
+ * Expression is used as is. `undefined` throws.
  */
 export function hash(values: Record<string, unknown>): Expression {
   return new HashExp(values);
@@ -302,18 +289,12 @@ export function or(...exps: (Expression | null | undefined)[]): Expression {
   return new AndOrExp(exps, "OR");
 }
 
-/**
- * `col IN (...)`. With no values it matches nothing. A `null` value matches
- * NULL; an `undefined` value throws.
- */
+/** With no values it matches nothing. `null` matches NULL; `undefined` throws. */
 export function isIn(col: string, ...values: unknown[]): Expression {
   return new InExp(col, values, false);
 }
 
-/**
- * `col NOT IN (...)`. With no values it has no effect. A `null` value also
- * excludes NULL; an `undefined` value throws.
- */
+/** With no values it has no effect. `null` excludes NULL; `undefined` throws. */
 export function notIn(col: string, ...values: unknown[]): Expression {
   return new InExp(col, values, true);
 }
@@ -338,22 +319,21 @@ export function orNotLike(col: string, ...values: string[]): LikeExp {
   return new LikeExp(col, values, "NOT LIKE", true);
 }
 
-/** `EXISTS (sub-query)`, such as `exists(exp("SELECT 1 FROM ..."))`. An empty sub-query matches nothing. */
+/** An empty sub-query matches nothing. */
 export function exists(exp: Expression): Expression {
   return new ExistsExp(exp, false);
 }
 
-/** `NOT EXISTS (sub-query)`. An empty sub-query has no effect. */
+/** An empty sub-query has no effect. */
 export function notExists(exp: Expression): Expression {
   return new ExistsExp(exp, true);
 }
 
-/** `col BETWEEN from AND to`. Both ends are included. */
+/** Both ends are included. */
 export function between(col: string, from: unknown, to: unknown): Expression {
   return new BetweenExp(col, from, to, false);
 }
 
-/** `col NOT BETWEEN from AND to`. */
 export function notBetween(
   col: string,
   from: unknown,

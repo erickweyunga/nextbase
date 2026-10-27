@@ -9,13 +9,9 @@ const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
 const IDENTIFIER_CHAR = /[\w$\u0080-￿]/;
 
 /**
- * Replaces each `{:name}`, `{{table}}` and `[[column]]` token with the result of
- * `replace`, and returns the new SQL.
- *
- * Tokens are only recognized in SQL code: string literals, quoted identifiers,
- * dollar-quoted strings and comments are copied unchanged, so quoted names and
- * literals can never be reinterpreted. Positional `$1` parameters are rejected,
- * because they would collide with the numbers the placeholders get.
+ * Replaces `{:name}`, `{{table}}` and `[[column]]` tokens via `replace`. Literals,
+ * quoted identifiers, dollar-quoted strings and comments are copied untouched.
+ * `$1` is rejected since it would collide with the generated numbers.
  */
 export function rewriteSQL(
   sql: string,
@@ -124,13 +120,12 @@ export function quoteIdentifier(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** Quotes a dotted identifier path such as `schema.table` or `table.column`, always. */
+/** Quotes each part of a dotted path such as `schema.table`, always. */
 export function quoteIdentifierPath(name: string): string {
   return name.split(".").map(quoteIdentifier).join(".");
 }
 
-// The next free `pN` index of each params object, so binding many values stays
-// linear instead of rescanning the keys for every value.
+// Next free `pN` per params object, so binding many values stays linear.
 const nextIndex = new WeakMap<Params, number>();
 
 function freshName(params: Params): string {
@@ -148,10 +143,8 @@ export function bindParam(params: Params, value: unknown): string {
 }
 
 /**
- * Adds `own`, the parameters of the fragment `sql`, to `params`. A name that is
- * already bound to a different value is renamed in both, so fragments built
- * separately, such as the parts of a UNION, never overwrite each other's
- * values. Returns `sql` with any renamed placeholders.
+ * Merges fragment params `own` into `params`, renaming names already bound to a
+ * different value (e.g. UNION parts). Returns `sql` with renamed placeholders.
  */
 export function mergeParams(sql: string, own: Params, params: Params): string {
   const renames = new Map<string, string>();

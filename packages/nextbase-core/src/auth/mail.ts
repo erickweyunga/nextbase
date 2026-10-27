@@ -2,7 +2,6 @@ import { waitUntil as vercelWaitUntil } from "@vercel/functions";
 import { checkAppUrl } from "../app-url.ts";
 import { ApiError } from "../errors.ts";
 
-/** One email, as `mail.send` receives it. */
 export interface MailMessage {
   from: string;
   to: string;
@@ -11,7 +10,6 @@ export interface MailMessage {
   html?: string;
 }
 
-/** The emails auth flows send. */
 export type MailKind =
   | "verification"
   | "passwordReset"
@@ -22,16 +20,15 @@ export type MailKind =
   | "oauth2Unlinked"
   | "phoneChanged";
 
-/** What a template gets to write one email. */
 export interface MailContext {
   kind: MailKind;
-  /** The auth collection, by name. */
+  /** The auth collection name. */
   collection: string;
   to: string;
-  /** The link to open, with the token: for verification, reset and email change. */
+  /** Link with the token, for verification, reset and email change. */
   url?: string;
   token?: string;
-  /** The provider of `oauth2Linked` and `oauth2Unlinked`. */
+  /** Set for `oauth2Linked` and `oauth2Unlinked`. */
   provider?: string;
 }
 
@@ -42,17 +39,14 @@ export type MailTemplate = (context: MailContext) => {
 };
 
 export interface MailOptions {
-  /** Sender address, such as `app@example.com`. */
   from: string;
-  /** Sends one email, through any provider: SMTP, Resend, SES, Postmark... */
+  /** Sends one email through any provider (SMTP, Resend, SES, Postmark...). */
   send(message: MailMessage): Promise<void>;
   /**
-   * Where the pages that take tokens live: `/verify-email`,
-   * `/reset-password` and `/confirm-email-change`, each with `?token=`.
-   * Defaults to the `appUrl` option.
+   * Base URL of `/verify-email`, `/reset-password` and `/confirm-email-change`
+   * (each with `?token=`). Defaults to the `appUrl` option.
    */
   appUrl?: string;
-  /** Replaces the default subject and text of any kind of email. */
   templates?: Partial<Record<MailKind, MailTemplate>>;
 }
 
@@ -98,10 +92,8 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
 };
 
 /**
- * Sends auth emails in the background, after the response is decided, so
- * response times do not reveal whether an account exists: sending takes
- * time only when there is someone to send to. `waitUntil` keeps the work
- * alive past the response on serverless platforms.
+ * Sends after the response so timing does not reveal whether an account
+ * exists; `waitUntil` keeps the work alive on serverless platforms.
  */
 export class Mailer {
   readonly #options: MailOptions | undefined;
@@ -126,10 +118,7 @@ export class Mailer {
     this.#waitUntil = waitUntil ?? vercelWaitUntil;
   }
 
-  /**
-   * Throws 400 when mail is not set up. Development without it logs emails
-   * instead, so flows can be tried locally.
-   */
+  /** Development without mail set up logs emails instead, so flows work locally. */
   check(): void {
     if (this.#options || process.env.NODE_ENV !== "production") return;
     throw new ApiError(
@@ -139,7 +128,7 @@ export class Mailer {
     );
   }
 
-  /** Queues one email; failures are logged, never shown to the caller. */
+  /** Failures are logged, never shown to the caller. */
   send(
     kind: MailKind,
     collection: string,

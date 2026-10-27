@@ -29,7 +29,6 @@ export async function hasSuperuser(q: Builder): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** A one-hour token that lets its holder create the first superuser. */
 export async function setupToken(q: Builder): Promise<string> {
   const [secret] = await q
     .select("setup_secret")
@@ -38,10 +37,7 @@ export async function setupToken(q: Builder): Promise<string> {
   return signToken(secret as string, { type: "setup" }, SETUP_TOKEN_DURATION);
 }
 
-/**
- * Creates the first superuser, for the holder of a setup token. Once any
- * superuser exists this is a 404: setup is over.
- */
+/** 404 once any superuser exists: setup is over. */
 export async function completeSetup(
   db: DB,
   schema: Schema,
@@ -66,7 +62,6 @@ export async function completeSetup(
   });
 }
 
-/** Validates and inserts a superuser. Errors are 400s keyed by `email` and `password`. */
 export async function insertSuperuser(
   q: Builder,
   collection: AuthCollection,

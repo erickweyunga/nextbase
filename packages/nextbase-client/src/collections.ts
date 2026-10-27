@@ -10,8 +10,8 @@ import type {
 } from "./shared/schema.ts";
 
 /**
- * A collection definition to create or a change to apply. Omitted settings
- * keep their current value, or get a default; fields without an `id` are new.
+ * A collection to create or update. Omitted settings keep their value or get a
+ * default; fields without an `id` are new.
  */
 export type CollectionInput = Partial<
   Omit<AuthCollection, "type" | "fields" | "indexes" | "tokens">
@@ -19,7 +19,7 @@ export type CollectionInput = Partial<
   type?: Collection["type"];
   fields?: Partial<Field>[];
   indexes?: Partial<Index>[];
-  /** For view collections: the SELECT their records come from. */
+  /** View collections only: the SELECT their records come from. */
   viewQuery?: string;
   tokens?: Partial<Record<TokenType, Partial<TokenConfig>>>;
 };

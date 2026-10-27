@@ -1,7 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 
 const adminUrl =
@@ -56,6 +59,7 @@ export async function startServer({
   const database = new URL(adminUrl);
   database.pathname = `/${name}`;
 
+  const storageDir = await mkdtemp(join(tmpdir(), "nextbase-e2e-storage-"));
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   let output = "";
@@ -70,6 +74,8 @@ export async function startServer({
         ...process.env,
         DATABASE_URL: database.toString(),
         NODE_ENV: "production",
+        // Uploads of this run, kept apart from development files.
+        STORAGE_DIR: storageDir,
         ...env(origin),
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -100,6 +106,7 @@ export async function startServer({
     output: () => output,
     async stop() {
       await stop(child);
+      await rm(storageDir, { recursive: true, force: true });
       await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);
       await admin.end();
     },

@@ -1,0 +1,180 @@
+---
+title: Files
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Files
+
+Upload and download the files of [file fields](/docs/guides/files).
+
+## Upload with a record
+
+[Create](/docs/api/records#create-a-record) and
+[update](/docs/api/records#update-a-record) take `multipart/form-data` as
+well as JSON. Each part is a field; send a field several times for several
+files. A part named `@jsonPayload` holds a JSON object of the other values,
+which keeps numbers, booleans and JSON as they are.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+await nb.collection("posts").create({ title: "Hello", cover: file });
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections/posts/records \
+  -H 'authorization: Bearer <token>' \
+  -F '@jsonPayload={"title":"Hello"}' \
+  -F 'cover=@photo.jpg'
+```
+
+</TabItem>
+</Tabs>
+
+A file field's value may be:
+
+| Value | Meaning |
+| ----- | ------- |
+| a file part | A new file. |
+| a stored name the record has | Keep that file, at this position. |
+| `upload:<id>` | A finished [direct upload](#start-a-direct-upload). |
+| empty | No files. |
+
+`field+` adds files and `field-` removes names. Form data requests are limited
+to 32 MiB.
+
+**Errors** on the field: `validation_file_too_large`,
+`validation_invalid_mime_type`, `validation_too_many`, `validation_invalid_upload`
+(a direct upload that is unknown, unfinished, of another size, or expired),
+and `validation_invalid_value` (a name the record does not have).
+
+## Start a direct upload
+
+With [storage in a bucket](/docs/guides/files#store-files-in-a-bucket), returns
+a URL to PUT a file to directly, and a token to put in the record's field
+once the upload finished. The URL is signed for the exact size and type and
+works for 15 minutes. The SDK does this for files over 4 MB.
+
+```http
+POST /collections/{collection}/upload-url
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `field` | string | Required. The file field's name. |
+| `filename` | string | Required. The file's name, used for the stored name. |
+| `size` | number | Required. Bytes; at most the field's `maxSize`. |
+| `type` | string | Required. The MIME type the upload will send. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "token": "upload:Xk3j2h1g9f8a7s6d5f4g3h2j1k0l9z8x",
+  "url": "https://bucket.s3.amazonaws.com/_uploads/Xk3j...?X-Amz-Signature=...",
+  "method": "PUT",
+  "headers": { "content-type": "image/png" }
+}
+```
+
+Then:
+
+```sh
+curl -X PUT "<url>" -H 'content-type: image/png' --data-binary @photo.png
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Direct uploads need storage in a bucket.", "data": { "storage": { "code": "direct_upload_unavailable", "message": "Send the file with the record instead." } } }
+```
+
+Also returned, with field errors, for an unknown field or a size over the
+field's `maxSize`.
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Files cannot be uploaded to this collection.", "data": {} }
+```
+
+The collection's create and update rules are both `null`.
+
+</TabItem>
+</Tabs>
+
+## Download a file
+
+```http
+GET /files/{collection}/{recordId}/{filename}
+```
+
+| Query | Description |
+| ----- | ----------- |
+| `download` | `1` serves the file as a download. |
+| `token` | A [file token](#get-a-file-token), for protected files. |
+
+With local storage, answers with the file. With a bucket, redirects (302) to
+a signed URL that works for 5 minutes. Files of `protected` fields need a
+caller the collection's view rule allows: through the session cookie, a
+Bearer token, or `token`. Anyone else gets 404.
+
+## Get a file token
+
+A short-lived token for the signed-in record's protected files, for URLs
+where no cookie or Authorization header is sent. Valid for 2 minutes, as set
+by the collection's `tokens.file.duration`.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const token = await nb.files.getToken();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/files/token \
+  -H 'authorization: Bearer <token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /files/token
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{ "token": "eyJhbGciOiJIUzI1NiIs..." }
+```
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to get a file token.", "data": {} }
+```
+
+</TabItem>
+</Tabs>

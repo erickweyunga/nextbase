@@ -2,6 +2,7 @@ import { AuthStore } from "./auth-store.ts";
 import { Batch } from "./batch.ts";
 import { ClientError } from "./client-error.ts";
 import { CollectionService } from "./collections.ts";
+import { FileService } from "./files.ts";
 import { type FilterValue, filter } from "./filter.ts";
 import { RecordService } from "./records.ts";
 import {
@@ -28,6 +29,7 @@ export type {
 } from "./batch.ts";
 export { ClientError } from "./client-error.ts";
 export type { CollectionInput, CollectionService } from "./collections.ts";
+export type { FileService, FileUrlOptions } from "./files.ts";
 export { type FilterValue, filter } from "./filter.ts";
 export type {
   AuthOptions,
@@ -84,27 +86,26 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Custom fetch, e.g. to call the handler in-process on the server. */
   fetch?: typeof globalThis.fetch;
-  /** Defaults to a store persisted in `localStorage` in the browser, in memory elsewhere. */
+  /** Defaults to `localStorage` in the browser and memory elsewhere. */
   authStore?: AuthStore;
 }
 
 type QueryValue = string | number | boolean | null | undefined;
 
-/** Options every request takes, including fetch's own, such as `signal` or `cache`. */
+/** Per-request options, including fetch's own such as `signal` or `cache`. */
 export interface SendOptions
   extends Omit<RequestInit, "body" | "method" | "headers"> {
   method?: string;
   /** Query parameters; `null` and `undefined` values are left out. */
   query?: Record<string, QueryValue>;
   headers?: Record<string, string>;
-  /** Sent as JSON, unless it is already a body fetch understands. */
+  /** Sent as JSON unless it is already a fetch body. */
   body?: unknown;
 }
 
 /**
- * The NextBase SDK. `Schema` maps collection names to their record types,
- * such as the `Collections` type `nextbase typegen` writes, so
- * `collection("posts")` is typed without annotations.
+ * The NextBase SDK. `Schema` maps collection names to record types (e.g. the
+ * `Collections` type from `nextbase typegen`) so `collection("posts")` is typed.
  */
 export class NextBaseClient<
   Schema extends Record<string, RecordModel> = Record<never, RecordModel>,
@@ -112,6 +113,8 @@ export class NextBaseClient<
   readonly authStore: AuthStore;
   /** Collection definitions. Superusers only. */
   readonly collections: CollectionService;
+  /** File URLs and tokens for protected files. */
+  readonly files: FileService;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
 
@@ -122,6 +125,7 @@ export class NextBaseClient<
     this.#fetch = (input, init) => fetch(input, init);
     this.authStore = options.authStore ?? new AuthStore();
     this.collections = new CollectionService(this);
+    this.files = new FileService(this);
   }
 
   /** Records of one collection, by name or id. */
@@ -135,7 +139,7 @@ export class NextBaseClient<
     return new RecordService(this, idOrName);
   }
 
-  /** Starts a batch of record writes that are saved together or not at all. */
+  /** Starts a batch of record writes applied all or nothing. */
   createBatch(): Batch {
     return new Batch(this);
   }
@@ -157,10 +161,7 @@ export class NextBaseClient<
     return this.send("/setup", options);
   }
 
-  /**
-   * Creates the first superuser with the setup token from the server log.
-   * Sign in afterwards with `collection("_superusers").signInWithPassword()`.
-   */
+  /** Creates the first superuser with the setup token from the server log. Does not sign in. */
   setup(
     params: { token: string; email: string; password: string },
     options?: SendOptions,
@@ -169,9 +170,8 @@ export class NextBaseClient<
   }
 
   /**
-   * The caller's current session and record, or null when signed out. Also
-   * updates the auth store, so call it on startup with cookie sessions,
-   * which scripts cannot inspect.
+   * The current session and record, or null when signed out. Updates the auth
+   * store, so call it on startup with cookie sessions, which scripts cannot read.
    */
   async getSession<T extends RecordModel = RecordModel>(
     options?: SendOptions,
@@ -185,7 +185,7 @@ export class NextBaseClient<
     return session;
   }
 
-  /** Ends the current session on the server, removes its cookie, and clears the auth store. */
+  /** Ends the session on the server, removes its cookie, and clears the auth store. */
   async signOut(options?: SendOptions): Promise<void> {
     try {
       await this.send("/session", { ...options, method: "DELETE" });
@@ -205,7 +205,7 @@ export class NextBaseClient<
     await this.send("/sessions", { ...options, method: "DELETE" });
   }
 
-  /** Ends one of the signed-in record's sessions, such as a lost device. */
+  /** Ends one of the signed-in record's sessions. */
   async revokeSession(id: string, options?: SendOptions): Promise<void> {
     await this.send(`/sessions/${encodeURIComponent(id)}`, {
       ...options,
@@ -214,10 +214,8 @@ export class NextBaseClient<
   }
 
   /**
-   * Sends a request to `path` below the base URL with the current auth token,
-   * and returns the parsed JSON body (undefined for 204). Throws
-   * {@link ClientError} for anything else. A 401 to a signed-in request signs
-   * out, since the token is no longer accepted.
+   * Sends an authenticated request to `path` and returns the parsed JSON (undefined
+   * for 204). Throws {@link ClientError}; a 401 on a signed-in request signs out.
    */
   async send<T>(path: string, options: SendOptions = {}): Promise<T> {
     const { query, headers: extraHeaders, body, ...init } = options;
@@ -267,7 +265,7 @@ export class NextBaseClient<
     }
 
     if (response.ok) return parsed as T;
-    // Signed out by the server: unless the store changed meanwhile.
+    // Skip if the store changed while the request was in flight.
     if (
       response.status === 401 &&
       (token !== "" || record !== null) &&
@@ -287,10 +285,7 @@ export class NextBaseClient<
     );
   }
 
-  /**
-   * The URL of `path` below the base URL, for links and redirects that
-   * leave the SDK, such as an OAuth2 sign-in.
-   */
+  /** The full URL of `path`, for links and redirects such as an OAuth2 sign-in. */
   buildUrl(path: string, query: Record<string, QueryValue> = {}): string {
     return this.#url(path, query);
   }

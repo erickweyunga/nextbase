@@ -10,23 +10,18 @@ import {
   setSessionCookie,
 } from "./sessions.ts";
 
-/** Who is making a request. */
 export interface Principal {
-  /** The auth collection of the authenticated record. */
   collection?: AuthCollection;
-  /** The authenticated record's row. */
   record?: Row;
-  /** The session the request authenticated with. */
   session?: Session;
-  /** Whether the session came from the cookie rather than a Bearer header. */
   viaCookie?: boolean;
-  /** Whether the record is a superuser, who bypasses every rule. */
+  /** Superusers bypass every rule. */
   superuser: boolean;
 }
 
 export interface Resolved {
   principal: Principal;
-  /** A `Set-Cookie` header the response must carry: a renewed or removed cookie. */
+  /** A renewed or removed session cookie the response must carry. */
   setCookie?: string;
 }
 
@@ -35,12 +30,9 @@ const ANONYMOUS: Principal = { superuser: false };
 const SUPERUSERS = "_superusers";
 
 /**
- * Resolves the caller from an `Authorization: Bearer <token>` header, or else
- * the session cookie. An invalid Bearer token is a 401, so API clients notice
- * instead of silently getting anonymous results. An invalid cookie is
- * removed and the request continues anonymously, so a revoked session never
- * breaks public pages. `extend` renews sessions due for it; only requests whose
- * response can renew the cookie too should.
+ * An invalid Bearer token is a 401 so API clients notice; an invalid cookie is
+ * cleared and the request continues anonymously so public pages never break.
+ * Pass `extend` only when the response can also renew the cookie.
  */
 export async function resolvePrincipal(
   request: Request,
@@ -86,7 +78,6 @@ export async function resolvePrincipal(
   };
 }
 
-/** Throws 401 for anonymous callers and 403 for authenticated non-superusers. */
 export function requireSuperuser(principal: Principal): void {
   if (principal.superuser) return;
   if (!principal.record)
