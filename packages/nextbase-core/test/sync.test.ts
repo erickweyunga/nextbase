@@ -88,6 +88,7 @@ describe("migrate", () => {
       "0005_oauth2",
       "0006_phone",
       "0007_email_verified",
+      "0008_uploads",
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

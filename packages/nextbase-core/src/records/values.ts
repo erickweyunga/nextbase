@@ -3,6 +3,12 @@ import type { Builder, Row } from "@nextbasejs/dbx";
 import { hashPassword } from "../auth/password.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
+import {
+  type FileChanges,
+  fileNames,
+  prepareFileField,
+} from "../files/files.ts";
+import type { Storage } from "../files/storage.ts";
 import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
@@ -34,6 +40,7 @@ export interface WriteOptions {
    * phone a sign-in code just proved, which the caller may not set alone.
    */
   vouched?: ReadonlySet<string>;
+  storage?: Storage | undefined;
 }
 
 export interface PreparedWrite {
@@ -49,6 +56,8 @@ export interface PreparedWrite {
    * someone the rule rejects can neither guess it nor lock the account.
    */
   oldPassword?: string;
+  /** Stored once the write is allowed. */
+  files: FileChanges;
 }
 
 /**
@@ -70,6 +79,7 @@ export async function prepareWrite(
   const values: Record<string, unknown> = {};
   const body: Record<string, unknown> = {};
   let oldPassword: string | undefined;
+  const files: FileChanges = { added: [], removed: [] };
   const set = (field: Field, value: unknown): void => {
     row[field.name] = value;
     values[field.name] = value;
@@ -122,17 +132,34 @@ export async function prepareWrite(
       continue;
     }
     if (field.type === "file") {
-      if (
-        [name, `${name}+`, `+${name}`, `${name}-`].some(
-          (k) => input[k] !== undefined,
-        )
-      ) {
+      const touched = [name, `${name}+`, `+${name}`, `${name}-`].some(
+        (k) => input[k] !== undefined,
+      );
+      if (!touched) continue;
+      if (!options.storage) {
         issues.add(
           [name],
           "validation_unsupported",
-          "File uploads are not supported yet.",
+          "Files cannot be set here.",
         );
+        continue;
       }
+      const prepared = await prepareFileField(
+        q,
+        options.storage,
+        collection,
+        field,
+        input,
+        fileNames(field, existing?.[name]),
+        ({ code, message }) => issues.add([name], code, message),
+      );
+      if (!prepared) continue;
+      set(
+        field,
+        isMultiple(field) ? prepared.value : (prepared.value[0] ?? ""),
+      );
+      files.added.push(...prepared.changes.added);
+      files.removed.push(...prepared.changes.removed);
       continue;
     }
 
@@ -236,6 +263,7 @@ export async function prepareWrite(
     row,
     body,
     ...(oldPassword !== undefined && { oldPassword }),
+    files,
   };
 }
 

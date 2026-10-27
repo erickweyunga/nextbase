@@ -1,4 +1,5 @@
 import { ClientError } from "./client-error.ts";
+import { hasFiles, toFormData } from "./files.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
 import type {
   AuthMethods,
@@ -123,7 +124,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const record = await this.#send<T | undefined>("/records", {
       ...options,
       method: "POST",
-      body,
+      body: await this.#body(body, options),
     });
     return record ?? null;
   }
@@ -140,7 +141,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<T | null> {
     const record = await this.#send<T | undefined>(
       `/records/${encodeURIComponent(id)}`,
-      { ...options, method: "PATCH", body },
+      { ...options, method: "PATCH", body: await this.#body(body, options) },
     );
     const store = this.#client.authStore;
     if (record && this.#isSignedIn(record)) {
@@ -177,7 +178,10 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const response = await this.#send<AuthResponse<T> | undefined>("/sign-up", {
       ...rest,
       method: "POST",
-      body: { ...body, ...(cookie && { cookie: true }) },
+      body: await this.#body(
+        { ...body, ...(cookie && { cookie: true }) },
+        rest,
+      ),
     });
     return response ? this.#saveAuth(response) : null;
   }
@@ -465,6 +469,16 @@ export class RecordService<T extends RecordModel = RecordModel> {
       record.collectionId === this.#collection ||
       record.collectionName === this.#collection
     );
+  }
+
+  /** A record body as JSON, or as form data when it carries files. */
+  #body(
+    body: Record<string, unknown>,
+    options: SendOptions = {},
+  ): Promise<Record<string, unknown> | FormData> | Record<string, unknown> {
+    return hasFiles(body)
+      ? toFormData(this.#client, this.#collection, body, options)
+      : body;
   }
 
   #send<R>(path: string, options: RecordOptions = {}): Promise<R> {

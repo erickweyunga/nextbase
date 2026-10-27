@@ -9,7 +9,8 @@ import {
   NextBaseClient,
 } from "@nextbasejs/client";
 import { DB, type Pool } from "@nextbasejs/dbx";
-import { type Context, ROUTES } from "./api/routes.ts";
+import { waitUntil as vercelWaitUntil } from "@vercel/functions";
+import { ROUTES } from "./api/routes.ts";
 import { checkAppUrl } from "./app-url.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
 import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
@@ -30,7 +31,13 @@ import {
 import { migrate } from "./db/migrations.ts";
 import { sharedPool } from "./db/pool.ts";
 import { TYPES } from "./db/types.ts";
+import { Effects } from "./effects.ts";
 import { ApiError } from "./errors.ts";
+import {
+  newStorage,
+  type Storage,
+  type StorageOptions,
+} from "./files/storage.ts";
 import { readSchemaVersion, type Schema, SchemaCache } from "./schema/cache.ts";
 
 /**
@@ -79,6 +86,7 @@ export type {
   SmsOptions,
   SmsTemplate,
 } from "./auth/sms.ts";
+export type { S3StorageOptions, StorageOptions } from "./files/storage.ts";
 
 /**
  * Whether a request carries a session cookie, without checking it: for an
@@ -130,6 +138,8 @@ export interface NextBaseOptions {
    * are logged.
    */
   mail?: MailOptions;
+  /** Local disk by default, or `{ s3: { bucket, ... } }`. Use a bucket on serverless hosts. */
+  storage?: StorageOptions;
   /**
    * Sends the codes of phone sign-in, for auth collections with `phoneSignIn`.
    * Without it, phone endpoints answer 400 in production; in development
@@ -200,6 +210,8 @@ export class NextBase {
   readonly #oauth2: OAuth2;
   readonly #sms: Sms;
   readonly #rejectBreachedPasswords: boolean;
+  readonly #storage: Storage;
+  readonly #waitUntil: (promise: Promise<unknown>) => void;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -217,6 +229,8 @@ export class NextBase {
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
     this.#sms = new Sms(options.sms, options.waitUntil);
+    this.#storage = newStorage(options.storage);
+    this.#waitUntil = options.waitUntil ?? vercelWaitUntil;
     this.#oauth2 = new OAuth2(
       options.oauth2,
       appUrl ??
@@ -361,6 +375,16 @@ export class NextBase {
     });
   }
 
+  /** In the background: a failure only leaves an unused file, so it is logged. */
+  #deleteFiles(keys: readonly string[]): void {
+    if (keys.length === 0) return;
+    this.#waitUntil(
+      this.#storage.delete(keys).catch((error: unknown) => {
+        console.error("[nextbase] deleting stored files failed:", error);
+      }),
+    );
+  }
+
   /**
    * Handles any request under `basePath`: a web-standard Request in, a
    * Response out, so any framework that speaks the Fetch API can mount it.
@@ -407,6 +431,7 @@ export class NextBase {
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       let setCookie: string | undefined;
+      const effects = new Effects();
       const response = await (async (): Promise<Response> => {
         let db: DB | undefined;
         let schema: Schema | undefined;
@@ -432,8 +457,6 @@ export class NextBase {
           if (http && verb !== "GET" && caller.viaCookie) {
             checkSameOrigin(request, this.#origins);
           }
-          // Sent only once the request succeeded: a failed one has rolled back.
-          const pendingMail: Context["pendingMail"] = [];
           const response = await handler({
             request,
             params,
@@ -447,13 +470,16 @@ export class NextBase {
             sms: this.#sms,
             oauth2: this.#oauth2,
             rejectBreachedPasswords: this.#rejectBreachedPasswords,
-            pendingMail,
+            effects,
+            storage: this.#storage,
           });
-          for (const mail of pendingMail) {
+          for (const mail of effects.mail) {
             this.#mailer.send(mail.kind, mail.collection, mail.to);
           }
+          this.#deleteFiles(effects.obsoleteFiles);
           return response;
         } catch (error) {
+          this.#deleteFiles(effects.newFiles);
           const code = (error as { code?: unknown }).code as string;
           const raced =
             SCHEMA_RACE.has(code) &&

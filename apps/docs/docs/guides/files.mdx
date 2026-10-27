@@ -1,0 +1,199 @@
+---
+title: Files
+---
+
+# Files
+
+A `file` field stores uploaded files on a record: avatars, attachments,
+documents. The field holds the files' names; the files themselves live in
+storage, on local disk or in an S3-compatible bucket.
+
+## Add a file field
+
+```ts
+await superuser.collections.update("users", {
+  fields: [
+    {
+      name: "avatar",
+      type: "file",
+      maxSize: 2 * 1024 * 1024, // bytes; default 5 MiB
+      mimeTypes: ["image/png", "image/jpeg", "image/webp"],
+    },
+    { name: "documents", type: "file", maxSelect: 10, protected: true },
+  ],
+});
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `maxSelect` | How many files the field holds. Above 1, the value is an array. Default 1. |
+| `maxSize` | The largest file allowed, in bytes. Default 5 MiB. |
+| `mimeTypes` | The types allowed, such as `image/png`. Empty allows any. |
+| `protected` | Serve the files only to callers the collection's view rule allows. Default `false`. |
+
+## Upload files
+
+Pass `File` or `Blob` objects in the record's values. The SDK sends them as
+form data:
+
+```ts
+const input = document.querySelector<HTMLInputElement>("#avatar");
+await nb.collection("users").update(user.id, {
+  name: "Ann",
+  avatar: input.files[0],
+});
+```
+
+The same works in `create`, `signUp`, and server code calling NextBase
+in-process.
+
+Each file is stored under a name NextBase generates from the original one,
+such as `my_photo_k3j2h1g9f8.jpg` for `My Photo.JPG`, and the record holds
+that name:
+
+```json
+{ "id": "u7v8w9x0y1z2a3b", "name": "Ann", "avatar": "my_photo_k3j2h1g9f8.jpg" }
+```
+
+### Add, keep and remove files
+
+For a field with several files:
+
+```ts
+const docs = nb.collection("users");
+
+// Add files after the ones the record has, or with "+documents", before them.
+await docs.update(user.id, { "documents+": [fileA, fileB] });
+
+// Remove files by name.
+await docs.update(user.id, { "documents-": ["report_k3j2h1g9f8.pdf"] });
+
+// Replace the list: names to keep, in order, and new files.
+await docs.update(user.id, {
+  documents: ["report_k3j2h1g9f8.pdf", newFile],
+});
+
+// Remove all files.
+await docs.update(user.id, { documents: [] });
+```
+
+Removed files are deleted from storage. So are a record's files when the
+record is deleted, a field's files when the field is removed, and a
+collection's files when the collection is deleted. If a write fails, any file
+it stored is deleted again, and the files it would have removed are kept.
+
+## Show files
+
+`nb.files.getUrl(record, name)` returns the file's URL, for links and `<img>`
+tags:
+
+```tsx
+<img src={nb.files.getUrl(user, user.avatar)} alt="" />
+
+<a href={nb.files.getUrl(user, doc, { download: true })}>Download</a>
+```
+
+Images, PDFs, video, audio and plain text are shown in the browser. Other
+types, including HTML and SVG, which could run scripts, are always
+downloaded. Downloads support byte ranges, so video players can seek.
+
+### Protected files
+
+Files of a `protected` field are served only to callers the collection's
+**view rule** allows. A session cookie works as is. Where no cookie is sent,
+such as from a mobile app, get a short-lived file token:
+
+```ts
+const token = await nb.files.getToken(); // valid for 2 minutes
+const url = nb.files.getUrl(user, doc, { token });
+```
+
+Files of fields that are not protected are public: anyone with the URL can
+download them. URLs contain the record id and a random part, so they cannot
+be guessed, but use `protected` for anything private.
+
+## How files are checked
+
+- The type is read from the file's first bytes, not from the label the
+  browser sends, which anyone can set. A text file labeled `image/png` is
+  refused by a field that allows only images, and an SVG labeled as plain
+  text is still an SVG. Images, documents, archives, media, SVG and other XML
+  formats are recognized this way. Formats without recognizable bytes, such
+  as plain text, CSV, JSON and HTML, keep their label; they are served with
+  `nosniff` and, except plain text, as downloads, so a wrong label cannot
+  make them run.
+- Sizes and counts are checked against `maxSize` and `maxSelect`.
+- Stored names are generated: original names, which could contain paths or
+  misleading extensions, are never used as they are.
+- Files are served with `X-Content-Type-Options: nosniff` and a content
+  security policy that runs nothing, so a file can never act as a page of
+  your app.
+
+Who may add or remove files is decided by the collection's create and update
+rules, as for any other field. `@request.body.avatar` holds the file names
+the write would leave on the record.
+
+## Store files in a bucket
+
+Without configuration, files are stored on local disk in `.nextbase/storage`,
+which suits development and servers with a persistent disk; add `.nextbase/`
+to your `.gitignore`. Serverless hosts such as Vercel keep no files between
+requests: configure a bucket there.
+
+```ts title="lib/nextbase.ts"
+export const nextbase = new NextBase({
+  storage: {
+    s3: {
+      bucket: process.env.S3_BUCKET!,
+      region: process.env.S3_REGION, // AWS: the bucket's region. Default "auto".
+      endpoint: process.env.S3_ENDPOINT, // other providers, such as Cloudflare R2
+      accessKeyId: process.env.S3_ACCESS_KEY_ID,
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+    },
+  },
+});
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `bucket` | Required. |
+| `region` | The bucket's region on AWS. Defaults to `auto`, which Cloudflare R2 expects. |
+| `endpoint` | The service URL for providers other than AWS, such as `https://<account>.r2.cloudflarestorage.com`. |
+| `accessKeyId`, `secretAccessKey` | Optional. Without them, the AWS SDK's usual credential sources apply. |
+| `forcePathStyle` | Address buckets as `endpoint/bucket`, as MinIO needs. |
+
+With a bucket, downloads redirect to a signed URL that works for 5 minutes,
+so large files never pass through your server.
+
+### Large files
+
+Vercel limits request bodies to 4.5 MB. With a bucket, the SDK uploads files
+larger than 4 MB straight to the bucket instead, and the record takes them
+over once they arrive, after the same type and size checks. This needs
+nothing in your code, but the bucket must accept uploads from your site.
+Add a CORS rule to the bucket, for example on AWS S3:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://example.com"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["content-type"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Uploads that no record takes within 15 minutes are deleted the next time an
+upload starts. To clean up after a server that stops for good, you can also
+add a lifecycle rule that expires objects under `_uploads/` after a day.
+
+Without a bucket, large files are sent with the record, up to 32 MiB per
+request.
+
+## Limits
+
+- Thumbnails of images are not generated yet.
+- The batch API takes JSON only. With a bucket, files can still be added in
+  a batch: start each upload with the [upload URL endpoint](/docs/api/files#start-a-direct-upload)
+  and pass the upload tokens as the field's values.

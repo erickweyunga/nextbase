@@ -52,6 +52,14 @@ export const nextbase = new NextBase({
 - **Trigram indexes** install the `pg_trgm` extension, which needs the CREATE
   privilege on the database.
 
+## File storage
+
+Uploaded files are stored on local disk by default, in `.nextbase/storage`.
+Serverless hosts such as Vercel keep no files between requests, so give
+NextBase a bucket there: AWS S3, Cloudflare R2, MinIO or any S3-compatible
+service. On Vercel, uploads without a bucket are refused rather than lost.
+See [Files](/docs/guides/files#store-files-in-a-bucket).
+
 ## Migrations
 
 NextBase upgrades its own tables on the first request after a deploy, under a
@@ -86,7 +94,8 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 - Review every collection's rules. New collections default to superuser-only.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.
-- Request bodies are limited to 1 MiB.
+- Request bodies are limited to 1 MiB, or 32 MiB for form data carrying
+  files.
 
 ## Next steps
 

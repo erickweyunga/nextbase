@@ -53,8 +53,17 @@ import {
 import type { Sms } from "../auth/sms.ts";
 import { completeSetup, hasSuperuser } from "../auth/superusers.ts";
 import { table } from "../db/system.ts";
+import type { Effects } from "../effects.ts";
 import { ApiError } from "../errors.ts";
-import { readJsonObject } from "../http.ts";
+import {
+  createUpload,
+  fileResponse,
+  fileToken,
+  findFile,
+  principalOfFileToken,
+} from "../files/serve.ts";
+import type { Storage } from "../files/storage.ts";
+import { readJsonObject, readRecordBody } from "../http.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
@@ -72,7 +81,7 @@ import {
   updateCollection,
 } from "../schema/sync.ts";
 
-export interface Context {
+interface Context {
   request: Request;
   /** Decoded path parameters, in order. */
   params: string[];
@@ -90,8 +99,8 @@ export interface Context {
   oauth2: OAuth2;
   /** Reject new passwords found in data breaches. */
   rejectBreachedPasswords: boolean;
-  /** Emails to send once the request has succeeded. */
-  pendingMail: Parameters<NonNullable<RecordsContext["notify"]>>[0][];
+  effects: Effects;
+  storage: Storage;
 }
 
 interface Route {
@@ -132,7 +141,7 @@ export const ROUTES: readonly Route[] = [
     method: "POST",
     pattern: records,
     async handler(context) {
-      const body = await readJsonObject(context.request);
+      const body = await readRecordBody(context.request);
       return replyOf(
         await bounded(context, (db) =>
           writeRecord(context, db, {
@@ -169,7 +178,7 @@ export const ROUTES: readonly Route[] = [
     pattern: record,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
-      const body = await readJsonObject(context.request);
+      const body = await readRecordBody(context.request);
       return replyOf(
         await bounded(context, (db) =>
           writeRecord(context, db, {
@@ -285,12 +294,17 @@ export const ROUTES: readonly Route[] = [
   {
     method: "PATCH",
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ request, params, db, principal }) {
+    async handler({ request, params, db, principal, effects }) {
       requireSuperuser(principal);
       const input = await readJsonObject(request);
       return Response.json(
         await schemaChange(() =>
-          updateCollection(db, params[0] as string, input),
+          updateCollection(
+            db,
+            params[0] as string,
+            input,
+            effects.obsoleteFiles,
+          ),
         ),
       );
     },
@@ -298,10 +312,70 @@ export const ROUTES: readonly Route[] = [
   {
     method: "DELETE",
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ params, db, principal }) {
+    async handler({ params, db, schema, principal, storage }) {
       requireSuperuser(principal);
+      const { id } = schema.get(params[0] as string);
       await schemaChange(() => deleteCollection(db, params[0] as string));
+      // A failure only leaves unused files behind.
+      await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
+        console.error(
+          "[nextbase] deleting a collection's files failed:",
+          error,
+        );
+      });
       return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: "POST",
+    pattern: new RegExp(`^/collections/${segment}/upload-url$`),
+    async handler({ request, params, db, schema, principal, storage }) {
+      const collection = schema.get(params[0] as string);
+      const input = await readJsonObject(request);
+      return Response.json(
+        await createUpload(db, storage, collection, principal, input),
+      );
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/files\/token$/,
+    async handler({ principal }) {
+      if (!principal.record || !principal.collection) {
+        throw new ApiError(401, "Sign in to get a file token.");
+      }
+      return Response.json({
+        token: await fileToken(principal.collection, principal.record),
+      });
+    },
+  },
+  {
+    method: "GET",
+    pattern: new RegExp(`^/files/${segment}/${segment}/${segment}$`),
+    async handler(context) {
+      const { request, params, db, schema, storage } = context;
+      const { collection, field, key } = await findFile(db, schema, params);
+      const query = new URL(request.url).searchParams;
+      if (field.protected) {
+        // The view rule decides, for the session's caller or the file token's.
+        const token = query.get("token");
+        const principal = token
+          ? ((await principalOfFileToken(db, schema, token)) ?? {
+              superuser: false,
+            })
+          : context.principal;
+        await viewRecord(
+          recordsContext({ ...context, principal }, {}),
+          collection,
+          params[1] as string,
+          new URLSearchParams(),
+        );
+      }
+      const download = query.has("download") && query.get("download") !== "0";
+      return fileResponse(storage, key, request, {
+        download,
+        protectedFile: field.protected,
+      });
     },
   },
   {
@@ -604,7 +678,7 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
-      const { cookie, ...input } = await readJsonObject(request);
+      const { cookie, ...input } = await readRecordBody(request);
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
       // Chosen here, so the new record can be signed in even when the
       // caller may not view it.
@@ -781,7 +855,8 @@ function recordsContext(
     schema,
     principal,
     rejectBreachedPasswords: context.rejectBreachedPasswords,
-    notify: (mail) => context.pendingMail.push(mail),
+    effects: context.effects,
+    storage: context.storage,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
