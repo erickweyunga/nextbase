@@ -5,11 +5,10 @@ import { ApiError } from "../errors.ts";
 import { loadCollections } from "./store.ts";
 import { readViewRole } from "./views.ts";
 
-/** The collections as of one schema version. */
 export class Schema {
   readonly version: number;
   readonly collections: readonly Collection[];
-  /** The database role view collections are read as, once one exists. */
+  /** Null until the first view collection exists. */
   readonly viewRole: string | null;
 
   constructor(
@@ -22,18 +21,13 @@ export class Schema {
     this.viewRole = viewRole;
   }
 
-  /** The collection with this id or name, or undefined. */
   find(idOrName: string): Collection | undefined {
     return this.collections.find(
       (c) => c.id === idOrName || c.name === idOrName,
     );
   }
 
-  /**
-   * Resolves a back-relation name such as `comments_via_post`: the records of
-   * `comments` whose relation field `post` points at `target`. Names may
-   * contain underscores, so every `_via_` split is tried.
-   */
+  // `comments_via_post`: names may contain underscores, so every `_via_` split is tried.
   backRelation(
     target: Collection,
     name: string,
@@ -56,7 +50,6 @@ export class Schema {
     return undefined;
   }
 
-  /** The collection with this id or name, or a 404. */
   get(idOrName: string): Collection {
     const collection = this.find(idOrName);
     if (!collection) throw new ApiError(404, "Collection not found.");
@@ -64,7 +57,6 @@ export class Schema {
   }
 }
 
-/** The current schema version, bumped by every schema change. */
 export async function readSchemaVersion(q: Builder): Promise<number> {
   const [version] = await q
     .newQuery(`SELECT schema_version FROM {{${table("_meta")}}}`)
@@ -72,11 +64,8 @@ export async function readSchemaVersion(q: Builder): Promise<number> {
   return Number(version);
 }
 
-/**
- * Caches the schema per instance. Every `get` reads the schema version, one
- * primary-key lookup, and reloads when another instance changed the schema: a
- * stale cache would enforce outdated access rules.
- */
+// Every `get` checks the version (one primary-key lookup): a stale cache would
+// enforce outdated access rules.
 export class SchemaCache {
   #schema: Schema | undefined;
   #loading: Promise<Schema> | undefined;
@@ -90,8 +79,7 @@ export class SchemaCache {
         this.#loading = undefined;
       });
       const loaded = await this.#loading;
-      // A reload that started before this request saw `version` may predate
-      // it, and would enforce outdated rules; then load again.
+      // A reload that started earlier may predate `version`; load again.
       if (loaded.version >= version) return loaded;
     }
   }

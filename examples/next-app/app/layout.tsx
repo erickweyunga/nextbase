@@ -13,8 +13,7 @@ export default async function RootLayout({
 }: {
   children: ReactNode;
 }) {
-  // The server's view of the session seeds the browser's, so client
-  // components render signed in from the first paint.
+  // Seeding the server's session lets client components render signed in on first paint.
   const session = await (await nb()).getSession();
   return (
     <html lang="en">

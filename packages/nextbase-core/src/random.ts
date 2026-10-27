@@ -5,11 +5,7 @@ export const LOWER_ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyz0123456789";
 export const ALPHANUMERIC =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/**
- * Returns `length` characters drawn uniformly from `alphabet` with a CSPRNG.
- * Bytes that would bias the result towards the start of the alphabet are
- * rejected rather than wrapped with modulo.
- */
+// Rejection sampling, not modulo, so the alphabet's start is not favored.
 export function randomString(length: number, alphabet: string): string {
   if (alphabet.length === 0 || alphabet.length > 256) {
     throw new RangeError("randomString needs 1 to 256 alphabet characters.");

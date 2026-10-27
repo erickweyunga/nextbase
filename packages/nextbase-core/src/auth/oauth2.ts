@@ -7,64 +7,47 @@ import { ApiError } from "../errors.ts";
 import { hasNul } from "../storable.ts";
 import { isSecure, readCookie } from "./sessions.ts";
 
-// Sign-in with OAuth2 and OpenID Connect providers. The flow:
-//
-// 1. start() sends the browser to the provider with a random `state`, also
-//    kept in a short-lived cookie, and a PKCE code challenge.
-// 2. The provider sends the browser back to the callback with a code.
-// 3. consumeState() checks the returned `state` against the cookie, so only
-//    the browser that started a sign-in can finish it.
-// 4. identify() exchanges the code for tokens, proving with the PKCE verifier
-//    that this server asked for it, checks the ID token's nonce, and reads
-//    the account.
-//
-// Redirects are built from the configured app URL only. The protocol details
-// (token requests, ID token checks, discovery) are handled by oauth4webapi.
+// OAuth2 / OpenID Connect sign-in (protocol details via oauth4webapi):
+// 1. start() redirects to the provider with a PKCE challenge and a random
+//    `state`, also kept in a short-lived cookie.
+// 2. consumeState() matches the returned `state` to the cookie, so only the
+//    browser that started a sign-in can finish it.
+// 3. identify() exchanges the code with the PKCE verifier, checks the ID
+//    token's nonce, and reads the account.
+// Redirects are built from the configured app URL only.
 
-/** One provider's credentials, as the `oauth2` option takes them. */
 export interface OAuth2ProviderOptions {
   clientId: string;
   clientSecret: string;
-  /**
-   * The issuer of an OpenID Connect provider, such as
-   * `https://login.microsoftonline.com/{tenant}/v2.0`, whose endpoints are
-   * discovered from it. Not needed for `google` and `github`.
-   */
+  /** OpenID Connect issuer URL to discover endpoints from; not needed for `google` and `github`. */
   issuer?: string;
-  /** Shown on sign-in buttons. Defaults to the provider's name. */
+  /** Shown on sign-in buttons; defaults to the provider's name. */
   displayName?: string;
 }
 
 /** Providers by name: `google`, `github`, or any OpenID Connect issuer. */
 export type OAuth2Options = Record<string, OAuth2ProviderOptions>;
 
-/** What a provider says about the account that signed in. */
 export interface Identity {
-  /** The provider's permanent id of the account: OpenID Connect's `sub`. */
+  /** The provider's permanent account id (OpenID Connect `sub`). */
   id: string;
   email: string | undefined;
-  /** Whether the provider says it verified the email. */
   emailVerified: boolean;
 }
 
-/** A sign-in started by {@link OAuth2.start}, read back on the callback. */
 export interface OAuth2State {
   collectionId: string;
   provider: string;
   codeVerifier: string;
   nonce: string;
-  /** Path on the app to return to, or "" for the app URL itself. */
+  /** App path to return to; "" for the app URL itself. */
   redirect: string;
-  /** Path to return to with `?error=` when the sign-in fails. */
   errorRedirect: string;
-  /** Set when a signed-in record links an account instead of signing in. */
+  /** Set when a signed-in record is linking a provider instead of signing in. */
   linkRecordId: string | null;
 }
 
-/**
- * A sign-in that cannot complete, sent back to the app as `?error=code`
- * rather than shown as JSON, since the browser is navigating.
- */
+/** Sent back to the app as `?error=code`, not JSON, since the browser is navigating. */
 export class OAuth2Error extends Error {
   readonly code: string;
 
@@ -76,7 +59,7 @@ export class OAuth2Error extends Error {
 
 interface Provider extends AuthProvider {
   scope: string;
-  /** OpenID Connect: the identity comes from an ID token, checked against a nonce. */
+  /** Identity comes from a nonce-checked ID token. */
   oidc: boolean;
   client: oauth.Client;
   clientAuth: oauth.ClientAuth;
@@ -87,9 +70,8 @@ interface Provider extends AuthProvider {
   ): Promise<Identity>;
 }
 
-/** How long a provider may take to answer one request. */
 const TIMEOUT_MS = 10_000;
-/** How long a sign-in may take at the provider before it must start over. */
+/** Seconds a sign-in may take at the provider before it must start over. */
 const STATE_MAX_AGE = 600;
 const MAX_REDIRECT = 2048;
 
@@ -100,7 +82,6 @@ const STATE_COOKIES = {
 
 const signal = (): AbortSignal => AbortSignal.timeout(TIMEOUT_MS);
 
-/** The configured providers, and the URLs their redirects use. */
 export class OAuth2 {
   readonly #providers = new Map<string, Provider>();
   readonly #appUrl: URL | undefined;
@@ -120,22 +101,16 @@ export class OAuth2 {
       );
     }
     this.#appUrl = appUrl;
-    // Registered at each provider as the redirect URI. On the app URL's
-    // origin, never the request's Host, which an attacker can set.
+    // On the app URL's origin, never the request's Host, which an attacker can set.
     this.#callbackBase =
       appUrl && new URL(`${basePath}/callback/`, appUrl.origin).href;
   }
 
-  /**
-   * Where `provider` sends the browser back, registered there as the
-   * redirect URI. Each provider has its own, so the callback knows which
-   * provider answered and can refuse a response meant for another one.
-   */
+  /** One per provider, so a callback can refuse a response meant for another provider. */
   callbackUrl(provider: Provider): string {
     return `${this.#callbackBase as string}${provider.name}`;
   }
 
-  /** The providers a sign-in page can offer. */
   list(): AuthProvider[] {
     return [...this.#providers.values()].map(({ name, displayName }) => ({
       name,
@@ -143,7 +118,7 @@ export class OAuth2 {
     }));
   }
 
-  /** A provider's display name, or `name` for one no longer configured. */
+  /** Falls back to `name` for a provider no longer configured. */
   displayName(name: string): string {
     return this.#providers.get(name)?.displayName ?? name;
   }
@@ -154,10 +129,7 @@ export class OAuth2 {
     return provider;
   }
 
-  /**
-   * Starts a sign-in: stores its state and answers with the provider's
-   * authorization URL and the state, which the caller sets as a cookie.
-   */
+  /** The caller must set the returned state as a cookie. */
   async start(
     q: Builder,
     {
@@ -219,9 +191,8 @@ export class OAuth2 {
   }
 
   /**
-   * Reads back the sign-in a callback belongs to, once: the `state` the
-   * provider returned must be the one in this browser's cookie, so another
-   * site cannot sign the browser in to an account of its choosing.
+   * Single-use. The returned `state` must match this browser's cookie, so
+   * another site cannot sign the browser in to an account of its choosing.
    */
   async consumeState(q: Builder, request: Request): Promise<OAuth2State> {
     const returned = new URL(request.url).searchParams.get("state") ?? "";
@@ -245,10 +216,6 @@ export class OAuth2 {
     return state;
   }
 
-  /**
-   * Exchanges the callback's authorization code for the provider's tokens
-   * and returns the account they identify.
-   */
   async identify(
     provider: Provider,
     state: OAuth2State,
@@ -283,10 +250,6 @@ export class OAuth2 {
     return provider.identity(server, tokens);
   }
 
-  /**
-   * Where to send the browser after a sign-in: `redirect` on the app URL,
-   * with `?error=` when it failed.
-   */
   returnUrl(redirect: string, error?: string): string {
     const base = this.#appUrl as URL;
     const url = redirect === "" ? new URL(base) : new URL(redirect, base);
@@ -295,11 +258,7 @@ export class OAuth2 {
   }
 }
 
-/**
- * Checks a `redirect` to return to after signing in: a path on the app,
- * never another site. Otherwise a link to your sign-in could send users on
- * to a look-alike site after they sign in.
- */
+/** App paths only, so a sign-in link cannot forward users to a look-alike site. */
 export function checkRedirect(
   value: string | null,
   param = "redirect",
@@ -323,11 +282,7 @@ export function checkRedirect(
   return value;
 }
 
-/**
- * A `Set-Cookie` header holding a sign-in's state, or removing it without
- * one. SameSite=Lax, because the provider returns the browser with a
- * top-level navigation from its own site, which Lax cookies are sent on.
- */
+/** SameSite=Lax: the provider returns via a cross-site top-level navigation, which Lax allows. */
 export function setStateCookie(request: Request, state?: string): string {
   const secure = isSecure(request);
   return [
@@ -395,7 +350,6 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
   };
 }
 
-/** Any OpenID Connect provider, its endpoints discovered from the issuer. */
 function openIdConnect(
   issuer: string,
   client: oauth.Client,
@@ -447,10 +401,7 @@ function openIdConnect(
   };
 }
 
-/**
- * GitHub, which is OAuth2 without OpenID Connect: the account comes from its
- * REST API, and the email from the account's primary address.
- */
+// GitHub has no OpenID Connect: the account and primary email come from its REST API.
 function github(): Pick<Provider, "scope" | "oidc" | "server" | "identity"> {
   const server: oauth.AuthorizationServer = {
     issuer: "https://github.com/login/oauth",

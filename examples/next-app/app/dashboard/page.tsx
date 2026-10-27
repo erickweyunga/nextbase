@@ -4,8 +4,7 @@ import { nb } from "@/lib/nextbase";
 import { OAUTH2_ERRORS } from "@/lib/oauth2-errors";
 import { UnlinkButton } from "./unlink-button";
 
-// proxy.ts sends signed-out visitors to /sign-in before this renders, and
-// NextBase's rules decide what this user's client may read.
+// proxy.ts redirects signed-out visitors; collection rules decide what this user may read.
 export default async function Dashboard({
   searchParams,
 }: PageProps<"/dashboard">) {

@@ -40,21 +40,15 @@ import {
 } from "./files/storage.ts";
 import { readSchemaVersion, type Schema, SchemaCache } from "./schema/cache.ts";
 
-/**
- * Postgres errors the Postgres docs say a retry of the whole transaction can
- * fix: serialization failures and deadlocks.
- */
+// Serialization failures and deadlocks: retrying the transaction can fix them.
 const RETRYABLE: ReadonlySet<string> = new Set(["40001", "40P01"]);
 
-/**
- * A missing table or column: retryable only when a concurrent schema change
- * renamed or dropped it after this request read the schema; otherwise a bug.
- */
+// Missing table or column: retryable only if a concurrent schema change caused it.
 const SCHEMA_RACE: ReadonlySet<string> = new Set(["42P01", "42703"]);
 
 const DEFAULT_STATEMENT_TIMEOUT = 8_000;
 
-// Origin of in-process requests from `client()`. Never resolved or fetched.
+// Origin of in-process requests from `client()`; never fetched.
 const IN_PROCESS_ORIGIN = "http://nextbase.internal";
 
 // While no superuser exists, the setup token is logged at most this often.
@@ -89,10 +83,8 @@ export type {
 export type { S3StorageOptions, StorageOptions } from "./files/storage.ts";
 
 /**
- * Whether a request carries a session cookie, without checking it: for an
- * optimistic redirect in `proxy.ts`, which Next.js recommends keep to cookie
- * checks. Anyone can send a cookie, so it proves nothing; the data stays
- * protected by collection rules wherever it is read.
+ * Whether a request has a session cookie, unverified: for optimistic redirects
+ * in `proxy.ts`. It proves nothing; collection rules still protect the data.
  */
 export function hasSessionCookie(request: Request): boolean {
   return sessionCookie(request) !== undefined;
@@ -102,78 +94,51 @@ export interface NextBaseOptions {
   /** Path the route handler is mounted at. Defaults to `/api/nextbase`. */
   basePath?: string;
   /**
-   * A Postgres connection string, or a `pg.Pool`-compatible pool such as one
-   * from `@neondatabase/serverless`. Defaults to `process.env.DATABASE_URL`.
-   * A pool you pass in stays yours to end.
+   * Connection string or `pg.Pool`-compatible pool. Defaults to
+   * `process.env.DATABASE_URL`. A pool you pass in stays yours to end.
    */
   database?: string | Pool;
   /**
-   * Milliseconds a statement of a records API request may run before Postgres
-   * stops it, so an expensive filter cannot hold the database. Defaults to
-   * 8000 (8 seconds), long enough for normal requests. 0 turns it off; a
-   * statement_timeout set on the database role still applies then.
+   * Max milliseconds per records API statement, so an expensive filter cannot
+   * hold the database. Defaults to 8000; 0 turns it off.
    */
   statementTimeout?: number;
   /**
-   * Other hosts allowed to write through the session cookie, for a frontend
-   * on another subdomain: `app.example.com`, `*.example.com` (one label) or
-   * `**.example.com`, as in Next.js's `serverActions.allowedOrigins`.
+   * Other hosts allowed to write via the session cookie: `app.example.com`,
+   * `*.example.com` (one label) or `**.example.com`.
    */
   trustedOrigins?: string[];
-  /**
-   * Read the request's host from X-Forwarded-Host, which only a proxy you
-   * run in front should set. Off by default: platforms such as Vercel set
-   * Host to the domain the client used.
-   */
+  /** Read the host from X-Forwarded-Host; enable only behind your own proxy. Defaults to false. */
   trustProxy?: boolean;
   /**
-   * Your app's URL, such as `https://example.com`, which email links and
-   * OAuth2 redirects are built from. Never taken from the request's Host
-   * header, which an attacker can set. HTTPS, except on localhost.
+   * Your app's URL for email links and OAuth2 redirects, never taken from the
+   * spoofable Host header. HTTPS, except on localhost.
    */
   appUrl?: string;
-  /**
-   * Sends verification, password reset and email change emails. Without it,
-   * those endpoints answer 400 in production; in development the emails
-   * are logged.
-   */
+  /** Sends auth emails. Without it, production answers 400; dev logs them. */
   mail?: MailOptions;
   /** Local disk by default, or `{ s3: { bucket, ... } }`. Use a bucket on serverless hosts. */
   storage?: StorageOptions;
-  /**
-   * Sends the codes of phone sign-in, for auth collections with `phoneSignIn`.
-   * Without it, phone endpoints answer 400 in production; in development
-   * the texts are logged.
-   */
+  /** Sends phone sign-in codes. Without it, production answers 400; dev logs them. */
   sms?: SmsOptions;
   /**
-   * Rejects new passwords that appear in known data breaches, which attackers
-   * try first. Checked with the Have I Been Pwned password service, which
-   * receives only the first 5 characters of the password's SHA-1 hash, never
-   * the password. When the service cannot be reached, passwords are accepted.
-   * Off by default.
+   * Reject new passwords found in known breaches, via Have I Been Pwned (only a
+   * 5-character SHA-1 prefix is sent; accepts if unreachable). Defaults to false.
    */
   rejectBreachedPasswords?: boolean;
   /**
-   * Sign-in with OAuth2 providers, by name: `google` and `github`, or any
-   * OpenID Connect provider with its `issuer`. Each needs your app's URL in
-   * `appUrl`; register `{appUrl origin}{basePath}/callback/{name}`, such as
-   * `https://example.com/api/nextbase/callback/google`, at the provider as
-   * the redirect URI.
+   * OAuth2 providers by name: `google`, `github`, or any OpenID Connect `issuer`.
+   * Requires `appUrl`; the redirect URI is `{appUrl origin}{basePath}/callback/{name}`.
    */
   oauth2?: OAuth2Options;
   /**
-   * Keeps background work, such as sending email after the response, alive
-   * on serverless platforms. Defaults to Vercel's waitUntil, which does
-   * nothing elsewhere; on Next.js you can pass `after` from `next/server`.
+   * Keeps background work alive on serverless. Defaults to Vercel's waitUntil
+   * (a no-op elsewhere); on Next.js you can pass `after` from `next/server`.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-/**
- * The parts of Next.js's `cookies()` store that `client()` uses. With `set`
- * (in server actions and route handlers), signing in and out updates it.
- */
+/** The part of Next.js's `cookies()` store `client()` uses; `set` lets sign-in/out update it. */
 export interface CookieStore {
   get(name: string): { value: string } | undefined;
   set?(
@@ -192,10 +157,7 @@ export interface CookieStore {
 export interface ServerClientOptions {
   /** Act as the user signed in through the session cookie: `await cookies()`. */
   cookies?: CookieStore;
-  /**
-   * Act as a superuser, bypassing every rule. For trusted server code only:
-   * never let user input choose what such a client reads or writes.
-   */
+  /** Bypass every rule. Trusted server code only: never let user input steer it. */
   superuser?: boolean;
 }
 
@@ -256,9 +218,8 @@ export class NextBase {
   }
 
   /**
-   * Creates or upgrades NextBase's tables. Requests that need the database do
-   * this on their own; call it from a deploy script to do it ahead of traffic.
-   * Runs once per instance; a failed attempt is retried on the next call.
+   * Creates or upgrades NextBase's tables, once per instance (retried after a
+   * failure). Requests do this on their own; call it to migrate ahead of traffic.
    */
   migrate(): Promise<void> {
     // Async so a missing database rejects instead of throwing synchronously.
@@ -271,8 +232,7 @@ export class NextBase {
     return this.#migrated;
   }
 
-  // Created on first use, not in the constructor: `next build` evaluates route
-  // modules without a database, so constructing NextBase must never connect.
+  // Lazy: `next build` evaluates route modules without a database.
   #connection(): DB {
     if (this.#db) return this.#db;
     const database = this.#database ?? process.env.DATABASE_URL;
@@ -288,10 +248,7 @@ export class NextBase {
     return this.#db;
   }
 
-  /**
-   * Creates a superuser, for scripts and seeding. Unlike the setup flow it
-   * works at any time, so never expose it to untrusted input.
-   */
+  /** Creates a superuser at any time, for scripts; never expose it to untrusted input. */
   async createSuperuser(email: string, password: string): Promise<void> {
     await this.migrate();
     const db = this.#connection();
@@ -304,9 +261,8 @@ export class NextBase {
     );
   }
 
-  // Logs a setup token while no superuser exists. It goes to the server logs,
-  // which only the owner can read, so a stranger who finds a fresh deployment
-  // first cannot claim it.
+  // The setup token goes to server logs, which only the owner can read, so a
+  // stranger who finds a fresh deployment first cannot claim it.
   async #announceSetup(db: DB, url: URL): Promise<void> {
     if (this.#superuserExists) return;
     if (await hasSuperuser(db)) {
@@ -324,11 +280,9 @@ export class NextBase {
   }
 
   /**
-   * The session of a request's cookie or Bearer token, checked against the
-   * database, or null: for `proxy.ts`, to redirect signed-out visitors before
-   * a page renders. It neither extends the session nor sets cookies. Proxy
-   * runs on every matched request, prefetches included, so match only the
-   * routes that need it; `hasSessionCookie()` is the database-free check.
+   * The verified session of a request's cookie or Bearer token, or null; for
+   * `proxy.ts`. Never extends the session or sets cookies. It hits the database,
+   * so match only routes that need it; `hasSessionCookie()` does not.
    */
   async getSession(request: Request): Promise<CurrentSession | null> {
     const token = sessionCookie(request) ?? bearerToken(request);
@@ -344,11 +298,9 @@ export class NextBase {
   }
 
   /**
-   * A client SDK instance for server code that calls this instance in-process:
-   * no network hop, but the same routing, validation, rules and output as
-   * HTTP. With `cookies`, it acts as the user of the session cookie, and
-   * signing in with `{ cookie: true }` or out updates that cookie. Create one
-   * per request, never share a signed-in client between users.
+   * An in-process client with the same routing, rules and output as HTTP. With
+   * `cookies`, it acts as that session's user and sign-in/out updates the cookie.
+   * Create one per request; never share a signed-in client between users.
    */
   client(options: ServerClientOptions = {}): NextBaseClient {
     const principal: Principal | undefined = options.superuser
@@ -375,7 +327,7 @@ export class NextBase {
     });
   }
 
-  /** In the background: a failure only leaves an unused file, so it is logged. */
+  // A failure only leaves an unused file, so it is just logged.
   #deleteFiles(keys: readonly string[]): void {
     if (keys.length === 0) return;
     this.#waitUntil(
@@ -386,18 +338,13 @@ export class NextBase {
   }
 
   /**
-   * Handles any request under `basePath`: a web-standard Request in, a
-   * Response out, so any framework that speaks the Fetch API can mount it.
-   * Bound, so safe to pass around. For Next.js, see `newNextHandler()` in
-   * `@nextbasejs/next`.
+   * Handles any Fetch API request under `basePath`; bound, so safe to pass
+   * around. For Next.js, use `newNextHandler()` from `@nextbasejs/next`.
    */
   readonly handle: RouteHandler = (request) =>
     this.#dispatch(request, { http: true });
 
-  /**
-   * Routes a request. Only `client()` passes a `principal`, which HTTP
-   * requests cannot reach: theirs always comes from their own credentials.
-   */
+  // Only `client()` passes a `principal`; HTTP requests always use their own credentials.
   async #dispatch(
     request: Request,
     { principal, http }: { principal?: Principal | undefined; http: boolean },
@@ -414,8 +361,7 @@ export class NextBase {
     if (verb === "GET" && route === "/health") {
       return api(Response.json({ status: "ok" } satisfies HealthResponse));
     }
-    // Served at `/_` without redirects: Next.js strips trailing slashes by
-    // default, so redirecting to `/_/` would loop. The UI uses hash routing.
+    // No redirect to `/_/`: Next.js strips trailing slashes, so it would loop.
     if (verb === "GET" && (route === "/_" || route === "/_/")) {
       return new Response(adminHtml, {
         headers: {
@@ -452,8 +398,8 @@ export class NextBase {
             caller = resolved.principal;
             if (http) setCookie = resolved.setCookie;
           }
-          // Browsers attach the cookie to other sites' requests too, so writes
-          // through it must come from this site. In-process calls are server code.
+          // Browsers send the cookie on cross-site requests too, so cookie writes
+          // must be same-origin.
           if (http && verb !== "GET" && caller.viaCookie) {
             checkSameOrigin(request, this.#origins);
           }
@@ -489,8 +435,7 @@ export class NextBase {
           return errorResponse(error, raced);
         }
       })();
-      // Renewing the caller's session must not override a sign-in or
-      // sign-out of this response, which already set the cookie.
+      // Session renewal must not override a sign-in or sign-out in this response.
       const setsSession = response.headers
         .getSetCookie()
         .some((c) =>
@@ -502,8 +447,7 @@ export class NextBase {
       return api(response);
     }
 
-    // A path that exists, asked with a method it does not take, answers 405
-    // and lists the methods it does take in the Allow header.
+    // Known path, wrong method: 405 with an Allow header.
     const allowed = new Set(
       ROUTES.filter((r) => r.pattern.test(route)).map((r) => r.method),
     );
@@ -526,10 +470,8 @@ export class NextBase {
 }
 
 /**
- * Headers every API response carries. Responses depend on who is asking,
- * including through the session cookie, which shared caches cannot see, so
- * nothing may store them; and browsers must not guess another content type,
- * which could turn a JSON response into a page that runs scripts.
+ * No caching: responses depend on the cookie, which shared caches cannot see.
+ * No sniffing: it could turn a JSON response into a page that runs scripts.
  */
 function api(response: Response): Response {
   if (!response.headers.has("cache-control")) {
@@ -539,7 +481,6 @@ function api(response: Response): Response {
   return response;
 }
 
-/** Whether another instance changed the schema since `version`. */
 async function schemaChanged(db: DB, version: number): Promise<boolean> {
   try {
     return (await readSchemaVersion(db)) > version;
@@ -576,11 +517,7 @@ function errorResponse(error: unknown, schemaRaced: boolean): Response {
   ).toResponse();
 }
 
-/**
- * Copies the session cookie a response sets or removes, on signing in or out,
- * into Next.js's cookie store. Next.js allows that in server actions and
- * route handlers, not while rendering server components.
- */
+// Next.js allows setting cookies in server actions and route handlers only.
 function applySessionCookie(cookies: CookieStore, response: Response): void {
   const names: ReadonlySet<string> = new Set(Object.values(SESSION_COOKIES));
   for (const header of response.headers.getSetCookie()) {

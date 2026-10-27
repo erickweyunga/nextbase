@@ -1,6 +1,6 @@
 import type { RecordModel } from "./shared/api.ts";
 
-/** Where an auth store keeps its state. `localStorage` fits; so does any object like it. */
+/** Storage for an auth store, shaped like `localStorage`. */
 export interface AuthStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -9,9 +9,8 @@ export interface AuthStorage {
 
 export interface AuthStoreOptions {
   /**
-   * Defaults to `localStorage` in the browser. Pass `null` to keep the state
-   * in memory only, as on the server, where one store must never be shared
-   * between users.
+   * Defaults to `localStorage` in the browser. Pass `null` for memory only, as on
+   * the server, where a store must never be shared between users.
    */
   storage?: AuthStorage | null;
   /** Storage key. Defaults to `nextbase_auth`. */
@@ -23,8 +22,7 @@ export type AuthChangeListener = (
   record: RecordModel | null,
 ) => void;
 
-// The parts of a browser's globals the store uses. The package is typed
-// without the DOM library, since most of it runs on the server.
+// Typed by hand: the package compiles without the DOM library.
 interface BrowserGlobals {
   document?: unknown;
   localStorage?: AuthStorage;
@@ -52,7 +50,6 @@ export class AuthStore {
       options.storage === undefined ? browserStorage() : options.storage;
     this.#key = options.key ?? DEFAULT_KEY;
     this.#load(this.#read());
-    // Another tab signed in or out.
     if (this.#storage && this.#storage === browserStorage()) {
       browser.addEventListener?.("storage", (event) => {
         if (event.key !== this.#key) return;
@@ -71,9 +68,8 @@ export class AuthStore {
   }
 
   /**
-   * Whether the client believes it is signed in: it holds a token, or a
-   * record whose session lives in the cookie. The server decides; a request
-   * it rejects with 401 clears the store.
+   * Whether the client believes it is signed in (a token, or a cookie session's
+   * record). Only the server knows; a 401 clears the store.
    */
   get isValid(): boolean {
     return this.#token !== "" || this.#record !== null;
@@ -89,7 +85,7 @@ export class AuthStore {
     try {
       this.#storage?.setItem(this.#key, JSON.stringify({ token, record }));
     } catch {
-      // Storage full or blocked: the in-memory state still works.
+      // Storage full or blocked: memory state still works.
     }
     this.#notify();
   }
@@ -105,7 +101,7 @@ export class AuthStore {
     this.#notify();
   }
 
-  /** Calls `listener` on every change. Returns a function that unsubscribes. */
+  /** Calls `listener` on every change. Returns an unsubscribe function. */
   onChange(listener: AuthChangeListener, fireImmediately = false): () => void {
     this.#listeners.add(listener);
     if (fireImmediately) listener(this.#token, this.#record);
@@ -153,12 +149,12 @@ export class AuthStore {
 
 function browserStorage(): AuthStorage | null {
   try {
-    // Checks for a document too: Node.js has a `localStorage` of its own.
+    // Node.js has its own `localStorage`, so require a document too.
     return browser.document === undefined
       ? null
       : (browser.localStorage ?? null);
   } catch {
-    // Access denied, e.g. sandboxed iframes or blocked site data.
+    // Sandboxed iframes and blocked site data throw.
     return null;
   }
 }

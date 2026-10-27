@@ -28,7 +28,7 @@ type AuthOptions = Pick<
 
 type ViewOptions = Pick<ViewCollection, "viewQuery">;
 
-/** Every collection, in creation order. */
+/** In creation order. */
 export async function loadCollections(q: Builder): Promise<Collection[]> {
   const rows = await q
     .select()
@@ -38,7 +38,6 @@ export async function loadCollections(q: Builder): Promise<Collection[]> {
   return rows.map(fromRow);
 }
 
-/** Inserts or replaces the stored definition of `collection`. */
 export async function saveCollectionRow(
   tx: Tx,
   collection: Collection,
@@ -63,8 +62,7 @@ export async function saveCollectionRow(
         type: collection.type,
         name: collection.name,
         system: collection.system,
-        // Serialized explicitly: node-postgres turns JS arrays into Postgres
-        // arrays, not JSON.
+        // node-postgres would turn JS arrays into Postgres arrays, not JSON.
         fields: JSON.stringify(collection.fields),
         indexes: JSON.stringify(collection.indexes),
         options: JSON.stringify(options),
@@ -84,7 +82,6 @@ export async function deleteCollectionRow(tx: Tx, id: string): Promise<void> {
   await tx.delete(table("_collections"), hash({ id })).execute();
 }
 
-/** Marks every instance's cached schema as stale. */
 export async function bumpSchemaVersion(tx: Tx): Promise<void> {
   await tx
     .newQuery(

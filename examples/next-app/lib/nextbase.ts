@@ -7,7 +7,7 @@ import {
 } from "@nextbasejs/core";
 import { serverClient } from "@nextbasejs/next";
 
-/** The OAuth2 providers whose credentials are set: see .env.example. */
+/** OAuth2 providers whose credentials are set (see .env.example). */
 function providers(env: NodeJS.ProcessEnv): OAuth2Options {
   const oauth2: OAuth2Options = {};
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
@@ -33,11 +33,7 @@ function providers(env: NodeJS.ProcessEnv): OAuth2Options {
   return oauth2;
 }
 
-/**
- * Texts through your SMS gateway: SMS_WEBHOOK_URL receives a POST of
- * `{ to, text }` as JSON, and sends it on with your provider. Without it,
- * codes are logged in development.
- */
+/** POSTs `{ to, text }` as JSON to SMS_WEBHOOK_URL; without it, codes are logged in development. */
 function sms(env: NodeJS.ProcessEnv): SmsOptions | undefined {
   const url = env.SMS_WEBHOOK_URL;
   if (!url) return undefined;
@@ -56,7 +52,7 @@ function sms(env: NodeJS.ProcessEnv): SmsOptions | undefined {
   };
 }
 
-/** The app's one NextBase instance, shared by the route handler and server components. */
+/** The app's single NextBase instance. */
 export const nextbase = new NextBase({
   appUrl: process.env.APP_URL,
   oauth2: providers(process.env),
@@ -65,8 +61,5 @@ export const nextbase = new NextBase({
   ...(process.env.STORAGE_DIR && { storage: { dir: process.env.STORAGE_DIR } }),
 });
 
-/**
- * A client acting as the signed-in user, through the session cookie, for
- * server components and server actions. Call it once per request.
- */
+/** A client acting as the session cookie's user. Call once per request. */
 export const nb = () => serverClient(nextbase);

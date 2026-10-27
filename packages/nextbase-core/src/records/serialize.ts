@@ -3,10 +3,8 @@ import type { Row } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 
 /**
- * Turns a database row into a record's API representation: hidden fields are
- * left out, SQL NULL blanks become `""`, and timestamps become ISO strings.
- * An auth record's email is shown only when it is visible, to the record
- * itself, or to a superuser; its phone only to the record and superusers.
+ * Drops hidden fields, turns NULL into `""` and timestamps into ISO strings.
+ * Email shows if visible, to the record itself or superusers; phone only to the latter two.
  */
 export function serializeRecord(
   collection: Collection,

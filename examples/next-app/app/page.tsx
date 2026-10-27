@@ -1,8 +1,7 @@
 import { nb } from "@/lib/nextbase";
 
 export default async function Home() {
-  // Reads the session cookie, so this page renders per request as the
-  // signed-in user, with the same rules as the API.
+  // Reads the session cookie, so this renders per request with the same rules as the API.
   const client = await nb();
   const [session, { required }] = await Promise.all([
     client.getSession(),

@@ -1,28 +1,20 @@
-// Values JavaScript accepts but Postgres rejects. Checking them up front turns
-// what would be a database error (a 500) into a validation error (a 400).
+// Values JavaScript accepts but Postgres rejects, checked up front to give a 400, not a 500.
 
-/** Postgres text and jsonb cannot hold NUL characters. */
 export function hasNul(value: string): boolean {
   return value.includes("\u0000");
 }
 
-// timestamptz starts at 4713 BC (proleptic year -4712); JavaScript dates reach
-// further back. JavaScript's latest date is within Postgres's range.
+// timestamptz starts at 4713 BC; JavaScript dates reach further back, not further forward.
 const MIN_TIME = Date.UTC(-4712, 0, 1);
 
-/** Whether a JavaScript time, in milliseconds, is storable as timestamptz. */
 export function isStorableTime(time: number): boolean {
   return Number.isFinite(time) && time >= MIN_TIME;
 }
 
 const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
 
-/**
- * A timestamptz parameter, written in UTC with Postgres's own BC notation.
- * node-postgres would send a Date in the process's local time with a
- * whole-minute offset, shifting historical dates whose zone offset had seconds,
- * and Postgres rejects JavaScript's `-004712-...` year form.
- */
+// UTC with Postgres's BC notation: node-postgres's local-time form shifts dates
+// whose zone offset had seconds, and Postgres rejects `-004712-...` years.
 export function timestampParam(date: Date): string {
   const year = date.getUTCFullYear();
   const bc = year <= 0;
@@ -36,11 +28,8 @@ export function timestampParam(date: Date): string {
 const TIMESTAMPTZ =
   /^(\d{4,})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(?:\.(\d+))?([+-])(\d\d)(?::(\d\d))?(?::(\d\d))?( BC)?$/;
 
-/**
- * Parses timestamptz output (ISO DateStyle), including offsets with seconds,
- * BC years and years past 9999, which node-postgres's parser gets wrong.
- * Returns undefined for anything else, such as `infinity`.
- */
+// Handles offsets with seconds, BC years and years past 9999, which
+// node-postgres gets wrong. Undefined for anything else, such as `infinity`.
 export function parseTimestamptz(text: string): Date | undefined {
   const m = TIMESTAMPTZ.exec(text);
   if (!m) return undefined;
@@ -65,8 +54,7 @@ export function parseTimestamptz(text: string): Date | undefined {
     Number(mo) - 1,
     Number(d),
   );
-  // The offset goes into the same call, so the result is computed in one
-  // step: an intermediate local time could fall outside JavaScript's range.
+  // One step: an intermediate local time could fall outside JavaScript's range.
   const k = sign === "+" ? -1 : 1;
   date.setUTCHours(
     Number(h) + k * Number(oh),

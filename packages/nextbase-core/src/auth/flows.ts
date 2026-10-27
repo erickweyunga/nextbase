@@ -19,19 +19,15 @@ import {
 import { peekToken, signToken, verifyToken } from "./tokens.ts";
 
 // Email verification, password reset and email change.
-//
-// - Requests answer the same whether or not the account exists, and send mail
-//   in the background, so neither the answer nor its timing reveals accounts.
-// - Tokens are signed and expire. They are bound to the record's tokenKey,
-//   which a reset or email change replaces: that makes each token work once
-//   and ends every session.
-// - Links are built from the configured app URL, never the Host header.
+// - Answers and timing are the same whether or not the account exists.
+// - Tokens are bound to the record's tokenKey; rotating it on reset or email
+//   change makes each token single-use and ends every session.
+// - Links come from the configured app URL, never the Host header.
 
 export interface FlowContext {
   db: DB;
   schema: Schema;
   mailer: Mailer;
-  /** Reject new passwords found in data breaches. */
   rejectBreachedPasswords: boolean;
 }
 
@@ -43,7 +39,6 @@ const invalidToken = (): ApiError =>
     },
   });
 
-/** Sends a verification link to `email`, if it belongs to an unverified record. */
 export async function requestEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -61,7 +56,6 @@ export async function requestEmailVerification(
   });
 }
 
-/** Marks the record of a verification token as verified. */
 export async function confirmEmailVerification(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -79,7 +73,6 @@ export async function confirmEmailVerification(
   await privilegedUpdate(ctx, collection, record, { emailVerified: true });
 }
 
-/** Sends a password reset link to `email`, if it belongs to a record. */
 export async function requestPasswordReset(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -97,12 +90,7 @@ export async function requestPasswordReset(
   });
 }
 
-/**
- * Sets a new password with a reset token. The record's tokenKey rotates, so
- * the token cannot be used again and every session ends; its email is now
- * verified; a login lockout ends; and the owner is told. The user signs in
- * as usual afterwards.
- */
+/** Rotates tokenKey (single-use token, ends sessions), verifies the email, ends any lockout. */
 export async function confirmPasswordReset(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -120,7 +108,6 @@ export async function confirmPasswordReset(
     passwordConfirm: input.passwordConfirm,
     emailVerified: true,
   });
-  // Ends a lockout, counted per account and per identity it signs in with.
   await clearAttempts(ctx.db, [
     accountKey(collection.id, record.id as string),
     ...collection.identityFields.flatMap((name) =>
@@ -132,7 +119,6 @@ export async function confirmPasswordReset(
   ctx.mailer.send("passwordChanged", collection.name, record.email as string);
 }
 
-/** Sends a link to `newEmail` that moves the signed-in record to it. */
 export async function requestEmailChange(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -154,8 +140,7 @@ export async function requestEmailChange(
   }
   ctx.mailer.check();
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
-  // Whether another record has the address is checked on confirming, so
-  // this request does not reveal it.
+  // Uniqueness is checked on confirm, so this request does not reveal it.
   ctx.mailer.send("emailChange", collection.name, address, {
     token: await token(collection, record, "emailChange", {
       email: record.email,
@@ -164,11 +149,7 @@ export async function requestEmailChange(
   });
 }
 
-/**
- * Moves a record to the new email of an email change token, given its
- * current password. The tokenKey rotates, ending every session; the new
- * email is verified; the old address is told.
- */
+/** Requires the current password; rotates tokenKey, ending every session. */
 export async function confirmEmailChange(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -221,7 +202,7 @@ function checkEmail(value: unknown, field = "email"): string {
   return value;
 }
 
-/** Emails are unique regardless of case, so they match regardless of case. */
+/** Case-insensitive, matching how email uniqueness is enforced. */
 export async function findByEmail(
   db: Builder,
   collection: AuthCollection,
@@ -236,7 +217,7 @@ export async function findByEmail(
   return record;
 }
 
-/** Signs a token of `type` with the record's tokenKey and the collection's secret. */
+/** Keyed by tokenKey + collection secret, so rotating tokenKey revokes it. */
 function token(
   collection: AuthCollection,
   record: Row,
@@ -251,7 +232,6 @@ function token(
   );
 }
 
-/** The record a token of `type` was issued to, once its signature checks out. */
 async function verified(
   db: DB,
   collection: AuthCollection,
@@ -278,10 +258,7 @@ async function verified(
   return { record, claims };
 }
 
-/**
- * Updates the record as NextBase itself, through the records service, so
- * values are validated as on any write and a new tokenKey ends its sessions.
- */
+/** Goes through the records service so values are validated as on any write. */
 async function privilegedUpdate(
   ctx: FlowContext,
   collection: AuthCollection,

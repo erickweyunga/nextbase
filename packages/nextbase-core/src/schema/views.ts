@@ -5,19 +5,13 @@ import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { fieldNameProblem } from "./fields.ts";
 
-// View collections run their query as a dedicated database role with the
-// least privilege that serves them: SELECT on collection tables, minus the
-// password and tokenKey columns of auth collections, and nothing else. So
-// Postgres itself keeps views from secrets, NextBase's system tables (sessions,
-// secrets), other schemas and privileged functions. The role owns the views,
-// which makes Postgres check their tables against its privileges, and every
-// read of a view runs as it (SET LOCAL ROLE), because functions in a view run
-// with the privileges of whoever queries it.
+// View collections run as a dedicated least-privilege role: SELECT on collection
+// tables minus auth secrets, nothing else. So Postgres itself keeps views from
+// secrets and system tables. The role owns the views, and every view read runs
+// as it (SET LOCAL ROLE), because functions in a view run as whoever queries it.
 
-/** Auth columns the view role is never granted. */
 const SECRET_COLUMNS: ReadonlySet<string> = new Set(["password", "tokenKey"]);
 
-/** The view role, or null before the first view collection. */
 export async function readViewRole(q: Builder): Promise<string | null> {
   const [role] = await q
     .newQuery(`SELECT view_role FROM {{${table("_meta")}}}`)
@@ -25,11 +19,8 @@ export async function readViewRole(q: Builder): Promise<string | null> {
   return role ?? null;
 }
 
-/**
- * The view role, created on first use. Roles belong to the whole Postgres
- * cluster, so its name is random, and creating it needs the CREATEROLE
- * attribute; without it, view collections are unavailable.
- */
+// Roles are cluster-wide, so the name is random. Needs CREATEROLE; without it,
+// view collections are unavailable.
 export async function ensureViewRole(tx: Tx): Promise<string> {
   const existing = await readViewRole(tx);
   if (existing) return existing;
@@ -38,8 +29,7 @@ export async function ensureViewRole(tx: Tx): Promise<string> {
   try {
     await tx.transaction(async () => {
       await tx.newQuery(`CREATE ROLE ${quoted} NOLOGIN NOINHERIT`).execute();
-      // Lets NextBase SET ROLE to it. A CREATEROLE user may grant roles it
-      // created; a superuser may grant any.
+      // Lets NextBase SET ROLE to it.
       await tx.newQuery(`GRANT ${quoted} TO CURRENT_USER`).execute();
     });
   } catch (error) {
@@ -55,10 +45,6 @@ export async function ensureViewRole(tx: Tx): Promise<string> {
   return role;
 }
 
-/**
- * Grants the view role SELECT on every base and auth collection table, minus
- * auth secrets, after a schema change. Views it owns keep their own access.
- */
 export async function grantViewRole(
   tx: Tx,
   role: string,
@@ -88,11 +74,7 @@ export async function grantViewRole(
   }
 }
 
-/**
- * Runs view DDL as the view role, which owns the views, with collection
- * tables first on the search path. The role holds CREATE on the schema, which
- * creating and renaming views need, only meanwhile.
- */
+// The role holds CREATE on the schema only while this runs.
 async function asViewRole<T>(
   tx: Tx,
   role: string,
@@ -123,10 +105,7 @@ async function asViewRole<T>(
   return result;
 }
 
-/**
- * Runs reads of a view collection as the view role, in their own
- * transaction: functions in a view run with the privileges of the caller.
- */
+// Functions in a view run with the caller's privileges, hence the role switch.
 export function readAsViewRole<T>(
   db: { transaction<R>(fn: (tx: Tx) => Promise<R>): Promise<R> },
   role: string | null,
@@ -143,10 +122,8 @@ export function readAsViewRole<T>(
 }
 
 /**
- * Creates the Postgres view of a validated view collection, or with `replace`
- * redefines it, and returns its fields, derived from the query's columns.
- * Fields keep the ids of same-named fields in `previous`. Throws a 400 when
- * the query is invalid or reads what the view role may not.
+ * Returns fields derived from the query's columns, keeping the ids of
+ * same-named fields in `previous`. A 400 if the query is invalid or reads too much.
  */
 export async function createView(
   tx: Tx,
@@ -217,7 +194,6 @@ export async function createView(
   });
 }
 
-/** Renames a view collection's Postgres view. */
 export async function renameView(
   tx: Tx,
   role: string,
@@ -233,7 +209,6 @@ export async function renameView(
   );
 }
 
-/** Drops a view collection's Postgres view. */
 export async function dropView(
   tx: Tx,
   role: string,
@@ -244,7 +219,7 @@ export async function dropView(
   );
 }
 
-/** Runs part of a view's definition; Postgres's errors are the query's fault. */
+// Postgres errors here are the user's query's fault.
 async function query(tx: Tx, sql: string): Promise<void> {
   try {
     await tx.newQuery(sql).execute();
@@ -261,12 +236,11 @@ function invalidQuery(message: string): ApiError {
 
 interface TypedColumn {
   name: string;
-  /** The column's SQL in the wrapping view, cast to its field's storage type. */
+  /** Casts to the field's storage type. */
   cast(sql: string): string;
   field(id: string): Field;
 }
 
-/** Maps a query column to a field, or throws for names and types views cannot expose. */
 function typeColumn(column: {
   name: string;
   type: string;

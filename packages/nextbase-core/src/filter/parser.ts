@@ -1,4 +1,4 @@
-/** A problem with a filter or rule, reported to the client as a 400. */
+/** Reported to the client as a 400. */
 export class FilterError extends Error {
   constructor(message: string) {
     super(message);
@@ -12,7 +12,7 @@ export type Literal = string | number | boolean | null;
 
 export type Operand =
   | { kind: "literal"; value: Literal }
-  /** A field path such as `author.name`, or a `@request.*` / `@now` reference. */
+  /** `author.name`, or a `@request.*` / `@now` reference. */
   | {
       kind: "identifier";
       path: string[];
@@ -26,7 +26,7 @@ export type Node =
   | {
       kind: "comparison";
       op: Operator;
-      /** `?=` and friends: at least one value matches, rather than every value. */
+      /** `?=` and friends: any value matches, rather than every value. */
       any: boolean;
       left: Operand;
       right: Operand;
@@ -72,7 +72,6 @@ function tokenize(source: string): Token[] {
       let value = "";
       let j = i + 1;
       for (; j < source.length && source[j] !== char; j++) {
-        // A backslash escapes the next character, so quotes can appear inside.
         if (source[j] === "\\" && j + 1 < source.length) j++;
         value += source[j];
       }
@@ -138,11 +137,7 @@ function identifierOperand(text: string): Operand {
     : { kind: "identifier", path, modifier, alias };
 }
 
-/**
- * Parses a filter expression such as `status = "live" && (author.name ~ "an" || views > 10)`.
- * Returns undefined for an empty expression. Throws FilterError on syntax
- * errors and on expressions over the length, complexity or nesting limits.
- */
+/** Undefined for an empty expression; throws FilterError on syntax errors or exceeded limits. */
 export function parseFilter(source: string): Node | undefined {
   if (source.length > MAX_LENGTH) {
     throw new FilterError(`Filters can be at most ${MAX_LENGTH} characters.`);

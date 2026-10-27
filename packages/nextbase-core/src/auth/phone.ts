@@ -23,12 +23,11 @@ import {
 } from "./throttle.ts";
 
 // Sign-in and verification with codes texted to a phone.
-//
-// - Codes are six random digits, valid for 10 minutes, and work once.
-// - Wrong guesses are limited per phone across every code sent to it, so
-//   asking for a new code does not reset the count.
-// - Requests answer the same whether or not an account exists.
-// - Texts per phone are limited, as each one costs money to send.
+// - Six-digit, single-use codes valid for 10 minutes.
+// - Wrong guesses are limited per phone across all its codes, so requesting a
+//   new code does not reset the count.
+// - Answers are the same whether or not an account exists.
+// - Texts per phone are capped, since each one costs money.
 
 export interface PhoneContext {
   db: DB;
@@ -38,13 +37,11 @@ export interface PhoneContext {
   rejectBreachedPasswords: boolean;
 }
 
-/** Why a code was sent, which only that use accepts. */
+/** A code is accepted only for the purpose it was sent for. */
 type CodePurpose = "signIn" | "passwordReset" | "verifyPhone";
 
 const CODE_LIFETIME = "10 minutes";
-/** Wrong guesses one code allows before it is discarded. */
 const MAX_CODE_ATTEMPTS = 5;
-/** Texts per phone and hour. */
 const SMS_LIMIT = { max: 5, window: "1 hour" };
 
 const invalidCode = (): ApiError =>
@@ -52,11 +49,7 @@ const invalidCode = (): ApiError =>
     code: { code: "validation_invalid_code", message: "Invalid or expired." },
   });
 
-/**
- * Texts a sign-in code, when it can be used: to a phone of an existing
- * record, or to a new phone the collection lets sign up. Answers the same
- * either way.
- */
+/** Texts only an existing record's phone, or a new one the collection lets sign up. */
 export function requestPhoneCode(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -65,10 +58,7 @@ export function requestPhoneCode(
   return sendCode(ctx, collection, phone, "signIn");
 }
 
-/**
- * Texts a password reset code, when `phone` is the verified phone of a
- * record. Answers the same either way.
- */
+/** Texts only when `phone` is a record's verified phone. */
 export function requestPasswordResetByPhone(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -97,11 +87,7 @@ async function sendCode(
   ctx.sms.send(purpose, collection.name, phone, code);
 }
 
-/**
- * Signs in with a code texted to `phone`, creating a record for a new phone
- * under the collection's create rule. Returns the record, whose phone is
- * then verified.
- */
+/** A new phone creates a record under the collection's create rule. */
 export async function authWithPhoneCode(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -121,8 +107,7 @@ export async function authWithPhoneCode(
     return (await findRecord(ctx.db, collection, existing.id as string)) as Row;
   }
   const id = randomString(15, LOWER_ALPHANUMERIC);
-  // The password is random and never shown: the record signs in with codes
-  // until it sets one through a password reset.
+  // Random and never shown; the owner can set one via password reset.
   const field = collection.fields.find((f) => f.type === "password");
   const length = field ? Math.min(Math.max(field.min, 64), field.max) : 64;
   const password = randomString(length, ALPHANUMERIC);
@@ -140,7 +125,7 @@ export async function authWithPhoneCode(
       schema: ctx.schema,
       principal: { superuser: false },
       request: { method: "POST", query: {}, headers: {}, body: input },
-      // The code just proved the phone, which callers may not set alone.
+      // Callers may not set phoneVerified themselves; the code just proved it.
       vouched: new Set(["phone", "phoneVerified"]),
     },
     collection,
@@ -150,7 +135,6 @@ export async function authWithPhoneCode(
   return (await findRecord(ctx.db, collection, id)) as Row;
 }
 
-/** Sets a new password with a code texted to the record's verified phone. */
 export async function confirmPasswordResetByPhone(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -161,19 +145,16 @@ export async function confirmPasswordResetByPhone(
   await consumeCode(ctx.db, collection, phone, "passwordReset", input.code);
   const record = await findByPhone(ctx.db, collection, phone);
   if (record?.phoneVerified !== true) throw invalidCode();
-  // A new password rotates the tokenKey, which ends every session.
   await privilegedUpdate(ctx, collection, record, {
     password: input.password,
     passwordConfirm: input.passwordConfirm,
   });
-  // The reset also lifts a password lockout, as an email reset does.
   await clearAttempts(ctx.db, [accountKey(collection.id, record.id as string)]);
   if (record.email) {
     ctx.mailer.send("passwordChanged", collection.name, record.email as string);
   }
 }
 
-/** Texts a code to `phone` that verifies it as the signed-in record's phone. */
 export async function requestPhoneVerification(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -185,8 +166,7 @@ export async function requestPhoneVerification(
   const phone = checkPhone(phoneInput);
   ctx.sms.check(phone);
   await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
-  // Whether another record has the phone is checked on confirming, so this
-  // request does not reveal it.
+  // Uniqueness is checked on confirm, so this request does not reveal it.
   const code = await issueCode(
     ctx.db,
     collection,
@@ -197,11 +177,7 @@ export async function requestPhoneVerification(
   ctx.sms.send("verifyPhone", collection.name, phone, code);
 }
 
-/**
- * Makes `phone` the signed-in record's verified phone, given the code texted
- * to it. A new phone is a new way into the account, so the record's other
- * sessions end, and its previous phone and email are told.
- */
+/** A new phone is a new way in, so other sessions end and the old phone and email are told. */
 export async function confirmPhoneVerification(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -242,7 +218,6 @@ export async function confirmPhoneVerification(
   }
 }
 
-/** Finds the record a phone belongs to. */
 async function findByPhone(
   q: Builder,
   collection: AuthCollection,
@@ -287,8 +262,7 @@ function signedIn(collection: AuthCollection, principal: Principal): Row {
   return principal.record;
 }
 
-// Codes are stored hashed and salted with what they are for, so a database
-// leak shows no live codes outright.
+// Hashed and salted with the purpose, so a database leak shows no live codes.
 function codeHash(
   collection: AuthCollection,
   phone: string,
@@ -300,7 +274,7 @@ function codeHash(
     .digest("hex");
 }
 
-/** Stores a new code, replacing any earlier one, and returns it. */
+/** Replaces any earlier code for the same phone and purpose. */
 async function issueCode(
   q: Builder,
   collection: AuthCollection,
@@ -309,7 +283,6 @@ async function issueCode(
   recordId = "",
 ): Promise<string> {
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  // Expired codes are cleaned up here, where codes are made.
   await q
     .newQuery(`DELETE FROM {{${table("_phone_codes")}}} WHERE expires <= now()`)
     .execute();
@@ -335,9 +308,8 @@ async function issueCode(
 }
 
 /**
- * Accepts a code once: the guess is counted first, per phone, so neither
- * parallel guesses nor new codes get around the limit. A code that was
- * guessed wrong too often is discarded.
+ * Counts the guess per phone before checking, so neither parallel guesses nor
+ * new codes get around the limit.
  */
 async function consumeCode(
   db: DB,
@@ -394,7 +366,6 @@ async function findRecord(
   return record;
 }
 
-/** Updates a record as NextBase itself, through the records service. */
 async function privilegedUpdate(
   ctx: PhoneContext,
   collection: AuthCollection,
@@ -410,11 +381,7 @@ async function privilegedUpdate(
   );
 }
 
-/**
- * Records context for writes NextBase makes on a record's behalf: as a
- * superuser, but as the signed-in `principal` when there is one, so its own
- * session survives a rotated tokenKey.
- */
+/** Keeps the signed-in `principal` (with superuser rights) so its own session survives a rotated tokenKey. */
 function recordsContext(
   ctx: PhoneContext,
   principal: Principal,

@@ -18,9 +18,7 @@ import {
 
 interface Shared {
   client: NextBaseClient;
-  /** The record the server rendered with, for hydration. */
   initial: RecordModel | null;
-  /** Whether the session is known: given by the server, or loaded. */
   ready: boolean;
   refetch(): Promise<void>;
 }
@@ -29,17 +27,16 @@ const NextBaseContext = createContext<Shared | null>(null);
 
 export interface NextBaseProviderProps {
   /**
-   * The session the server read, such as `await (await nb()).getSession()`,
-   * so the first render already shows the signed-in user. `null` when signed
-   * out. Leave it out to load the session in the browser after mounting.
+   * The server's session (`null` when signed out) so the first render is signed in.
+   * Omit it to load the session in the browser after mount.
    */
   session?: CurrentSession | null;
-  /** URL of the NextBase route handler. Defaults to `/api/nextbase`. */
+  /** Route handler URL. Defaults to `/api/nextbase`. */
   baseUrl?: ClientOptions["baseUrl"];
   children?: ReactNode;
 }
 
-/** Shares one NextBase client, and the signed-in record, with the components below. */
+/** Provides one NextBase client and the signed-in record to its children. */
 export function NextBaseProvider({
   session,
   baseUrl,
@@ -53,7 +50,7 @@ export function NextBaseProvider({
   const [ready, setReady] = useState(session !== undefined);
   useEffect(() => {
     if (session !== undefined) return;
-    // Signed-out or failed loads leave the store as the server answered.
+    // A failed load leaves the store as it was.
     client
       .getSession()
       .catch(() => null)
@@ -73,10 +70,7 @@ export function NextBaseProvider({
   return createElement(NextBaseContext.Provider, { value }, children);
 }
 
-/**
- * Puts the server's view of the session into the auth store. A Bearer token
- * the browser keeps is left alone: the server only sees the cookie.
- */
+// Keeps any browser-held Bearer token: the server only sees the cookie.
 function seed(client: NextBaseClient, session: CurrentSession | null): void {
   const store = client.authStore;
   if (session) store.save(store.token, session.record);
@@ -99,16 +93,13 @@ export function useNextBase(): NextBaseClient {
 export interface SessionState<T extends RecordModel = RecordModel> {
   /** The signed-in record, or null. */
   data: T | null;
-  /** Whether the session is still being loaded. */
+  /** Whether the session is still loading. */
   isPending: boolean;
   /** Reloads the session from the server. */
   refetch(): Promise<void>;
 }
 
-/**
- * The signed-in record, kept current as the user signs in and out, in this
- * tab or another.
- */
+/** The signed-in record, kept current across sign-ins and sign-outs in any tab. */
 export function useSession<
   T extends RecordModel = RecordModel,
 >(): SessionState<T> {

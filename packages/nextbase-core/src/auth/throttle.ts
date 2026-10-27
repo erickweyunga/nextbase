@@ -2,26 +2,22 @@ import type { Builder } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 
-// Attempts are counted in Postgres, so limits hold across serverless
-// instances without trusting client IP headers. The trade-off: someone can
-// lock a known account out for one window; a password reset still works.
+// Counted in Postgres so limits hold across serverless instances without
+// trusting client IP headers. Trade-off: someone can lock a known account out
+// for one window; a password reset still works.
 
-/** How many attempts a key allows in one window. */
 export interface Limit {
   max: number;
   /** A Postgres interval, such as `15 minutes`. */
   window: string;
 }
 
-/** Password and code guesses, and emails, per key. */
 const DEFAULT_LIMIT: Limit = { max: 10, window: "15 minutes" };
 
 /**
- * Counts a password attempt for each key, before the password is checked,
- * and throws 429 once a key is over the limit. Counting first, in one atomic
- * upsert, keeps parallel guesses from all passing a check made before any
- * of them is counted. Run it outside any transaction the attempt's outcome
- * could roll back, so failures stay counted.
+ * Counts before the password is checked, in one atomic upsert, so parallel
+ * guesses cannot all pass. Run outside any transaction the attempt could roll
+ * back, so failures stay counted.
  */
 export async function countAttempt(
   q: Builder,
@@ -49,7 +45,6 @@ export async function countAttempt(
       );
     }
   }
-  // Keeps the table small: expired windows carry no information.
   await q
     .newQuery(
       `DELETE FROM {{${table("_auth_attempts")}}} WHERE window_end <= now()`,
@@ -57,7 +52,6 @@ export async function countAttempt(
     .execute();
 }
 
-/** Forgets the attempts counted for `keys`, after a correct password. */
 export async function clearAttempts(
   q: Builder,
   keys: readonly string[],
@@ -70,30 +64,26 @@ export async function clearAttempts(
     .execute();
 }
 
-/**
- * The throttle key of an account, so its limit holds whichever identity
- * (email, username) the attempts use.
- */
+/** Per account, so the limit holds whichever identity (email, username) is typed. */
 export function accountKey(collectionId: string, recordId: string): string {
   return `${collectionId}:record:${recordId}`;
 }
 
-/** The throttle key of a typed identity, which may match no account. */
 export function identityKey(collectionId: string, identity: string): string {
   return `${collectionId}:identity:${identity.toLowerCase()}`;
 }
 
-/** The throttle key of codes texted to a phone, so no one can run up SMS costs. */
+/** Caps texts to a phone, so no one can run up SMS costs. */
 export function smsKey(collectionId: string, phone: string): string {
   return `${collectionId}:sms:${phone}`;
 }
 
-/** The throttle key of code guesses for a phone, across every code sent to it. */
+/** Code guesses for a phone, across every code sent to it. */
 export function phoneKey(collectionId: string, phone: string): string {
   return `${collectionId}:phone:${phone}`;
 }
 
-/** The throttle key of emails sent to an address, so no one can flood an inbox. */
+/** Caps emails to an address, so no one can flood an inbox. */
 export function mailKey(collectionId: string, email: string): string {
   return `${collectionId}:mail:${email.toLowerCase()}`;
 }

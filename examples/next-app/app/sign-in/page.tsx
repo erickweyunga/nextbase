@@ -13,8 +13,7 @@ export default async function SignIn({ searchParams }: PageProps<"/sign-in">) {
     .catch(() => null);
   const providers = methods?.oauth2.enabled ? methods.oauth2.providers : [];
   const redirect = returnPath(next);
-  // Failures come back here rather than to the protected page, which would
-  // send them on to this page without the error.
+  // Failures return here: the protected page would redirect here and drop the error.
   const errorRedirect = `/sign-in?next=${encodeURIComponent(redirect)}`;
   return (
     <main>

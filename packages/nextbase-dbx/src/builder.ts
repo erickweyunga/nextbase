@@ -9,7 +9,6 @@ import {
   rewriteSQL,
 } from "./sql.ts";
 
-/** A statement in the form node-postgres's `query()` takes: SQL with `$n` placeholders and their values. */
 export interface QueryConfig {
   text: string;
   values: unknown[];
@@ -18,70 +17,54 @@ export interface QueryConfig {
   types?: TypeParsers;
 }
 
-/**
- * Parses result columns by type OID, as node-postgres's per-query `types`
- * option. Unlike `pg.types.setTypeParser`, it affects only the queries it is
- * passed to, not every pool in the process.
- */
+/** Per-query type parsers; unlike `pg.types.setTypeParser`, not process-global. */
 export interface TypeParsers {
   getTypeParser(oid: number, format?: string): unknown;
 }
 
-/** The parts of a node-postgres result that dbx reads. */
 export interface QueryResult {
   rows: unknown[];
   rowCount: number | null;
 }
 
-/**
- * The part of a `pg` Pool or PoolClient that dbx calls. Pools that mirror the
- * `pg` interface, such as `@neondatabase/serverless`, work too.
- */
+/** The subset of a `pg` Pool or PoolClient that dbx calls. */
 export interface Queryable {
   query(config: QueryConfig): Promise<QueryResult>;
 }
 
-/** Runs statements for a Builder: on the pool for `DB`, on one connection for `Tx`. */
+/** The pool for `DB`, one pinned connection for `Tx`. */
 export interface Executor {
   query(config: QueryConfig): Promise<QueryResult>;
 }
 
-/** Describes one finished statement. Passed to `queryLog` or `execLog`. */
 export interface LogEvent {
   /** The SQL as written, with `{:name}` placeholders. */
   sql: string;
-  /** Every bound value, which can include secrets such as password hashes. Redact before writing logs. */
+  /** May include secrets such as password hashes; redact before logging. */
   params: Params;
-  /** Time from the call to the result, including any wait for a pool connection. */
+  /** Includes any wait for a pool connection. */
   durationMs: number;
-  /** Rows returned or affected. Absent when the statement failed. */
+  /** Absent when the statement failed. */
   rowCount?: number;
-  /** The error the statement failed with. */
   error?: unknown;
 }
 
 export interface DBOptions {
-  /** Called after every statement run with `all()`, `one()`, `column()` or `row()`, whether it succeeded or failed. */
+  /** Called after each `all()`, `one()`, `column()` or `row()`, success or failure. */
   queryLog?: (event: LogEvent) => void;
-  /** Called after every statement run with `execute()`, whether it succeeded or failed. */
+  /** Called after each `execute()`, success or failure. */
   execLog?: (event: LogEvent) => void;
-  /** Result column parsers for every query of this DB and its transactions. */
+  /** Applies to this DB and its transactions. */
   types?: TypeParsers;
 }
 
 /**
- * The query methods shared by `DB` and `Tx`. Each method returns a query that
- * runs on the builder's executor: the pool for `DB`, the transaction's
- * connection for `Tx`. Nothing is sent to Postgres until the query is run.
+ * Query methods shared by `DB` and `Tx`. Nothing is sent until a query is run.
  *
- * Quoting: names given to INSERT, UPDATE, DELETE, upsert, models, conditions
- * (`hash`, `isIn`, `like`, `between`) and schema statements are always quoted
- * as identifiers, so they are safe for any input; a dot separates schema, table
- * and column. The SELECT builder's columns, tables, ORDER BY and GROUP BY, and
- * index columns, also accept SQL expressions such as `count(*)`: a name there
- * containing `(` is used as written, so never pass untrusted input to them.
- * Arguments documented as SQL, such as column types and statement options, are
- * always used as written.
+ * Quoting: names given to writes, models, conditions and schema statements are
+ * always quoted, so any input is safe. SELECT columns, tables, ORDER BY, GROUP BY
+ * and index columns containing `(` are raw SQL: never pass untrusted input there.
+ * Arguments documented as SQL (types, options) are used as written.
  */
 export class Builder {
   readonly executor: Executor;
@@ -92,17 +75,15 @@ export class Builder {
     this.options = options;
   }
 
-  /** Creates a query from SQL with `{:name}` placeholders. */
   newQuery(sql: string): Query {
     return new Query(this, sql);
   }
 
-  /** Starts a SELECT query. With no columns it selects `*`. */
+  /** With no columns it selects `*`. */
   select(...cols: string[]): SelectQuery {
     return new SelectQuery(this).select(...cols);
   }
 
-  /** Starts a model query that inserts, updates or deletes `record` in `table`. */
   model<T extends object>(
     table: string,
     record: T,
@@ -112,9 +93,8 @@ export class Builder {
   }
 
   /**
-   * Replaces `{:name}` placeholders with `$n` and quotes `{{table}}` and
-   * `[[column]]`. Returns the SQL and the placeholder name for each `$n`:
-   * `"a={:x} OR b={:x}"` gives `"a=$1 OR b=$1"` and `["x"]`.
+   * Numbers placeholders and quotes identifiers: `"a={:x} OR b={:x}"` gives
+   * `"a=$1 OR b=$1"` with placeholders `["x"]`.
    */
   processSQL(sql: string): { sql: string; placeholders: string[] } {
     const placeholders: string[] = [];
@@ -133,18 +113,14 @@ export class Builder {
   }
 
   /**
-   * Quotes a string literal, for SQL that cannot take a parameter, such as a
-   * column DEFAULT in DDL. Relies on `standard_conforming_strings`, which is on
-   * by default. Prefer bound parameters everywhere else.
+   * Quotes a string literal for DDL that cannot take a parameter (e.g. DEFAULT).
+   * Assumes `standard_conforming_strings` is on. Prefer bound parameters.
    */
   quote(value: string): string {
     return `'${value.replaceAll("'", "''")}'`;
   }
 
-  /**
-   * Quotes a table name, including a schema prefix such as `nextbase.posts`.
-   * A name containing `(` or `{{` is SQL and returned as is.
-   */
+  /** Handles a schema prefix. A name containing `(` or `{{` is raw SQL. */
   quoteTableName(name: string): string {
     if (name.includes("(") || name.includes("{{")) return name;
     return name
@@ -153,10 +129,7 @@ export class Builder {
       .join(".");
   }
 
-  /**
-   * Quotes a column name, including a table prefix such as `posts.title`. A
-   * name containing `(`, `{{` or `[[` is SQL and returned as is.
-   */
+  /** Handles a table prefix. A name containing `(`, `{{` or `[[` is raw SQL. */
   quoteColumnName(name: string): string {
     if (name.includes("(") || name.includes("{{") || name.includes("[[")) {
       return name;
@@ -166,30 +139,24 @@ export class Builder {
     return `${this.quoteTableName(name.slice(0, dot))}.${this.quoteSimpleColumnName(name.slice(dot + 1))}`;
   }
 
-  /** Quotes a table name that has no schema prefix. */
   quoteSimpleTableName(name: string): string {
     return quoteIdentifier(name);
   }
 
-  /** Quotes a column name that has no table prefix. `*` is left as is. */
+  /** `*` is left as is. */
   quoteSimpleColumnName(name: string): string {
     return name === "*" ? name : quoteIdentifier(name);
   }
 
-  /**
-   * `INSERT INTO table (...) VALUES (...)`. Values that are Expressions are
-   * used as SQL; `undefined` values are skipped.
-   */
+  /** Expression values are used as SQL; `undefined` values are skipped. */
   insert(table: string, cols: Params): Query {
     const { sql, params } = this.#insertSQL(table, cols);
     return this.newQuery(sql).bind(params);
   }
 
   /**
-   * `INSERT ... ON CONFLICT (constraints) DO UPDATE`: inserts the row, or, when
-   * it conflicts on the `constraints` columns, sets every column in `cols` to
-   * its new value. An Expression value is used as SQL in both cases. With no
-   * columns it becomes `DO NOTHING`.
+   * On conflict on `constraints`, sets every column in `cols` (Expressions as
+   * SQL). With no columns it becomes `DO NOTHING`.
    */
   upsert(
     table: string,
@@ -211,9 +178,8 @@ export class Builder {
   }
 
   /**
-   * `UPDATE table SET ... WHERE where`. Values that are Expressions are used as
-   * SQL; `undefined` values are skipped. Without `where`, every row is updated.
-   * Throws TypeError when no column is left to set.
+   * Expression values are SQL; `undefined` values are skipped. Without `where`,
+   * every row is updated. Throws TypeError when no column is left to set.
    */
   update(table: string, cols: Params, where?: Expression): Query {
     const params: Params = {};
@@ -230,7 +196,7 @@ export class Builder {
     return this.newQuery(sql).bind(params);
   }
 
-  /** `DELETE FROM table WHERE where`. Without `where`, every row is deleted. */
+  /** Without `where`, every row is deleted. */
   delete(table: string, where?: Expression): Query {
     const params: Params = {};
     let sql = `DELETE FROM ${quoteIdentifierPath(table)}`;
@@ -240,9 +206,8 @@ export class Builder {
   }
 
   /**
-   * `CREATE TABLE`. `cols` maps column names to their SQL definitions, in
-   * order, such as `{ id: "uuid PRIMARY KEY", title: "text NOT NULL" }`.
-   * `options` are SQL appended to the statement.
+   * `cols` maps names to SQL definitions, e.g. `{ id: "uuid PRIMARY KEY" }`.
+   * `options` are appended SQL.
    */
   createTable(
     table: string,
@@ -259,7 +224,7 @@ export class Builder {
     return this.newQuery(sql);
   }
 
-  /** `ALTER TABLE ... RENAME TO`. `newName` has no schema prefix: the table stays in its schema. */
+  /** `newName` has no schema prefix; the table stays in its schema. */
   renameTable(oldName: string, newName: string): Query {
     return this.newQuery(
       `ALTER TABLE ${quoteIdentifierPath(oldName)} RENAME TO ${quoteIdentifier(newName)}`,
@@ -274,7 +239,7 @@ export class Builder {
     return this.newQuery(`TRUNCATE TABLE ${quoteIdentifierPath(table)}`);
   }
 
-  /** `ALTER TABLE ... ADD col type`. `type` is the SQL definition, such as `"text NOT NULL DEFAULT ''"`. */
+  /** `type` is a SQL definition, e.g. `"text NOT NULL DEFAULT ''"`. */
   addColumn(table: string, col: string, type: string): Query {
     return this.newQuery(
       `ALTER TABLE ${quoteIdentifierPath(table)} ADD ${quoteIdentifier(col)} ${type}`,
@@ -293,14 +258,13 @@ export class Builder {
     );
   }
 
-  /** Changes a column's type: `ALTER TABLE ... ALTER COLUMN ... TYPE type`. */
+  /** Changes a column's type. */
   alterColumn(table: string, col: string, type: string): Query {
     return this.newQuery(
       `ALTER TABLE ${quoteIdentifierPath(table)} ALTER COLUMN ${quoteIdentifier(col)} TYPE ${type}`,
     );
   }
 
-  /** Adds a primary key constraint named `name` on `cols`. */
   addPrimaryKey(table: string, name: string, ...cols: string[]): Query {
     return this.newQuery(
       `ALTER TABLE ${quoteIdentifierPath(table)} ADD CONSTRAINT ${quoteIdentifier(name)} PRIMARY KEY (${quoteIdentifiers(cols)})`,
@@ -312,9 +276,8 @@ export class Builder {
   }
 
   /**
-   * Adds a foreign key constraint named `name`: `cols` of `table` reference
-   * `refCols` of `refTable`. `options` are SQL appended to the statement, such
-   * as `"ON DELETE CASCADE"`.
+   * `cols` of `table` reference `refCols` of `refTable`. `options` are appended
+   * SQL such as `"ON DELETE CASCADE"`.
    */
   addForeignKey(
     table: string,
@@ -335,17 +298,17 @@ export class Builder {
     return this.#dropConstraint(table, name);
   }
 
-  /** `CREATE INDEX name ON table (cols)`. Columns may be SQL expressions such as `lower(email)`. */
+  /** Columns may be SQL expressions such as `lower(email)`. */
   createIndex(table: string, name: string, ...cols: string[]): Query {
     return this.#createIndex("INDEX", table, name, cols);
   }
 
-  /** `CREATE UNIQUE INDEX name ON table (cols)`. Columns may be SQL expressions such as `lower(email)`. */
+  /** Columns may be SQL expressions such as `lower(email)`. */
   createUniqueIndex(table: string, name: string, ...cols: string[]): Query {
     return this.#createIndex("UNIQUE INDEX", table, name, cols);
   }
 
-  /** `DROP INDEX`. The index is looked up in the schema of `table`. */
+  /** The index is looked up in the schema of `table`. */
   dropIndex(table: string, name: string): Query {
     const dot = table.lastIndexOf(".");
     const schema =

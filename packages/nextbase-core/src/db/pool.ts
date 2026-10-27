@@ -2,14 +2,11 @@ import type { Pool } from "@nextbasejs/dbx";
 import { attachDatabasePool } from "@vercel/functions";
 import pg from "pg";
 
-// `next dev` re-evaluates modules on every change. Pools are kept on
-// globalThis, keyed by connection string, so reloads reuse them instead of
-// leaking connections.
+// On globalThis so `next dev` reloads reuse pools instead of leaking connections.
 const POOLS = Symbol.for("nextbase.pools");
 
 type PoolCache = Map<string, pg.Pool>;
 
-/** Returns the pool for `connectionString`, creating it on first use. */
 export function sharedPool(connectionString: string): Pool {
   const global = globalThis as { [POOLS]?: PoolCache };
   const pools = global[POOLS] ?? new Map();
@@ -18,20 +15,15 @@ export function sharedPool(connectionString: string): Pool {
   if (!pool) {
     pool = new pg.Pool({
       connectionString,
-      // Vercel's guide for functions: a short idle timeout, so connections a
-      // suspended instance holds are released soon.
+      // Short, so a suspended serverless instance releases its connections.
       idleTimeoutMillis: 5_000,
-      // node-postgres waits forever for a connection by default; a full pool
-      // or an unreachable database then hangs the request until the platform
-      // kills it.
+      // The default waits forever, hanging requests on a full pool or dead database.
       connectionTimeoutMillis: 10_000,
     });
-    // Releases idle clients before a Vercel function suspends; does nothing
-    // elsewhere.
+    // Releases idle clients before a Vercel function suspends; no-op elsewhere.
     attachDatabasePool(pool);
-    // An idle connection can fail at any time (server restart, network). Without
-    // a listener, node-postgres re-emits that as an uncaught error and the
-    // process exits. The pool discards the connection; the next query reconnects.
+    // Without a listener an idle connection's failure crashes the process. The
+    // pool discards it and the next query reconnects.
     pool.on("error", (error: Error) => {
       console.error("[nextbase] idle database connection failed:", error);
     });

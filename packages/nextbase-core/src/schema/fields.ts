@@ -7,13 +7,12 @@ import type {
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { type Issues, isRecord, type Path, Reader } from "./input.ts";
 
-/** Collection, field and index names: safe to quote and within Postgres's 63-byte limit. */
+/** Collection, field and index names: safe to quote, within Postgres's 63-byte limit. */
 export const NAME_PATTERN: RegExp = /^[A-Za-z][A-Za-z0-9_]{0,62}$/;
 
 const FIELD_ID_PATTERN = /^[a-z0-9]{10}$/;
 
-// Names used by the record JSON, and Postgres system columns, which a table
-// cannot have as column names. Compared lowercased.
+// Record JSON keys and Postgres system columns. Compared lowercased.
 const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
   "expand",
   "collectionid",
@@ -31,10 +30,7 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TEXT_MAX = 5000;
 const DEFAULT_FILE_MAX_SIZE = 5 * 1024 * 1024;
 const DEFAULT_JSON_MAX_SIZE = 1024 * 1024;
-/**
- * Passwords are the only factor when signing in with a password, so they must
- * be long: length makes a password harder to guess than any mix of symbols.
- */
+// Length beats symbol mixes for guess resistance, and passwords are the only factor.
 export const DEFAULT_PASSWORD_MIN = 15;
 export const DEFAULT_PASSWORD_MAX = 256;
 const MAX_PASSWORD_LENGTH = 1024;
@@ -58,18 +54,18 @@ const FIELD_TYPES = [
 ] as const satisfies readonly FieldType[];
 
 export interface FieldContext {
-  /** Ids of the collections a relation may target, including its own. */
+  /** Ids a relation may target, including its own collection's. */
   collectionIds: ReadonlySet<string>;
-  /** The field this one replaces, matched by id, when updating a collection. */
+  /** The field this one replaces, matched by id. */
   existing?: Field | undefined;
 }
 
-/** Field types a user may add. `password` exists only as an auth system field. */
+/** `password` exists only as an auth system field. */
 const USER_FIELD_TYPES: ReadonlySet<string> = new Set(
   FIELD_TYPES.filter((type) => type !== "password"),
 );
 
-/** Whether a field stores several values, as a Postgres array column. */
+/** Whether a field is stored as a Postgres array column. */
 export function isMultiple(field: Field): boolean {
   return (
     (field.type === "select" ||
@@ -79,7 +75,6 @@ export function isMultiple(field: Field): boolean {
   );
 }
 
-/** Why `name` cannot be a field name, or undefined when it can. */
 export function fieldNameProblem(name: string): string | undefined {
   if (!NAME_PATTERN.test(name)) {
     return "Must start with a letter and contain only letters, digits and underscores, up to 63 characters.";
@@ -90,7 +85,6 @@ export function fieldNameProblem(name: string): string | undefined {
   return undefined;
 }
 
-/** Records an issue if `name` is not a valid, unreserved field name. */
 function checkFieldName(name: string, path: Path, issues: Issues): void {
   const problem = fieldNameProblem(name);
   if (problem === undefined) return;
@@ -103,11 +97,7 @@ function checkFieldName(name: string, path: Path, issues: Issues): void {
   );
 }
 
-/**
- * Validates an untrusted, non-system field definition and fills in defaults.
- * Returns undefined when the input is not a field at all; otherwise returns the
- * field, with any problems recorded in `issues`.
- */
+/** Undefined when the input is not a field at all; otherwise problems go to `issues`. */
 export function parseField(
   input: unknown,
   path: Path,
@@ -279,7 +269,6 @@ export function parseField(
   }
 }
 
-/** Reads the editable options of the auth `password` system field. */
 export function parsePasswordOptions(
   r: Reader,
   field: PasswordField,
@@ -291,7 +280,6 @@ export function parsePasswordOptions(
   return { ...field, min, max };
 }
 
-/** Reads the editable options of the auth `email` system field. */
 export function parseEmailOptions(r: Reader, field: EmailField): EmailField {
   return {
     ...field,

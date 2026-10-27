@@ -1,5 +1,4 @@
-// The collection model as the collections API sends and receives it. The server
-// parses and validates it; the client SDK exposes it as types.
+// The collection model of the collections API, shared by server and client.
 
 export type FieldType =
   | "text"
@@ -17,22 +16,21 @@ export type FieldType =
   | "password";
 
 interface FieldBase<T extends FieldType> {
-  /** Stable for the field's lifetime, so renames are detected as renames. */
+  /** Stable across renames. */
   id: string;
   name: string;
   type: T;
-  /** Defined by the collection type; cannot be removed, renamed or retyped. */
+  /** Cannot be removed, renamed or retyped. */
   system: boolean;
-  /** The value must not be blank. */
   required: boolean;
-  /** Left out of API output, client filters and sorts. */
+  /** Excluded from API output and from client filters and sorts. */
   hidden: boolean;
 }
 
 export interface TextField extends FieldBase<"text"> {
   min: number;
   max: number;
-  /** A regular expression the value must match, or "" for none. */
+  /** A regex the value must match, or "" for none. */
   pattern: string;
   /** Only the system `id` field. */
   primaryKey: boolean;
@@ -60,7 +58,7 @@ export interface UrlField extends FieldBase<"url"> {
 }
 
 export interface DateField extends FieldBase<"date"> {
-  /** ISO 8601 timestamps, or "" for no bound. */
+  /** Timestamps such as `2026-01-31T00:00:00Z`, or "" for no bound. */
   min: string;
   max: string;
 }
@@ -124,35 +122,29 @@ export type TokenType =
   | "file";
 
 export interface TokenConfig {
-  /** Combined with each record's `tokenKey` to sign tokens of this type. */
+  /** Combined with each record's `tokenKey` to sign tokens. */
   secret: string;
   /** Lifetime in seconds. */
   duration: number;
 }
 
 export interface Index {
-  /** Unique across every collection: Postgres indexes share one namespace with tables. */
+  /** Unique across collections: Postgres indexes share a namespace with tables. */
   name: string;
   unique: boolean;
   /** Field ids, so indexes survive field renames. */
   fields: string[];
-  /**
-   * `btree` serves equality, ranges and sorting. `trigram` serves `~`
-   * (contains) on text fields, and needs Postgres's pg_trgm extension.
-   */
+  /** `btree` for equality, ranges and sorting; `trigram` for `~` on text (needs pg_trgm). */
   type: "btree" | "trigram";
 }
 
-/**
- * Access rules: `null` allows only superusers, `""` allows anyone, and any
- * other value is a filter expression the request must satisfy.
- */
+/** Access rule: `null` allows only superusers, `""` anyone, otherwise a filter expression. */
 export type Rule = string | null;
 
 interface CollectionBase {
   id: string;
   name: string;
-  /** Created by NextBase; cannot be deleted, renamed, or have its rules changed. */
+  /** Cannot be deleted, renamed, or have its rules changed. */
   system: boolean;
   fields: Field[];
   indexes: Index[];
@@ -169,27 +161,21 @@ export interface BaseCollection extends CollectionBase {
 
 export interface AuthCollection extends CollectionBase {
   type: "auth";
-  /** Extra condition a record must meet to log in or refresh, e.g. `emailVerified = true`. */
+  /** Extra condition to sign in or refresh, e.g. `emailVerified = true`. */
   authRule: Rule;
-  /** Lets matching callers change other records' email, password and emailVerified flag. */
+  /** Lets matching callers change other records' email, password and emailVerified. */
   manageRule: Rule;
-  /** Field names a login identity is matched against. */
+  /** Fields a sign-in identity is matched against. */
   identityFields: string[];
-  /**
-   * Sign-in with codes sent by SMS to the `phone` field, which also lets a
-   * record have a phone instead of an email.
-   */
+  /** Sign-in with SMS codes; records may then have a phone instead of an email. */
   phoneSignIn: boolean;
   tokens: Record<TokenType, TokenConfig>;
 }
 
-/**
- * A read-only collection whose records are the rows of a SQL query over other
- * collections. Its fields are derived from the query's columns.
- */
+/** A read-only collection backed by a SQL query; fields come from its columns. */
 export interface ViewCollection extends CollectionBase {
   type: "view";
-  /** A SELECT over collection tables, by name, with an `id` column. */
+  /** A SELECT over collection tables with an `id` column. */
   viewQuery: string;
 }
 
