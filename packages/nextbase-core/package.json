@@ -46,16 +46,19 @@
   "dependencies": {
     "@aws-sdk/client-s3": "catalog:",
     "@aws-sdk/s3-request-presigner": "catalog:",
+    "@file-type/xml": "catalog:",
     "@nextbasejs/client": "workspace:*",
     "@vercel/functions": "catalog:",
     "file-type": "catalog:",
     "jose": "catalog:",
     "libphonenumber-js": "catalog:",
     "oauth4webapi": "catalog:",
+    "range-parser": "catalog:",
     "pg": "catalog:"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
+    "@types/range-parser": "catalog:",
     "@nextbasejs/admin": "workspace:*",
     "@nextbasejs/dbx": "workspace:*",
     "@types/node": "catalog:",

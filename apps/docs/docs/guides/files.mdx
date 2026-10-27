@@ -62,7 +62,7 @@ For a field with several files:
 ```ts
 const docs = nb.collection("users");
 
-// Add files to the ones the record has.
+// Add files after the ones the record has, or with "+documents", before them.
 await docs.update(user.id, { "documents+": [fileA, fileB] });
 
 // Remove files by name.
@@ -95,7 +95,7 @@ tags:
 
 Images, PDFs, video, audio and plain text are shown in the browser. Other
 types, including HTML and SVG, which could run scripts, are always
-downloaded.
+downloaded. Downloads support byte ranges, so video players can seek.
 
 ### Protected files
 
@@ -116,7 +116,12 @@ be guessed, but use `protected` for anything private.
 
 - The type is read from the file's first bytes, not from the label the
   browser sends, which anyone can set. A text file labeled `image/png` is
-  refused by a field that allows only images.
+  refused by a field that allows only images, and an SVG labeled as plain
+  text is still an SVG. Images, documents, archives, media, SVG and other XML
+  formats are recognized this way. Formats without recognizable bytes, such
+  as plain text, CSV, JSON and HTML, keep their label; they are served with
+  `nosniff` and, except plain text, as downloads, so a wrong label cannot
+  make them run.
 - Sizes and counts are checked against `maxSize` and `maxSelect`.
 - Stored names are generated: original names, which could contain paths or
   misleading extensions, are never used as they are.
@@ -189,8 +194,6 @@ request.
 ## Limits
 
 - Thumbnails of images are not generated yet.
-- Downloads from local storage do not support range requests, which video
-  players use to seek. Use a bucket for video.
 - The batch API takes JSON only. With a bucket, files can still be added in
   a batch: start each upload with the [upload URL endpoint](/docs/api/files#start-a-direct-upload)
   and pass the upload tokens as the field's values.

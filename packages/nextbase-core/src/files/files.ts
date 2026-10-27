@@ -1,6 +1,7 @@
+import { detectXml } from "@file-type/xml";
 import type { Collection, FileField } from "@nextbasejs/client";
 import type { Builder } from "@nextbasejs/dbx";
-import { fileTypeFromBuffer, supportedMimeTypes } from "file-type";
+import { FileTypeParser, supportedMimeTypes } from "file-type";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
@@ -61,8 +62,24 @@ function storedName(original: string, ext: string | undefined): string {
   return `${stem || "file"}_${randomString(10, LOWER_ALPHANUMERIC)}${extension}`;
 }
 
-/** How many bytes from the start of a file type detection needs, per file-type's docs. */
-const DETECTION_BYTES = 4100;
+/**
+ * How many bytes from the start of a file detection reads: the XML
+ * detector's default sample, which also covers file-type's own 4100 bytes.
+ */
+const DETECTION_BYTES = 16 * 1024;
+
+// file-type recognizes binary formats by their signatures; its XML plugin,
+// from the same maintainer, adds SVG, XHTML and other XML formats.
+const detector = new FileTypeParser({ customDetectors: [detectXml] });
+
+/** Types the detectors can recognize from bytes, so a label alone never counts. */
+function isDetectable(type: string): boolean {
+  return (
+    supportedMimeTypes.has(type as never) ||
+    type.endsWith("/xml") ||
+    type.endsWith("+xml")
+  );
+}
 
 /**
  * A file's type, read from its first bytes rather than trusting the label
@@ -76,10 +93,10 @@ async function detectType(
   head: Uint8Array,
   declared: string,
 ): Promise<{ type: string; ext?: string }> {
-  const detected = await fileTypeFromBuffer(head);
+  const detected = await detector.fromBuffer(head);
   if (detected) return { type: detected.mime, ext: detected.ext };
   const label = declared.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (/^[\w.+-]+\/[\w.+-]+$/.test(label) && !supportedMimeTypes.has(label)) {
+  if (/^[\w.+-]+\/[\w.+-]+$/.test(label) && !isDetectable(label)) {
     return { type: label };
   }
   return { type: "application/octet-stream" };
@@ -157,9 +174,16 @@ export async function prepareFileField(
 ): Promise<{ value: string[]; changes: FileChanges } | undefined> {
   const { name } = field;
   const replace = input[name];
-  const add = input[`${name}+`] ?? input[`+${name}`];
+  // As for selects and relations: `field+` appends, `+field` prepends.
+  const append = input[`${name}+`];
+  const prepend = input[`+${name}`];
   const remove = input[`${name}-`];
-  if (replace === undefined && add === undefined && remove === undefined) {
+  if (
+    replace === undefined &&
+    append === undefined &&
+    prepend === undefined &&
+    remove === undefined
+  ) {
     return undefined;
   }
 
@@ -191,7 +215,11 @@ export async function prepareFileField(
   }
   const removing = new Set(toList(remove).filter((n) => typeof n === "string"));
   const remaining = kept.filter((n) => !removing.has(n));
-  for (const item of toList(add)) await take(item, false);
+  // New files of a replacing value come after the names it keeps.
+  const replacing = added.length;
+  for (const item of toList(prepend)) await take(item, false);
+  const prepended = added.length;
+  for (const item of toList(append)) await take(item, false);
 
   for (const file of added) {
     if (field.mimeTypes.length > 0 && !field.mimeTypes.includes(file.type)) {
@@ -201,7 +229,13 @@ export async function prepareFileField(
       });
     }
   }
-  const value = [...remaining, ...added.map((f) => f.name)];
+  const names = added.map((f) => f.name);
+  const value = [
+    ...names.slice(replacing, prepended),
+    ...remaining,
+    ...names.slice(0, replacing),
+    ...names.slice(prepended),
+  ];
   if (value.length > field.maxSelect) {
     fail({
       code: "validation_too_many",

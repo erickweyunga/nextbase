@@ -376,7 +376,7 @@ export const ROUTES: readonly Route[] = [
         );
       }
       const download = query.has("download") && query.get("download") !== "0";
-      return fileResponse(storage, key, {
+      return fileResponse(storage, key, request, {
         download,
         protectedFile: field.protected,
       });

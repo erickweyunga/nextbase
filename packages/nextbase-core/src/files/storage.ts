@@ -64,9 +64,13 @@ export interface Presentation {
 export interface Storage {
   readonly kind: "local" | "s3";
   put(key: string, data: Uint8Array, contentType: string): Promise<void>;
-  /** The file's bytes as a stream, or undefined when it does not exist. */
+  /**
+   * The file's bytes as a stream, or only those from `range.start` to
+   * `range.end`, inclusive; undefined when the file does not exist.
+   */
   read(
     key: string,
+    range?: { start: number; end: number },
   ): Promise<{ body: ReadableStream<Uint8Array>; size: number } | undefined>;
   /** Up to `length` bytes from the start of the file, for detecting its type. */
   readStart(key: string, length: number): Promise<Uint8Array | undefined>;
@@ -138,12 +142,12 @@ class LocalStorage implements Storage {
     await rename(temp, path);
   }
 
-  async read(key: string) {
+  async read(key: string, range?: { start: number; end: number }) {
     const path = this.#path(key);
     const size = await this.size(key);
     if (size === undefined) return undefined;
     const body = Readable.toWeb(
-      createReadStream(path),
+      createReadStream(path, range),
     ) as ReadableStream<Uint8Array>;
     return { body, size };
   }
@@ -236,10 +240,14 @@ class S3Storage implements Storage {
     );
   }
 
-  async read(key: string) {
+  async read(key: string, range?: { start: number; end: number }) {
     try {
       const object = await this.#client.send(
-        new GetObjectCommand({ Bucket: this.#bucket, Key: key }),
+        new GetObjectCommand({
+          Bucket: this.#bucket,
+          Key: key,
+          ...(range && { Range: `bytes=${range.start}-${range.end}` }),
+        }),
       );
       if (!object.Body) return undefined;
       return {

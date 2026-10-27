@@ -1,5 +1,6 @@
 import type { AuthCollection, Collection, FileField } from "@nextbasejs/client";
 import { type DB, hash } from "@nextbasejs/dbx";
+import parseRange from "range-parser";
 import type { Principal } from "../auth/principal.ts";
 import { peekToken, signToken, verifyToken } from "../auth/tokens.ts";
 import { table } from "../db/system.ts";
@@ -249,6 +250,7 @@ export async function findFile(
 export async function fileResponse(
   storage: Storage,
   key: string,
+  request: Request,
   { download, protectedFile }: { download: boolean; protectedFile: boolean },
 ): Promise<Response> {
   const name = key.slice(key.lastIndexOf("/") + 1);
@@ -261,16 +263,62 @@ export async function fileResponse(
       headers: { location: url, "cache-control": "private, no-store" },
     });
   }
-  const file = await storage.read(key);
+  const size = await storage.size(key);
+  if (size === undefined) throw new ApiError(404, "File not found.");
+  const headers: Record<string, string> = {
+    "content-type": shown.contentType,
+    "content-disposition": shown.disposition,
+    // Even if a browser rendered a file as a page, it could run nothing.
+    // Media and the styles of the browser's own media viewer still load, so
+    // audio and video play when opened directly.
+    "content-security-policy":
+      "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+    "cache-control": cache,
+    "accept-ranges": "bytes",
+  };
+  const range = byteRange(request, size);
+  if (range === "unsatisfiable") {
+    return new Response(null, {
+      status: 416,
+      headers: { ...headers, "content-range": `bytes */${size}` },
+    });
+  }
+  const file = await storage.read(key, range);
   if (!file) throw new ApiError(404, "File not found.");
+  if (range) {
+    return new Response(file.body, {
+      status: 206,
+      headers: {
+        ...headers,
+        "content-range": `bytes ${range.start}-${range.end}/${size}`,
+        "content-length": String(range.end - range.start + 1),
+      },
+    });
+  }
   return new Response(file.body, {
-    headers: {
-      "content-type": shown.contentType,
-      "content-length": String(file.size),
-      "content-disposition": shown.disposition,
-      // Even if a browser rendered a file as a page, it could run nothing.
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cache-control": cache,
-    },
+    headers: { ...headers, "content-length": String(size) },
   });
+}
+
+/**
+ * The part of a file a `Range` header asks for, as Express's `send` reads
+ * it: one byte range is served as 206 Partial Content; a range past the end
+ * is 416; several ranges, a malformed header, or an `If-Range` (whose
+ * validator NextBase never issues, so it cannot match) get the whole file.
+ * Video players seek with ranges.
+ */
+function byteRange(
+  request: Request,
+  size: number,
+): { start: number; end: number } | "unsatisfiable" | undefined {
+  const header = request.headers.get("range");
+  if (!header || !/^ *bytes=/.test(header) || request.headers.has("if-range")) {
+    return undefined;
+  }
+  const ranges = parseRange(size, header, { combine: true });
+  if (ranges === -1) return "unsatisfiable";
+  if (ranges === -2 || ranges.type !== "bytes" || ranges.length !== 1) {
+    return undefined;
+  }
+  return ranges[0];
 }

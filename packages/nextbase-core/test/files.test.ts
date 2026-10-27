@@ -118,9 +118,10 @@ describe("file uploads with local storage", () => {
     expect(response.headers.get("content-type")).toBe("image/png");
     expect(response.headers.get("content-disposition")).toBe("inline");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(response.headers.get("content-security-policy")).toContain(
-      "sandbox",
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
     );
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
     expect(response.headers.get("cache-control")).toContain("public");
 
     const download = await get(`${new URL(url, origin).pathname}?download=1`);
@@ -152,7 +153,8 @@ describe("file uploads with local storage", () => {
           type: "text/html",
         }),
       });
-    expect(post?.cover).toMatch(/^page_[a-z0-9]{10}\.html$/);
+    // The XML detector reads this markup as XML; served as a download either way.
+    expect(post?.cover).toMatch(/^page_[a-z0-9]{10}\.xml$/);
     const response = await get(
       `/api/nextbase/files/${post?.collectionId}/${post?.id}/${post?.cover}`,
     );
@@ -160,6 +162,70 @@ describe("file uploads with local storage", () => {
       "application/octet-stream",
     );
     expect(response.headers.get("content-disposition")).toMatch(/^attachment/);
+  });
+
+  it("serves byte ranges, so video players can seek", async () => {
+    const post = await nextbase
+      .client()
+      .collection("posts")
+      .create({ cover: png() });
+    const path = `/api/nextbase/files/${post?.collectionId}/${post?.id}/${post?.cover}`;
+    const part = await get(path, { range: "bytes=1-3" });
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-range")).toBe(`bytes 1-3/${PNG.length}`);
+    expect(part.headers.get("content-length")).toBe("3");
+    expect(Buffer.from(await part.arrayBuffer())).toEqual(PNG.subarray(1, 4));
+
+    const tail = await get(path, { range: "bytes=-4" });
+    expect(Buffer.from(await tail.arrayBuffer())).toEqual(PNG.subarray(-4));
+
+    const beyond = await get(path, { range: `bytes=${PNG.length + 10}-` });
+    expect(beyond.status).toBe(416);
+    expect(beyond.headers.get("content-range")).toBe(`bytes */${PNG.length}`);
+
+    // Several ranges, a malformed header, or If-Range: the whole file.
+    for (const headers of <Record<string, string>[]>[
+      { range: "bytes=0-1,5-6" },
+      { range: "pages=1-2" },
+      { range: "bytes=0-1", "if-range": '"some-etag"' },
+    ]) {
+      const whole = await get(path, headers);
+      expect(whole.status).toBe(200);
+      expect(Buffer.from(await whole.arrayBuffer())).toEqual(PNG);
+    }
+  });
+
+  it("recognizes SVG and XML from their bytes, whatever their label", async () => {
+    await admin.collections.create({
+      name: "notes",
+      type: "base",
+      createRule: "",
+      fields: [
+        { name: "text", type: "file", mimeTypes: ["text/plain"] },
+        { name: "logo", type: "file", mimeTypes: ["image/svg+xml"] },
+      ],
+    });
+    const notes = nextbase.client().collection("notes");
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+    // An SVG labeled as plain text is still an SVG.
+    const disguised = await failure(
+      notes.create({ text: new File([svg], "a.txt", { type: "text/plain" }) }),
+    );
+    expect(disguised.data.text?.code).toBe("validation_invalid_mime_type");
+    // A label of SVG counts only if the bytes are SVG.
+    const fake = await failure(
+      notes.create({
+        logo: new File(["hello"], "a.svg", { type: "image/svg+xml" }),
+      }),
+    );
+    expect(fake.data.logo?.code).toBe("validation_invalid_mime_type");
+    // Created; nobody may view the collection, so the result is null.
+    const real = await notes.create({
+      logo: new File([svg], "logo.svg", { type: "image/svg+xml" }),
+      text: new File(["hello"], "a.txt", { type: "text/plain" }),
+    });
+    expect(real).toBeNull();
   });
 
   it("enforces size and count limits", async () => {
@@ -190,6 +256,12 @@ describe("file uploads with local storage", () => {
     const added = await posts.update(id, { "extras+": png("c.png") });
     const c = listOf(added?.extras)[2] as string;
     expect(added?.extras).toEqual([a, b, c]);
+
+    // `+extras` puts new files first, as for selects and relations.
+    const first = await posts.update(id, { "+extras": png("z.png") });
+    const z = listOf(first?.extras)[0] as string;
+    expect(first?.extras).toEqual([z, a, b, c]);
+    await posts.update(id, { "extras-": z });
 
     const removed = await posts.update(id, { "extras-": a });
     expect(removed?.extras).toEqual([b, c]);
