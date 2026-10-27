@@ -38,13 +38,15 @@ import {
   type Storage,
   type StorageOptions,
 } from "./files/storage.ts";
-import { readSchemaVersion, type Schema, SchemaCache } from "./schema/cache.ts";
+import {
+  readSchemaVersion,
+  SCHEMA_RACE,
+  type Schema,
+  SchemaCache,
+} from "./schema/cache.ts";
 
 // Serialization failures and deadlocks: retrying the transaction can fix them.
 const RETRYABLE: ReadonlySet<string> = new Set(["40001", "40P01"]);
-
-// Missing table or column: retryable only if a concurrent schema change caused it.
-const SCHEMA_RACE: ReadonlySet<string> = new Set(["42P01", "42703"]);
 
 const DEFAULT_STATEMENT_TIMEOUT = 8_000;
 
@@ -384,20 +386,23 @@ export class NextBase {
         try {
           await this.migrate();
           db = this.#connection();
-          schema = await this.#schema.get(db);
-          // The log shows a URL to call, which in-process requests do not have.
-          if (http) await this.#announceSetup(db, new URL(request.url));
-          const params = match.slice(1).map((p) => decodeURIComponent(p));
           let caller = principal;
-          if (!caller) {
+          if (caller) {
+            schema = await this.#schema.get(db);
+          } else {
+            // This also loads the schema, in the same query as the session.
             // Server components cannot set cookies, so in-process reads
             // neither renew sessions nor remove a stale cookie.
-            const resolved = await resolvePrincipal(request, db, schema, {
+            const resolved = await resolvePrincipal(request, db, this.#schema, {
               extend: http,
             });
+            schema = resolved.schema;
             caller = resolved.principal;
             if (http) setCookie = resolved.setCookie;
           }
+          // The log shows a URL to call, which in-process requests do not have.
+          if (http) await this.#announceSetup(db, new URL(request.url));
+          const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.
           if (http && verb !== "GET" && caller.viaCookie) {
@@ -427,6 +432,7 @@ export class NextBase {
         } catch (error) {
           this.#deleteFiles(effects.newFiles);
           const code = (error as { code?: unknown }).code as string;
+          // A missing table or column can be retried only if the schema changed meanwhile.
           const raced =
             SCHEMA_RACE.has(code) &&
             db !== undefined &&
