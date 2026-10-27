@@ -1,5 +1,9 @@
 # @nextbasejs/client
 
+## 0.1.5
+
+No changes in this release.
+
 ## 0.1.4
 
 ### Patch Changes
