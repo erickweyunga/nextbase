@@ -570,7 +570,14 @@ class Compiler {
       `EXISTS (SELECT 1 FROM ${from.join(", ")} WHERE ${conditions.join(" AND ") || "TRUE"})`;
     const from = sides.flatMap((side) => side.from);
     const joins = sides.flatMap((side) => side.joins);
-    if (any) return exists(from, [...joins, condition]);
+    // With at most one value on each side, such as `author.name`, there is at
+    // most one pair, so "every pair matches" is the same as "a pair matches".
+    // That form is a plain lookup Postgres can serve with indexes, where the
+    // every-pair form checks every row.
+    const paths = right.kind === "path" && rightValues ? [left, right] : [left];
+    if (any || paths.every(isSingleValued)) {
+      return exists(from, [...joins, condition]);
+    }
     const nonEmpty = sides.map((side) => exists(side.from, side.joins));
     return `(${[
       ...nonEmpty,
@@ -766,6 +773,14 @@ function sqlType(field: Field): SqlType {
 
 function isPlural(path: Path): boolean {
   return !path.count && isMultiple(path.field) && path.modifier !== "length";
+}
+
+/** True when `path` has at most one value: no plural field or step on the way. */
+function isSingleValued(path: Path): boolean {
+  return (
+    !isPlural(path) &&
+    path.steps.every((step) => !step.back && !isMultiple(step.field))
+  );
 }
 
 function needsSubquery(path: Path): boolean {

@@ -243,6 +243,17 @@ describe("compileFilter", () => {
     );
   });
 
+  it("compiles a path with at most one value as one lookup", () => {
+    // `author` is a single relation: at most one name to compare.
+    const single = compile('author.name != "x"', { collection: posts }).sql;
+    expect(single).toMatch(/^EXISTS \(SELECT 1 FROM /);
+    expect(single).not.toContain("NOT EXISTS");
+    // `editors` is a multi relation: every editor's name must differ.
+    expect(compile('editors.name != "x"', { collection: posts }).sql).toContain(
+      "NOT EXISTS",
+    );
+  });
+
   it("stops filters at collections whose view rule is null", () => {
     const locked = { ...users, viewRule: null };
     const lockedSchema = new Schema(1, [locked, posts]);

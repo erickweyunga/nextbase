@@ -66,12 +66,20 @@ describe("queries the indexes can serve", () => {
     sent = recorded.sent;
     nextbase = new NextBase({ database: recorded.pool });
     const admin = nextbase.client({ superuser: true });
-    await admin.collections.create({ name: "members", type: "auth" });
+    const members = await admin.collections.create({
+      name: "members",
+      type: "auth",
+      listRule: "",
+      viewRule: "",
+      fields: [{ id: "membername", name: "name", type: "text" }],
+      indexes: [{ name: "members_name", fields: ["membername"] }],
+    });
     await admin.collections.create({
       name: "notes",
       listRule: "",
       fields: [
         { name: "tags", type: "select", values: ["a", "b"], maxSelect: 2 },
+        { name: "owner", type: "relation", collectionId: members.id },
       ],
     });
     await admin.collection("members").create({
@@ -100,5 +108,15 @@ describe("queries the indexes can serve", () => {
       .getList(1, 30, { filter: 'tags ?= "a"', skipTotal: true });
     const list = find(/"tags" @> ARRAY/);
     expect(await plan(list)).toMatch(/Bitmap Index Scan on _\w+_gin /);
+  });
+
+  it("filters through a single relation with the related collection's index", async () => {
+    sent.length = 0;
+    await nextbase
+      .client()
+      .collection("notes")
+      .getList(1, 30, { filter: 'owner.name = "Robin"', skipTotal: true });
+    const list = find(/"owner"/);
+    expect(await plan(list)).toMatch(/Index Scan (on|using) members_name /);
   });
 });
