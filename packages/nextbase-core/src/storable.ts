@@ -11,17 +11,28 @@ export function isStorableTime(time: number): boolean {
   return Number.isFinite(time) && time >= MIN_TIME;
 }
 
-// A date and time with no zone, such as `2026-01-02 03:04:05`.
-const NO_ZONE = /^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d(?::\d\d(?:\.\d+)?)?)$/;
+// An ISO 8601 date, with an optional time and zone. The time may follow a
+// space instead of `T`, as Postgres writes it, and the zone may be `+0300` or
+// `+03` as well as `+03:00`.
+const ISO_8601 =
+  /^([+-]\d{6}|\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d:\d\d(?::\d\d(?:\.\d+)?)?)(Z|[+-]\d\d(?::?\d\d)?)?)?$/i;
 
 /**
- * Parses an ISO 8601 date, like `Date.parse`, but reads a date and time with
- * no zone as UTC. `Date.parse` reads it in the server's local time, so the
- * same input would mean a different moment on each server.
+ * Parses an ISO 8601 date, and NaN for anything else. A date and time with no
+ * zone is read as UTC. `Date.parse` would read it, and the other formats it
+ * guesses at, such as `1/2/2024`, in the server's local time, so the same
+ * input would mean a different moment on each server.
  */
 export function parseDate(text: string): number {
-  const m = NO_ZONE.exec(text);
-  return Date.parse(m ? `${m[1]}T${m[2]}Z` : text);
+  const m = ISO_8601.exec(text);
+  if (!m) return Number.NaN;
+  const [, year, month, day, time = "00:00", zone = "Z"] = m;
+  let offset = zone.toUpperCase();
+  if (offset !== "Z") {
+    const digits = offset.slice(1).replace(":", "");
+    offset = `${offset[0]}${digits.slice(0, 2)}:${digits.slice(2) || "00"}`;
+  }
+  return Date.parse(`${year}-${month}-${day}T${time}${offset}`);
 }
 
 const pad = (n: number, width = 2): string => String(n).padStart(width, "0");

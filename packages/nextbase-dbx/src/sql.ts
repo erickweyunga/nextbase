@@ -50,7 +50,8 @@ export function rewriteSQL(
       } else {
         i++;
       }
-    } else if (char === "{" || char === "[") {
+    } else if (char === "{" || (char === "[" && !inIdentifier)) {
+      // After a name, `[[` is SQL, as in `ARRAY[[1, 2], [3, 4]]`.
       TOKEN.lastIndex = i;
       const match = TOKEN.exec(sql);
       if (match) {

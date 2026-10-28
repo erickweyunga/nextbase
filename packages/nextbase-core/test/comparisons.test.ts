@@ -206,6 +206,43 @@ describe("comparisons between multi-valued sides, and JSON dates, over real data
       );
     });
 
+    it("lowers each value of a field with several values", async () => {
+      await send("POST", "/collections", {
+        name: "notes",
+        listRule: "",
+        fields: [
+          { name: "name", type: "text" },
+          {
+            name: "labels",
+            type: "select",
+            values: ["Red", "blue"],
+            maxSelect: 2,
+          },
+        ],
+      });
+      for (const [name, labels] of [
+        ["n1", ["Red"]],
+        ["n2", ["blue"]],
+        ["n3", ["Red", "blue"]],
+        ["n4", []],
+      ] as const) {
+        await send("POST", "/collections/notes/records", { name, labels });
+      }
+      const notes = async (filter: string) => {
+        const reply = await call(
+          nextbase,
+          "GET",
+          `/collections/notes/records?sort=name&filter=${encodeURIComponent(filter)}`,
+          { token: admin },
+        );
+        expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+        return (reply.body.items as { name: string }[]).map((r) => r.name);
+      };
+      expect(await notes('labels:lower ?= "red"')).toEqual(["n1", "n3"]);
+      expect(await notes('labels:lower = "red"')).toEqual(["n1"]);
+      expect(await notes('labels:lower = ""')).toEqual(["n4"]);
+    });
+
     it("compares relation paths on both sides", async () => {
       // Some reviewer belongs to the doc's team.
       expect(await names("reviewers ?= team.members")).toEqual(["d1", "d3"]);
