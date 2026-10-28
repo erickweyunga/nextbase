@@ -253,10 +253,10 @@ export class NextBase<C extends Collections = Collections> {
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
-    this.#mailer = new Mailer(options.mail, appUrl, options.waitUntil);
-    this.#sms = new Sms(options.sms, options.waitUntil);
+    this.#waitUntil = keepingAlive(options.waitUntil ?? vercelWaitUntil);
+    this.#mailer = new Mailer(options.mail, appUrl, this.#waitUntil);
+    this.#sms = new Sms(options.sms, this.#waitUntil);
     this.#storage = newStorage(options.storage);
-    this.#waitUntil = options.waitUntil ?? vercelWaitUntil;
     this.#appUrl =
       appUrl ??
       (options.mail?.appUrl === undefined
@@ -491,13 +491,19 @@ export class NextBase<C extends Collections = Collections> {
     return client as NextBaseClient<Collections>;
   }
 
-  /** Does the work of the request's committed writes. */
+  /**
+   * Does the work of the request's committed writes. It takes the work out,
+   * so a request that fails while doing it does none of it twice.
+   */
   #finish({ committed }: Effects): void {
-    for (const mail of committed.mail) {
-      this.#mailer.send(mail.kind, mail.collection, mail.to);
+    const mail = committed.mail.splice(0);
+    const obsoleteFiles = committed.obsoleteFiles.splice(0);
+    const hooks = committed.hooks.splice(0);
+    for (const note of mail) {
+      this.#mailer.send(note.kind, note.collection, note.to);
     }
-    this.#deleteFiles(committed.obsoleteFiles);
-    this.#runAfterHooks(committed.hooks);
+    this.#deleteFiles(obsoleteFiles);
+    this.#runAfterHooks(hooks);
   }
 
   /** Runs after hooks in the background, in the order their writes happened. */
@@ -868,4 +874,21 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
       signal.removeEventListener("abort", onAbort);
     });
   });
+}
+
+/**
+ * `waitUntil` that never throws: the work is already running, so a
+ * `waitUntil` that cannot take it, such as Next.js's `after()` outside a
+ * request, only means it may be cut short on serverless.
+ */
+function keepingAlive(
+  waitUntil: (promise: Promise<unknown>) => void,
+): (promise: Promise<unknown>) => void {
+  return (promise) => {
+    try {
+      waitUntil(promise);
+    } catch (error) {
+      console.error("[nextbase] waitUntil refused background work:", error);
+    }
+  };
 }

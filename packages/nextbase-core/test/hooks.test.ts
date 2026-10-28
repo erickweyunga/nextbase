@@ -29,6 +29,7 @@ import {
 } from "../src/index.ts";
 import { newId } from "../src/random.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor } from "./wait.ts";
 
 const PASSWORD = "password 123 456";
 const PNG = Buffer.from(
@@ -740,6 +741,37 @@ describe("record hooks", () => {
         expect.objectContaining({ message: "webhook down" }),
       );
       expect(seen).toEqual(["still runs"]);
+    });
+
+    it("run once when waitUntil cannot take them, without failing the write", async () => {
+      const log = logged();
+      let runs = 0;
+      const refusing = new NextBase({
+        database: t.pool,
+        storage: { dir },
+        // As Next.js's after() does outside a request.
+        waitUntil: () => {
+          throw new Error("after() outside request scope");
+        },
+        hooks: {
+          posts: {
+            afterCreate() {
+              runs++;
+            },
+          },
+        },
+      });
+      const post = await refusing
+        .client({ superuser: true })
+        .collection("posts")
+        .create({ title: "Kept" });
+      expect(post?.title).toBe("Kept");
+      await waitFor(() => runs > 0, "the after hook");
+      expect(runs).toBe(1);
+      expect(log).toHaveBeenCalledWith(
+        "[nextbase] waitUntil refused background work:",
+        expect.objectContaining({ message: "after() outside request scope" }),
+      );
     });
   });
 
