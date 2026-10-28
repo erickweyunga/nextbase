@@ -40,7 +40,9 @@ export default async function VerifyEmail({
 }
 ```
 
-A link stops working once the account's email changes.
+A link stops working once the account's email changes. Verifying unlinks any
+[providers linked](/docs/guides/auth/oauth2#link-and-unlink-providers) to the
+account before, as whoever linked them may not own the email.
 
 ## Require verification
 

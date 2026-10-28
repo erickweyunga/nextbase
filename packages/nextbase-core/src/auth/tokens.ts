@@ -1,4 +1,5 @@
 import { decodeJwt, type JWTPayload, jwtVerify, SignJWT } from "jose";
+import { isId } from "../random.ts";
 
 const encoder = new TextEncoder();
 
@@ -21,13 +22,25 @@ export function signToken(
     .sign(encoder.encode(key));
 }
 
-/** Unverified decode, only to find the record whose key verifies it. Never trust it before `verifyToken`. */
-export function peekToken(token: string): JWTPayload | undefined {
+/**
+ * Unverified decode, only to find the record whose key verifies it. Never
+ * trust it before `verifyToken`. Anyone can forge these claims, so they are
+ * checked to be ids before they go into a query.
+ */
+export function peekToken(
+  token: string,
+): { id: string; collectionId: string } | undefined {
+  let claims: JWTPayload;
   try {
-    return decodeJwt(token);
+    claims = decodeJwt(token);
   } catch {
     return undefined;
   }
+  const { id, collectionId } = claims;
+  // The collection id is only compared or looked up in the schema, and
+  // system collections such as `_superusers` have ids of another form.
+  if (!isId(id) || typeof collectionId !== "string") return undefined;
+  return { id, collectionId };
 }
 
 export async function verifyToken(

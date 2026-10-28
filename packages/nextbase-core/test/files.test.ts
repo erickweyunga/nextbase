@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClientError, type NextBaseClient } from "@nextbasejs/client";
+import { SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { call, origin } from "./http.ts";
@@ -376,6 +377,15 @@ describe("file uploads with local storage", () => {
     const theirs = await stranger.files.getToken();
     expect((await get(`${path}?token=${theirs}`)).status).toBe(404);
     expect((await get(`${path}?token=forged`)).status).toBe(404);
+    // Claims nobody signed never reach a query: Postgres would reject a NUL.
+    const nul = await new SignJWT({
+      type: "file",
+      id: "abc\u0000",
+      collectionId: record?.collectionId,
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .sign(new TextEncoder().encode("any key"));
+    expect((await get(`${path}?token=${nul}`)).status).toBe(404);
   });
 
   it("serves only generated names of files a record has", async () => {

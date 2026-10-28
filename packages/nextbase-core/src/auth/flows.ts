@@ -1,12 +1,13 @@
 import type { AuthCollection, TokenType } from "@nextbasejs/client";
-import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
+import { type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { systemContext, updateRecord } from "../records/service.ts";
+import { planUpdateRecord, systemContext } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
-import { emailIs } from "./identity.ts";
+import { findByEmail } from "./identity.ts";
+import { unlinkUnproven } from "./linked-accounts.ts";
 import type { Mailer } from "./mail.ts";
 import { verifyPassword } from "./password.ts";
 import { type Principal, recordIn } from "./principal.ts";
@@ -200,21 +201,6 @@ function checkEmail(value: unknown, field = "email"): string {
   return value;
 }
 
-/** Case-insensitive, matching how email uniqueness is enforced. */
-export async function findByEmail(
-  db: Builder,
-  collection: AuthCollection,
-  email: string,
-): Promise<Row | undefined> {
-  const [record] = await db
-    .select()
-    .from(table(collection.name))
-    .where(emailIs("email", email))
-    .limit(1)
-    .all();
-  return record;
-}
-
 /** Keyed by tokenKey + collection secret, so rotating tokenKey revokes it. */
 function token(
   collection: AuthCollection,
@@ -238,9 +224,7 @@ async function verified(
 ): Promise<{ record: Row; claims: Record<string, unknown> }> {
   const tokenText = typeof value === "string" ? value : "";
   const peeked = peekToken(tokenText);
-  if (peeked?.collectionId !== collection.id || typeof peeked.id !== "string") {
-    throw invalidToken();
-  }
+  if (!peeked || peeked.collectionId !== collection.id) throw invalidToken();
   const [record] = await db
     .select()
     .from(table(collection.name))
@@ -256,18 +240,43 @@ async function verified(
   return { record, claims };
 }
 
-/** Goes through the records service so values are validated as on any write. */
+/**
+ * Goes through the records service so values are validated as on any write.
+ * The token was checked against the record as read before; the write locks
+ * the record and checks its tokenKey again, so of concurrent requests with
+ * one token only the first succeeds and the others find the key it rotated.
+ */
 async function privilegedUpdate(
   ctx: FlowContext,
   collection: AuthCollection,
   record: Row,
   input: Record<string, unknown>,
 ): Promise<void> {
-  await updateRecord(
+  const id = record.id as string;
+  const apply = await planUpdateRecord(
     systemContext(ctx, input),
     collection,
-    record.id as string,
+    id,
     input,
     new URLSearchParams(),
   );
+  await ctx.db.transaction(async (tx) => {
+    const [locked] = await tx
+      .newQuery(
+        `SELECT * FROM {{${table(collection.name)}}} WHERE id = {:id} FOR NO KEY UPDATE`,
+      )
+      .bind({ id })
+      .all();
+    if (!locked || locked.tokenKey !== record.tokenKey) throw invalidToken();
+    await apply(tx);
+    // The owner proved the record's email for the first time. Whoever had
+    // the account before may have linked a provider, and must not keep it.
+    if (
+      input.email === undefined &&
+      input.emailVerified === true &&
+      locked.emailVerified !== true
+    ) {
+      await unlinkUnproven(tx, collection.id, id);
+    }
+  });
 }

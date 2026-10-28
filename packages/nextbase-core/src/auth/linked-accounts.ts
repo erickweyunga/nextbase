@@ -12,13 +12,18 @@ import { newId } from "../random.ts";
 import { newRecord, systemContext, updateRecord } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
 import { randomPassword } from "../schema/fields.ts";
-import { findByEmail } from "./flows.ts";
+import { findByEmail } from "./identity.ts";
 import { type Identity, OAuth2Error } from "./oauth2.ts";
 
 // Sign-ins find their record by the provider's permanent account id, never by
 // email. A new provider account is auto-linked to an existing record by email
 // only if both sides verified that email, and the owner is told; anything
 // weaker hands your account to whoever registers your email at a provider.
+// An email nobody proved is never trusted either: a provider's unverified
+// email creates no account, a record with an unverified email links no
+// provider, and links made before the owner proved the email are dropped
+// then. Otherwise someone could set up an account under your email before
+// you sign up, and keep a way into it after you take it over.
 
 export interface AccountContext {
   db: DB;
@@ -50,6 +55,14 @@ export async function accountFor(
       if (!record) {
         throw new OAuth2Error("oauth2_failed", "The account no longer exists.");
       }
+      // A record without an email, such as one that signs in by phone, has
+      // no address anyone could claim.
+      if (record.email !== "" && record.emailVerified !== true) {
+        throw new OAuth2Error(
+          "email_not_verified",
+          "Verify this account's email before linking a provider.",
+        );
+      }
       await link(tx, collection, record.id as string, provider, identity.id);
       return { record, linkedTo: record.email as string };
     }
@@ -60,9 +73,15 @@ export async function accountFor(
         "The provider did not share an email address.",
       );
     }
+    if (!identity.emailVerified) {
+      throw new OAuth2Error(
+        "email_not_verified",
+        "The provider has not verified this email address.",
+      );
+    }
     const existing = await findByEmail(tx, collection, identity.email);
     if (existing) {
-      if (!identity.emailVerified || existing.emailVerified !== true) {
+      if (existing.emailVerified !== true) {
         throw new OAuth2Error(
           "account_exists",
           "An account with this email exists. Sign in to it, then link this provider.",
@@ -113,6 +132,24 @@ export async function unlinkAccount(
     .bind({ collectionId, recordId, provider })
     .column();
   return deleted.length > 0;
+}
+
+/**
+ * Unlinks every provider of a record whose owner just proved its email for
+ * the first time. They were linked before anyone knew whose account it is.
+ */
+export async function unlinkUnproven(
+  q: Builder,
+  collectionId: string,
+  recordId: string,
+): Promise<void> {
+  await q
+    .newQuery(
+      `DELETE FROM {{${table("_linked_accounts")}}}
+       WHERE collection_id = {:collectionId} AND record_id = {:recordId}`,
+    )
+    .bind({ collectionId, recordId })
+    .execute();
 }
 
 async function findLinked(
@@ -206,16 +243,15 @@ async function signUp(
       input,
       new URLSearchParams(),
     );
-    // Only NextBase itself may mark a record verified.
-    if (identity.emailVerified) {
-      await updateRecord(
-        systemContext(ctx, { emailVerified: true }),
-        collection,
-        id,
-        { emailVerified: true },
-        new URLSearchParams(),
-      );
-    }
+    // Only NextBase itself may mark a record verified. Sign-ups come only
+    // from providers that verified the email.
+    await updateRecord(
+      systemContext(ctx, { emailVerified: true }),
+      collection,
+      id,
+      { emailVerified: true },
+      new URLSearchParams(),
+    );
   } catch (error) {
     if (error instanceof ApiError && error.status < 500) {
       throw new OAuth2Error(
