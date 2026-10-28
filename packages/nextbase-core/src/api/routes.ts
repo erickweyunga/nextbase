@@ -3,7 +3,7 @@ import type {
   AuthMethods,
   Collection,
 } from "@nextbasejs/client";
-import { type DB, hash, type Tx } from "@nextbasejs/dbx";
+import { type DB, hash, type Tx, type TxOptions } from "@nextbasejs/dbx";
 import {
   confirmEmailChange,
   confirmEmailVerification,
@@ -74,7 +74,7 @@ import {
   updateRecord,
   viewRecord,
 } from "../records/service.ts";
-import type { Schema } from "../schema/cache.ts";
+import { SCHEMA_VERSION_SQL, type Schema } from "../schema/cache.ts";
 import {
   deleteCollection,
   newCollection,
@@ -91,6 +91,8 @@ interface Context {
   inProcess: boolean;
   /** 0 means no limit. */
   statementTimeout: number;
+  /** The route's transaction, if the route is marked `transaction`. */
+  tx?: Tx;
   origins: OriginPolicy;
   mailer: Mailer;
   sms: Sms;
@@ -104,6 +106,13 @@ interface Route {
   method: string;
   /** Matched against the path below `basePath`; groups become `params`. */
   pattern: RegExp;
+  /**
+   * The route runs in a transaction opened before the handler, which also
+   * reads the schema version. Use it only for routes that hold the
+   * transaction briefly: a route that reads a request body would keep the
+   * connection busy while the body arrives.
+   */
+  transaction?: true;
   handler(context: Context): Promise<Response>;
 }
 
@@ -120,6 +129,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "GET",
     pattern: records,
+    transaction: true,
     async handler(context) {
       const { url } = parse(context);
       const collection = context.schema.get(context.params[0] as string);
@@ -154,6 +164,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "GET",
     pattern: record,
+    transaction: true,
     async handler(context) {
       const { url } = parse(context);
       const [collection, id] = context.params as [string, string];
@@ -805,19 +816,30 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /**
- * Runs records API work in a transaction bounded by `statementTimeout`. The
- * timeout is transaction-local (SET LOCAL) so it works through transaction poolers.
+ * Opens a route's transaction. Starting it, setting the timeout and reading
+ * the schema version take one round trip together.
+ */
+export function beginRoute(db: DB, statementTimeout: number): Promise<Tx> {
+  return db.begin(txOptions(statementTimeout, SCHEMA_VERSION_SQL));
+}
+
+/**
+ * Runs records API work in a transaction limited by `statementTimeout`. It
+ * uses the route's transaction if there is one, or opens a new one. The
+ * timeout lasts only until the transaction ends, so it works through
+ * transaction poolers.
  */
 function bounded<T>(context: Context, run: (tx: Tx) => Promise<T>): Promise<T> {
-  return context.db.transaction(async (tx) => {
-    if (context.statementTimeout > 0) {
-      await tx
-        .newQuery("SELECT set_config('statement_timeout', {:ms}, true)")
-        .bind({ ms: String(context.statementTimeout) })
-        .execute();
-    }
-    return run(tx);
-  });
+  if (context.tx) return run(context.tx);
+  return context.db.transaction(run, txOptions(context.statementTimeout));
+}
+
+function txOptions(statementTimeout: number, startQuery?: string): TxOptions {
+  return {
+    // With 0, the database's own timeout applies.
+    ...(statementTimeout > 0 && { statementTimeout }),
+    ...(startQuery !== undefined && { startQuery }),
+  };
 }
 
 function parse({ request }: Context): { url: URL } {

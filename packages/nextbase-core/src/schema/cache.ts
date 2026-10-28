@@ -1,6 +1,6 @@
 import type { Collection, Field } from "@nextbasejs/client";
 import type { Builder, DB } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
+import { SCHEMA } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { loadCollections } from "./store.ts";
 import { readViewRole } from "./views.ts";
@@ -57,10 +57,11 @@ export class Schema {
   }
 }
 
+/** Has no parameters, so it can be sent together with `BEGIN`. */
+export const SCHEMA_VERSION_SQL: string = `SELECT schema_version FROM "${SCHEMA}"."_meta"`;
+
 export async function readSchemaVersion(q: Builder): Promise<number> {
-  const [version] = await q
-    .newQuery(`SELECT schema_version FROM {{${table("_meta")}}}`)
-    .column<string>();
+  const [version] = await q.newQuery(SCHEMA_VERSION_SQL).column<string>();
   return Number(version);
 }
 

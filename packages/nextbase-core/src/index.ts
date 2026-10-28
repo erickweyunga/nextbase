@@ -8,9 +8,9 @@ import {
   type HealthResponse,
   NextBaseClient,
 } from "@nextbasejs/client";
-import { DB, type Pool } from "@nextbasejs/dbx";
+import { DB, type Pool, type Tx } from "@nextbasejs/dbx";
 import { waitUntil as vercelWaitUntil } from "@vercel/functions";
-import { ROUTES } from "./api/routes.ts";
+import { beginRoute, ROUTES } from "./api/routes.ts";
 import { checkAppUrl } from "./app-url.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
 import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
@@ -346,6 +346,22 @@ export class NextBase {
   readonly handle: RouteHandler = (request) =>
     this.#dispatch(request, { http: true });
 
+  /**
+   * Opens a route's transaction and returns it with the current schema. If
+   * the schema changed since it was cached, it is reloaded first.
+   */
+  async #beginRoute(db: DB): Promise<{ tx: Tx; schema: Schema }> {
+    for (;;) {
+      const tx = await beginRoute(db, this.#statementTimeout);
+      const version = Number(tx.startRows[0]?.schema_version);
+      const cached = this.#schema.cached;
+      if (cached && cached.version >= version) return { tx, schema: cached };
+      // The reload uses another connection, so this one is closed first.
+      await tx.rollback();
+      await this.#schema.get(db, version);
+    }
+  }
+
   // Only `client()` passes a `principal`; HTTP requests always use their own credentials.
   async #dispatch(
     request: Request,
@@ -375,7 +391,7 @@ export class NextBase {
       });
     }
 
-    for (const { method, pattern, handler } of ROUTES) {
+    for (const { method, pattern, transaction, handler } of ROUTES) {
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       let setCookie: string | undefined;
@@ -383,16 +399,15 @@ export class NextBase {
       const response = await (async (): Promise<Response> => {
         let db: DB | undefined;
         let schema: Schema | undefined;
+        let tx: Tx | undefined;
         try {
           await this.migrate();
           db = this.#connection();
           let caller = principal;
-          if (caller) {
-            schema = await this.#schema.get(db);
-          } else {
-            // This also loads the schema, in the same query as the session.
-            // Server components cannot set cookies, so in-process reads
-            // neither renew sessions nor remove a stale cookie.
+          if (!caller) {
+            // With a token, this also reads the schema, in the same query as
+            // the session. Server components cannot set cookies, so in-process
+            // reads neither renew sessions nor remove a stale cookie.
             const resolved = await resolvePrincipal(request, db, this.#schema, {
               extend: http,
             });
@@ -408,6 +423,11 @@ export class NextBase {
           if (http && verb !== "GET" && caller.viaCookie) {
             checkSameOrigin(request, this.#origins);
           }
+          if (transaction) {
+            ({ tx, schema } = await this.#beginRoute(db));
+          } else {
+            schema ??= await this.#schema.get(db);
+          }
           const response = await handler({
             request,
             params,
@@ -416,6 +436,7 @@ export class NextBase {
             principal: caller,
             inProcess: !http,
             statementTimeout: this.#statementTimeout,
+            ...(tx && { tx }),
             origins: this.#origins,
             mailer: this.#mailer,
             sms: this.#sms,
@@ -424,12 +445,16 @@ export class NextBase {
             effects,
             storage: this.#storage,
           });
+          await tx?.commit();
           for (const mail of effects.mail) {
             this.#mailer.send(mail.kind, mail.collection, mail.to);
           }
           this.#deleteFiles(effects.obsoleteFiles);
           return response;
         } catch (error) {
+          // If the rollback fails, the connection is closed. The error to
+          // report is the one that caused the rollback.
+          if (tx && !tx.done) await tx.rollback().catch(() => {});
           this.#deleteFiles(effects.newFiles);
           const code = (error as { code?: unknown }).code as string;
           // A missing table or column can be retried only if the schema changed meanwhile.

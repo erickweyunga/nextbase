@@ -24,32 +24,38 @@ export async function countAttempt(
   keys: readonly string[],
   { max, window }: Limit = DEFAULT_LIMIT,
 ): Promise<void> {
-  for (const key of keys) {
-    const [row] = await q
-      .newQuery(
-        `INSERT INTO {{${table("_auth_attempts")}}} AS a (key, failures, window_end)
-         VALUES ({:key}, 1, now() + {:window}::interval)
-         ON CONFLICT (key) DO UPDATE SET
-           failures = CASE WHEN a.window_end <= now() THEN 1 ELSE a.failures + 1 END,
-           window_end = CASE WHEN a.window_end <= now() THEN now() + {:window}::interval ELSE a.window_end END
-         RETURNING failures, ceil(extract(epoch FROM window_end - now()))::int AS "retryAfter"`,
-      )
-      .bind({ key, window })
-      .all<{ failures: number; retryAfter: number }>();
-    if (row && row.failures > max) {
-      throw new ApiError(
-        429,
-        "Too many attempts. Try again later.",
-        {},
-        { "retry-after": String(Math.max(1, row.retryAfter)) },
-      );
-    }
-  }
-  await q
+  // A key listed twice would make the upsert change one row twice, which
+  // Postgres rejects.
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return;
+  // One statement counts every key and removes expired counts of other keys.
+  // The keys being counted are left out of the delete, because one statement
+  // cannot change a row twice; the upsert restarts their expired counts.
+  const rows = await q
     .newQuery(
-      `DELETE FROM {{${table("_auth_attempts")}}} WHERE window_end <= now()`,
+      `WITH expired AS (
+         DELETE FROM {{${table("_auth_attempts")}}}
+         WHERE window_end <= now() AND key <> ALL({:keys}::text[])
+       )
+       INSERT INTO {{${table("_auth_attempts")}}} AS a (key, failures, window_end)
+       SELECT key, 1, now() + {:window}::interval FROM unnest({:keys}::text[]) AS key
+       ON CONFLICT (key) DO UPDATE SET
+         failures = CASE WHEN a.window_end <= now() THEN 1 ELSE a.failures + 1 END,
+         window_end = CASE WHEN a.window_end <= now() THEN now() + {:window}::interval ELSE a.window_end END
+       RETURNING failures, ceil(extract(epoch FROM window_end - now()))::int AS "retryAfter"`,
     )
-    .execute();
+    .bind({ keys: unique, window })
+    .all<{ failures: number; retryAfter: number }>();
+  const over = rows.filter((row) => row.failures > max);
+  if (over.length > 0) {
+    const retryAfter = Math.max(1, ...over.map((row) => row.retryAfter));
+    throw new ApiError(
+      429,
+      "Too many attempts. Try again later.",
+      {},
+      { "retry-after": String(retryAfter) },
+    );
+  }
 }
 
 export async function clearAttempts(
