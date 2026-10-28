@@ -1,6 +1,6 @@
 import { createHash, randomInt } from "node:crypto";
 import type { AuthCollection } from "@nextbasejs/client";
-import { type Builder, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { normalizePhone } from "../phone.ts";
@@ -11,6 +11,7 @@ import {
   updateRecord,
 } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
+import { phoneIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import type { Principal } from "./principal.ts";
 import type { Sms } from "./sms.ts";
@@ -226,8 +227,7 @@ async function findByPhone(
   const [record] = await q
     .select()
     .from(table(collection.name))
-    // The unique index leaves out empty phones, so `<> ''` lets Postgres use it.
-    .where(exp(`"phone" = {:phone} AND "phone" <> ''`, { phone }))
+    .where(phoneIs("phone", phone))
     .limit(1)
     .all();
   return record;

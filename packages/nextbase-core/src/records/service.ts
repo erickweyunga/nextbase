@@ -757,21 +757,12 @@ async function expandItems(
     if (subtree.size > 0)
       await expandItems(q, ctx, target, related, subtree, depth + 1);
 
-    // Built once, so matching records to items takes one pass, not one per item.
-    const byId = new Map<string, Output>();
-    const byParent = new Map<string, Output[]>();
-    for (const r of related) {
-      if (!back) {
-        byId.set(r.row.id as string, r.out);
-        continue;
-      }
-      // A record may list the same parent twice; it is expanded once.
-      for (const parent of new Set(references(r.row[field.name]))) {
-        const children = byParent.get(parent);
-        if (children) children.push(r.out);
-        else byParent.set(parent, [r.out]);
-      }
-    }
+    // Built once before the loop, so matching items to related records takes
+    // one pass, not one pass per item.
+    const byId = new Map(related.map((r) => [r.row.id as string, r.out]));
+    const byParent = back
+      ? groupByParent(related, field.name)
+      : new Map<string, Output[]>();
 
     for (const item of items) {
       let found: Output[];
@@ -792,6 +783,25 @@ async function expandItems(
       item.out.expand = expanded;
     }
   }
+}
+
+/**
+ * Groups records found through a back-relation by the parent each points at.
+ * A record that lists the same parent twice is grouped under it once.
+ */
+function groupByParent(
+  related: readonly { row: Row; out: Output }[],
+  fieldName: string,
+): Map<string, Output[]> {
+  const groups = new Map<string, Output[]>();
+  for (const { row, out } of related) {
+    for (const parent of new Set(references(row[fieldName]))) {
+      const group = groups.get(parent);
+      if (group) group.push(out);
+      else groups.set(parent, [out]);
+    }
+  }
+  return groups;
 }
 
 function references(value: unknown): string[] {

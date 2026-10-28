@@ -1,11 +1,12 @@
 import type { AuthCollection, TokenType } from "@nextbasejs/client";
-import { type Builder, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { updateRecord } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
+import { emailIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import { verifyPassword } from "./password.ts";
 import type { Principal } from "./principal.ts";
@@ -202,10 +203,7 @@ function checkEmail(value: unknown, field = "email"): string {
   return value;
 }
 
-/**
- * Case-insensitive, matching how email uniqueness is enforced. The unique
- * index leaves out empty emails, so `<> ''` lets Postgres use it.
- */
+/** Case-insensitive, matching how email uniqueness is enforced. */
 export async function findByEmail(
   db: Builder,
   collection: AuthCollection,
@@ -214,7 +212,7 @@ export async function findByEmail(
   const [record] = await db
     .select()
     .from(table(collection.name))
-    .where(exp(`lower("email") = lower({:email}) AND "email" <> ''`, { email }))
+    .where(emailIs("email", email))
     .limit(1)
     .all();
   return record;

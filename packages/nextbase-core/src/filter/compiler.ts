@@ -521,8 +521,8 @@ class Compiler {
     }
 
     // A field compared with a value: `tags ?= "news"` means "has this value".
-    // Written as array containment, which the field's GIN index can serve.
-    // The column is never NULL, so the result never is either.
+    // It is written as array containment, which the field's GIN index can
+    // serve. Multi-value columns are never NULL, so neither is the result.
     if (
       any &&
       op === "=" &&

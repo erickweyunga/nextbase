@@ -326,19 +326,24 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: "0009_expiry_indexes",
     async up(tx) {
-      // Expired rows are deleted on each sign-in attempt, OAuth2 sign-in and
-      // texted code. Without these indexes each delete reads the whole table.
-      for (const [name, tableName, column] of [
-        ["_auth_attempts_window_end", "_auth_attempts", "window_end"],
-        ["_oauth2_states_expires", "_oauth2_states", "expires"],
-        ["_phone_codes_expires", "_phone_codes", "expires"],
-      ] as const) {
-        await tx
-          .newQuery(
-            `CREATE INDEX "${name}" ON {{${table(tableName)}}} (${column})`,
-          )
-          .execute();
-      }
+      // Expired rows are deleted on every sign-in attempt, OAuth2 sign-in and
+      // texted code. These indexes let each delete find them without reading
+      // the whole table.
+      await tx
+        .newQuery(
+          `CREATE INDEX "_auth_attempts_window_end" ON {{${table("_auth_attempts")}}} (window_end)`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_oauth2_states_expires" ON {{${table("_oauth2_states")}}} (expires)`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_phone_codes_expires" ON {{${table("_phone_codes")}}} (expires)`,
+        )
+        .execute();
     },
   },
 ];
