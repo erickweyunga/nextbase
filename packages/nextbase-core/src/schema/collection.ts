@@ -223,6 +223,9 @@ function parseId(r: Reader, { existing, others }: CollectionContext): string {
     );
   } else if (others.some((c) => c.id === id)) {
     r.fail("id", "validation_not_unique", "Another collection has this id.");
+  } else if (others.some((c) => c.name.toLowerCase() === id)) {
+    // Collections are looked up by id or name, so one must not be the other.
+    r.fail("id", "validation_not_unique", "Another collection has this name.");
   }
   return id;
 }
@@ -247,6 +250,9 @@ function checkCollectionName(
       "validation_not_unique",
       "Another collection has this name.",
     );
+  } else if (others.some((c) => c.id === lower)) {
+    // Collections are looked up by id or name, so one must not be the other.
+    r.fail("name", "validation_not_unique", "Another collection has this id.");
   } else if (
     others.some((c) => c.indexes.some((i) => i.name.toLowerCase() === lower))
   ) {

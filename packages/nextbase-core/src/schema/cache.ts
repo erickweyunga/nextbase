@@ -5,6 +5,20 @@ import { ApiError } from "../errors.ts";
 import { loadCollections } from "./store.ts";
 import { readViewRole } from "./views.ts";
 
+/**
+ * By id, then by name. No name can equal another collection's id, but an id
+ * still wins, so schemas saved before that was enforced resolve ids exactly.
+ */
+export function findCollection(
+  collections: readonly Collection[],
+  idOrName: string,
+): Collection | undefined {
+  return (
+    collections.find((c) => c.id === idOrName) ??
+    collections.find((c) => c.name === idOrName)
+  );
+}
+
 export class Schema {
   readonly version: number;
   readonly collections: readonly Collection[];
@@ -22,9 +36,7 @@ export class Schema {
   }
 
   find(idOrName: string): Collection | undefined {
-    return this.collections.find(
-      (c) => c.id === idOrName || c.name === idOrName,
-    );
+    return findCollection(this.collections, idOrName);
   }
 
   // `comments_via_post`: names may contain underscores, so every `_via_` split is tried.

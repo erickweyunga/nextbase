@@ -81,6 +81,11 @@ interface Path {
   modifier: "length" | "lower" | undefined;
   /** `comments_via_post:length` */
   count: boolean;
+  /**
+   * SQL for the values in place of a column: a `@request.auth.<field>` with
+   * several values, bound as an array.
+   */
+  source?: string;
 }
 
 type Resolved = Constant | Path;
@@ -108,13 +113,24 @@ export function ruleProblem(
   schema: Schema,
 ): string | undefined {
   if (rule === null || rule === "") return undefined;
+  // What `@request.auth.<field>` is depends on the caller's collection, so
+  // the rule is compiled signed out and signed in to each auth collection.
+  const principals: Principal[] = [{ superuser: false }];
+  if (rule.includes("@request.auth")) {
+    for (const c of schema.collections) {
+      if (c.type === "auth")
+        principals.push({ superuser: false, collection: c, record: {} });
+    }
+  }
   try {
-    compileFilter(rule, collection, "t0", {
-      schema,
-      principal: { superuser: false },
-      request: { method: "GET", query: {}, headers: {}, body: {} },
-      mode: "rule",
-    });
+    for (const principal of principals) {
+      compileFilter(rule, collection, "t0", {
+        schema,
+        principal,
+        request: { method: "GET", query: {}, headers: {}, body: {} },
+        mode: "rule",
+      });
+    }
     return undefined;
   } catch (error) {
     if (error instanceof FilterError) return error.message;
@@ -336,8 +352,8 @@ class Compiler {
     head: string,
     rest: string[],
     collection: Collection,
-  ): Constant {
-    const { principal, request, mode } = this.#context;
+  ): Resolved {
+    const { request, mode } = this.#context;
     const text = (value: unknown): Constant => ({
       kind: "constant",
       value: typeof value === "string" ? value : BLANK,
@@ -353,27 +369,23 @@ class Compiler {
       throw new FilterError("Filters cannot read @request values.");
     const [section, name, ...extra] = rest;
     const modifier = operand.modifier;
-    if (section === "method" && name === undefined) return text(request.method);
+    const unknownModifier = (): FilterError =>
+      new FilterError(`Unknown modifier ":${modifier}".`);
+    if (section === "method" && name === undefined) {
+      if (modifier !== undefined) throw unknownModifier();
+      return text(request.method);
+    }
     if (name === undefined || extra.length > 0) {
       throw new FilterError(
         `"${operand.path.join(".")}" is not a supported @request value.`,
       );
     }
-    if (section === "query") return text(request.query[name]);
-    if (section === "headers")
-      return text(request.headers[name.toLowerCase().replaceAll("_", "-")]);
-    if (section === "auth") {
-      const { record, collection: authCollection } = principal;
-      if (name === "collectionId") return text(authCollection?.id);
-      if (name === "collectionName") return text(authCollection?.name);
-      const field = authCollection?.fields.find((f) => f.name === name);
-      if (!record || !field || field.hidden)
-        return { kind: "constant", value: BLANK, type: undefined };
-      return {
-        kind: "constant",
-        value: record[name] ?? BLANK,
-        type: sqlType(field),
-      };
+    if (section === "auth") return this.#resolveAuth(name, modifier);
+    if (section === "query" || section === "headers") {
+      if (modifier !== undefined) throw unknownModifier();
+      return section === "query"
+        ? text(request.query[name])
+        : text(request.headers[name.toLowerCase().replaceAll("_", "-")]);
     }
     if (section === "body") {
       const present = Object.hasOwn(request.body, name);
@@ -397,6 +409,77 @@ class Compiler {
     throw new FilterError(
       `"${operand.path.join(".")}" is not a supported @request value.`,
     );
+  }
+
+  /**
+   * A field of the signed-in record. The name must belong to some auth
+   * collection, so a typo, or a field renamed or deleted from under a rule,
+   * fails when the schema is saved instead of reading as blank. As elsewhere
+   * in rules, hidden fields can be read. A field with several values compares
+   * like a field of the record with several values.
+   */
+  #resolveAuth(name: string, modifier: string | undefined): Resolved {
+    const { principal, schema } = this.#context;
+    const { record, collection } = principal;
+    const blank: Constant = { kind: "constant", value: BLANK, type: undefined };
+    if (name === "collectionId" || name === "collectionName") {
+      if (modifier !== undefined)
+        throw new FilterError(`Unknown modifier ":${modifier}".`);
+      const value = name === "collectionId" ? collection?.id : collection?.name;
+      return value === undefined
+        ? blank
+        : { kind: "constant", value, type: "text" };
+    }
+    const field = collection?.fields.find((f) => f.name === name);
+    const known = schema.collections.flatMap((c) =>
+      c.type === "auth" ? c.fields.filter((f) => f.name === name) : [],
+    );
+    if (field) known.push(field);
+    if (known.length === 0)
+      throw new FilterError(
+        `Unknown field "${name}" in @request.auth: no auth collection has it.`,
+      );
+    if (known.some((f) => f.type === "password" || f.name === "tokenKey"))
+      throw new FilterError(`"${name}" cannot be used in filters.`);
+    if (known.some((f) => f.type === "json"))
+      throw new FilterError(
+        `@request.auth.${name} is a JSON field, which rules cannot compare.`,
+      );
+
+    // Signed out, or signed in to a collection without the field.
+    if (!record || !collection || !field) {
+      if (modifier === "length")
+        return { kind: "constant", value: 0, type: "number" };
+      if (modifier !== undefined && modifier !== "lower")
+        throw new FilterError(`Unknown modifier ":${modifier}".`);
+      return blank;
+    }
+    if (isMultiple(field)) {
+      const value = record[name];
+      return this.#finishPath(
+        {
+          kind: "path",
+          root: "",
+          steps: [],
+          collection,
+          field,
+          jsonKeys: [],
+          modifier: undefined,
+          count: false,
+          source: `${this.#bind(Array.isArray(value) ? value : [], undefined)}::text[]`,
+        },
+        modifier,
+      );
+    }
+    if (modifier !== undefined)
+      throw new FilterError(
+        `:${modifier} does not apply to @request.auth.${name}.`,
+      );
+    return {
+      kind: "constant",
+      value: record[name] ?? BLANK,
+      type: sqlType(field),
+    };
   }
 
   #compareConstants(left: Constant, op: Operator, right: Constant): string {
@@ -442,10 +525,15 @@ class Compiler {
       const value = right.value === BLANK ? "" : String(right.value);
       if (hasNul(value))
         throw new FilterError("Values cannot contain NUL characters.");
-      // A value without % matches anywhere; with %, it is the pattern itself.
+      // A value without % matches anywhere; with %, it is the pattern itself,
+      // in which a backslash escapes the next character.
       const pattern = value.includes("%")
         ? value
         : `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+      if ((/\\+$/.exec(pattern)?.[0].length ?? 0) % 2 === 1)
+        throw new FilterError(
+          `A ${op} pattern cannot end with a backslash that escapes nothing.`,
+        );
       // Bare column so a trigram index can serve it; COALESCE only when nullable,
       // so `!~` keeps NULL rows.
       const subject = nullable ? `COALESCE(${sql}, '')` : sql;
@@ -602,7 +690,8 @@ class Compiler {
       };
     }
     const values = this.#alias();
-    const source = `unnest(${quote(last)}.${quote(path.field.name)}) AS ${quote(values)}("v")`;
+    const column = path.source ?? `${quote(last)}.${quote(path.field.name)}`;
+    const source = `unnest(${column}) AS ${quote(values)}("v")`;
     if (from.length === 0) from.push(source);
     else from[from.length - 1] += ` CROSS JOIN LATERAL ${source}`;
     const element = `${quote(values)}."v"`;
@@ -653,7 +742,7 @@ class Compiler {
       const { from, joins } = this.#chain(path.steps, alias);
       return `(SELECT count(*) FROM ${from.join(", ")} WHERE ${joins.join(" AND ")})`;
     }
-    const col = `${quote(alias)}.${quote(field.name)}`;
+    const col = path.source ?? `${quote(alias)}.${quote(field.name)}`;
     if (modifier === "length") return `cardinality(${col})`;
     let sql = col;
     if (field.type === "json") {

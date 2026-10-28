@@ -41,7 +41,14 @@ const posts = {
 const collections = [users, teams, posts];
 
 const rename = (rule: string, on: Collection): string =>
-  renameRuleField(rule, on, collections, "verified", "emailVerified");
+  renameRuleField(
+    rule,
+    on,
+    collections,
+    "verified",
+    "emailVerified",
+    (c) => c.type === "auth",
+  );
 
 describe("renaming an auth field in rules", () => {
   it("renames the field on auth collections, the auth record and the body", () => {

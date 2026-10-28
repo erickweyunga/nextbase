@@ -90,6 +90,11 @@ import { nextbase } from "../lib/nextbase";
 await nextbase.migrate();
 ```
 
+When an upgrade adds a system field to auth collections, such as `phone`,
+`phoneVerified` or `emailVerified`, a field of your own with that name is
+renamed to `user_<name>` first, together with its column and the rules that
+use it, and the server log says so. Its data is kept.
+
 ## Many instances
 
 Serverless platforms run many copies of your app. A collection or rule change

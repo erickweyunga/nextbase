@@ -28,6 +28,10 @@ const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
   "oid",
 ]);
 
+// Filter keywords, which a filter reads as values rather than fields. The
+// parser matches them exactly, so `True` stays a usable name.
+const FILTER_KEYWORDS: ReadonlySet<string> = new Set(["true", "false", "null"]);
+
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TEXT_MAX = 5000;
 const DEFAULT_FILE_MAX_SIZE = 5 * 1024 * 1024;
@@ -101,7 +105,10 @@ export function fieldNameProblem(name: string): string | undefined {
   if (!NAME_PATTERN.test(name)) {
     return "Must start with a letter and contain only letters, digits and underscores, up to 63 characters.";
   }
-  if (RESERVED_FIELD_NAMES.has(name.toLowerCase())) {
+  if (
+    RESERVED_FIELD_NAMES.has(name.toLowerCase()) ||
+    FILTER_KEYWORDS.has(name)
+  ) {
     return `"${name}" is reserved.`;
   }
   return undefined;

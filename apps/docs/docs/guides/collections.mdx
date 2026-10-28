@@ -43,8 +43,11 @@ on create if it has that form.
 ## Names
 
 Collection and field names start with a letter and contain letters, digits and
-`_`, up to 63 characters. They are unique regardless of case. `expand`,
-`collectionId` and `collectionName` are reserved.
+`_`, up to 63 characters. They are unique regardless of case, and since a
+collection can be addressed by id or name, its name cannot be another
+collection's id, or its id another's name. `expand`, `collectionId` and
+`collectionName` are reserved, and so are `true`, `false` and `null` as field
+names, since a filter reads them as values.
 
 ## Field types
 
@@ -101,7 +104,9 @@ A relation field points at records of another collection (or the same one).
 
 - `btree` (the default) serves equality, ranges and sorting. `unique: true`
   enforces unique values; a duplicate is a `validation_not_unique` error on
-  the field.
+  the field. An entry holds at most about 2.7 kB, so a btree index cannot be
+  added while records hold longer values, and a longer value cannot be saved
+  once it exists; both are `validation_length_out_of_range` errors.
 - `trigram` serves `~` ("contains") searches on text fields. The first one
   installs Postgres's `pg_trgm` extension.
 
