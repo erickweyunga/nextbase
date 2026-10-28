@@ -186,8 +186,7 @@ export async function principalOfFileToken(
   token: string,
 ): Promise<Principal | undefined> {
   const claims = peekToken(token);
-  if (typeof claims?.collectionId !== "string" || typeof claims.id !== "string")
-    return undefined;
+  if (!claims) return undefined;
   let collection: Collection;
   try {
     collection = schema.get(claims.collectionId);

@@ -1,4 +1,5 @@
 import { ClientError, type NextBaseClient } from "@nextbasejs/client";
+import { SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type MailMessage, NextBase } from "../src/index.ts";
 import { call } from "./http.ts";
@@ -305,6 +306,77 @@ describe("email verification, password reset and email change", () => {
     expect(taken.data).toMatchObject({
       email: { code: "validation_not_unique" },
     });
+  });
+
+  it("resets a password only once, however many requests use the link at the same time", async () => {
+    await signUp("gil@example.com");
+    const users = nextbase.client().collection("users");
+    await users.requestPasswordReset("gil@example.com");
+    await flush();
+    const token = tokenIn(lastTo("gil@example.com"));
+    const passwords = ["first new password", "second new password"];
+    const results = await Promise.allSettled(
+      passwords.map((p) => users.confirmPasswordReset(token, p, p)),
+    );
+    const done = results.flatMap((r, i) =>
+      r.status === "fulfilled" ? [passwords[i] as string] : [],
+    );
+    expect(done).toHaveLength(1);
+    const refused = results.find((r) => r.status === "rejected");
+    expect((refused as PromiseRejectedResult).reason).toMatchObject({
+      status: 400,
+      data: { token: { code: "validation_invalid_token" } },
+    });
+    await users.signInWithPassword("gil@example.com", done[0] as string);
+  });
+
+  it("changes an email only once, however many requests use the link at the same time", async () => {
+    const hal = await signUp("hal@example.com");
+    await hal.collection("users").requestEmailChange("hal.new@example.com");
+    await flush();
+    const token = tokenIn(lastTo("hal.new@example.com"));
+    const users = nextbase.client().collection("users");
+    const results = await Promise.allSettled([
+      users.confirmEmailChange(token, PASSWORD),
+      users.confirmEmailChange(token, PASSWORD),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    await flush();
+    expect(
+      sent.filter(
+        (m) =>
+          m.to === "hal@example.com" && m.subject === "Your email was changed",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("refuses a forged token whose claims could not be stored", async () => {
+    const { id: collectionId } = await admin.collections.getOne("users");
+    const forge = (type: string) =>
+      new SignJWT({ type, id: "abc\u0000", collectionId, email: "x@y.z" })
+        .setProtectedHeader({ alg: "HS256" })
+        .sign(new TextEncoder().encode("any key"));
+    const users = nextbase.client().collection("users");
+    for (const attempt of [
+      async () => users.confirmEmailVerification(await forge("verification")),
+      async () =>
+        users.confirmPasswordReset(
+          await forge("passwordReset"),
+          PASSWORD,
+          PASSWORD,
+        ),
+      async () =>
+        users.confirmEmailChange(await forge("emailChange"), PASSWORD),
+    ]) {
+      const error = await failure(attempt());
+      expect(error.status).toBe(400);
+      expect(error.data).toMatchObject({
+        token: { code: "validation_invalid_token" },
+      });
+    }
   });
 
   it("limits emails per address, so no one can flood an inbox", async () => {

@@ -230,8 +230,10 @@ describe("OAuth2 in the example app", () => {
   });
 
   it("links and unlinks the provider from the dashboard", async () => {
+    // Only an account with a verified email can link a provider.
     await admin.send("POST", "/collections/users/records", {
       email: "cy@example.com",
+      emailVerified: true,
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });

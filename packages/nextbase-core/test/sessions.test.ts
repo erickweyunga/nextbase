@@ -574,6 +574,17 @@ describe("sessions", () => {
     expect(Number(limited?.headers.get("retry-after"))).toBeGreaterThan(0);
   });
 
+  it("refuses and counts an identity of any length like any other", async () => {
+    // Longer than a Postgres index entry can be, even compressed.
+    const identity = `${randomBytes(4096).toString("hex")}@example.com`;
+    const attempt = () =>
+      raw("POST", "/collections/users/auth-with-password", {
+        body: { identity, password: "wrong guess here" },
+      });
+    for (let i = 0; i < 10; i++) expect((await attempt()).status).toBe(400);
+    expect((await attempt()).status).toBe(429);
+  });
+
   it("throttles oldPassword per account, counting only callers the update rule allows", async () => {
     const victim = await signUp("pat@example.com");
     await signUp("quinn@example.com");

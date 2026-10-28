@@ -37,6 +37,7 @@ export async function confirmEmailChange(form: FormData) {
 
 After the change:
 
+- the link cannot be used again, even by requests sent at the same time,
 - the new email counts as verified,
 - every session of the account ends, so the user signs in again,
 - the old address gets an email saying the email changed.
