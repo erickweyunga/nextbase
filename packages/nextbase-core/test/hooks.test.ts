@@ -83,6 +83,9 @@ const COLLECTIONS = [
   "loops",
   "docs",
   "users",
+  "members",
+  "secrets",
+  "titles",
   "*",
 ];
 
@@ -219,6 +222,33 @@ describe("record hooks", () => {
       createRule: "",
       viewRule: "id = @request.auth.id",
       fields: [{ name: "note", type: "text", hidden: true }],
+    });
+    // Signs up by phone, but signs in only once verified by email.
+    await admin.collections.create({
+      name: "members",
+      type: "auth",
+      phoneSignIn: true,
+      identityFields: ["email", "phone"],
+      createRule: "",
+      authRule: "emailVerified = true",
+    });
+    // Only their owner may change or delete them, nobody may view them.
+    await admin.collections.create({
+      name: "secrets",
+      createRule: "",
+      updateRule: "owner = @request.auth.id",
+      deleteRule: "owner = @request.auth.id",
+      fields: [
+        { name: "owner", type: "text" },
+        { name: "content", type: "text", hidden: true },
+      ],
+    });
+    await admin.collections.create({
+      name: "titles",
+      type: "view",
+      viewQuery: "SELECT p.id, p.title FROM posts p",
+      listRule: "",
+      viewRule: "",
     });
   });
   afterEach(async () => {
@@ -904,6 +934,260 @@ describe("record hooks", () => {
         "onUpdate system phone,phoneVerified",
         "afterUpdate system phone,phoneVerified",
       ]);
+    });
+  });
+
+  describe("safety", () => {
+    it("runs an on hook's requests one at a time, so Promise.all works", async () => {
+      const keys = [newId(), newId()];
+      hook("posts.onCreate", async (e) => {
+        await Promise.all(
+          keys.map((key) =>
+            e.nextbase
+              .collection("audit")
+              .create({ key, action: "together", post: e.record.id }),
+          ),
+        );
+      });
+      await admin.collection("posts").create({ title: "Together" });
+      expect(
+        (
+          await admin
+            .collection("audit")
+            .getFullList({ filter: 'action = "together"' })
+        )
+          .map((a) => a.key)
+          .sort(),
+      ).toEqual([...keys].sort());
+    });
+
+    it("undoes only the failed one of an on hook's concurrent requests", async () => {
+      const taken = newId();
+      await admin.collection("audit").create({ key: taken });
+      const kept = newId();
+      const afterwards: unknown[] = [];
+      hook("audit.afterCreate", (e) => {
+        afterwards.push(e.record.key);
+      });
+      hook("posts.onCreate", async (e) => {
+        const [failed, created] = await Promise.allSettled([
+          e.nextbase.collection("audit").create({ key: taken }),
+          e.nextbase
+            .collection("audit")
+            .create({ key: kept, action: "settled", post: e.record.id }),
+        ]);
+        expect(failed.status).toBe("rejected");
+        expect(created.status).toBe("fulfilled");
+      });
+      await admin.collection("posts").create({ title: "Settled" });
+      await flush();
+      expect(
+        await admin
+          .collection("audit")
+          .getFullList({ filter: 'action = "settled"' }),
+      ).toHaveLength(1);
+      expect(afterwards).toEqual([kept]);
+    });
+
+    it("sets the role back after an on hook reads a view", async () => {
+      hook("posts.onCreate", async (e) => {
+        await e.nextbase.collection("titles").getFullList();
+        await e.nextbase
+          .collection("audit")
+          .create({ key: newId(), action: "after view", post: e.record.id });
+      });
+      await admin.collection("posts").create({ title: "Viewed" });
+      expect(
+        await admin
+          .collection("audit")
+          .getFullList({ filter: 'action = "after view"' }),
+      ).toHaveLength(1);
+    });
+
+    it("keeps the work of writes committed before the request fails", async () => {
+      const created: string[] = [];
+      hook("members.afterCreate", (e) => {
+        created.push(String(e.record.phone));
+      });
+      const members = nextbase.client().collection("members");
+      const phone = "+255713000001";
+      await members.requestPhoneCode(phone);
+      await flush();
+      const text = texts.filter((m) => m.to === phone).at(-1)?.text ?? "";
+      const code = /\b(\d{6})\b/.exec(text)?.[1] ?? "";
+      // Signed up, but the auth rule refuses the sign-in.
+      expect(
+        (await failure(members.signInWithPhoneCode(phone, code))).status,
+      ).toBe(403);
+      await flush();
+      expect(created).toEqual([phone]);
+
+      hook("users.afterCreate", (e) => {
+        created.push(String(e.record.email));
+      });
+      // Created, but the response's expand is refused.
+      const response = await nextbase.handle(
+        new Request(
+          "http://localhost:3000/api/nextbase/collections/users/sign-up?expand=a.b.c.d.e.f.g",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              email: "late@example.com",
+              password: PASSWORD,
+              passwordConfirm: PASSWORD,
+            }),
+          },
+        ),
+      );
+      expect(response.status).toBe(400);
+      await flush();
+      expect(created).toEqual([phone, "late@example.com"]);
+    });
+
+    it("gives each create of a batch its hooks in turn", async () => {
+      const [first, second] = [newId(), newId()];
+      const order: string[] = [];
+      hook("posts.onCreate", async (e) => {
+        order.push(`onCreate ${e.record.title}`);
+        if (e.record.id !== first) return;
+        // The second is not created yet, as when each is created in turn.
+        const error = await failure(
+          e.nextbase.collection("posts").getOne(second),
+        );
+        expect(error.status).toBe(404);
+      });
+      await admin
+        .createBatch()
+        .collection("posts")
+        .create({ id: first, title: "first" })
+        .collection("posts")
+        .create({ id: second, title: "second" })
+        .send();
+      expect(order).toEqual(["onCreate first", "onCreate second"]);
+    });
+
+    it("runs update and delete before hooks only for callers the rule allows", async () => {
+      const owner = nextbase.client();
+      const { record } = (await owner.collection("users").signUp({
+        email: "owner@example.com",
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      })) as { record: RecordModel };
+      const secret = await admin
+        .collection("secrets")
+        .create({ owner: record.id, content: "the plan" });
+      const id = secret?.id as string;
+      const ran: string[] = [];
+      for (const name of ["beforeUpdate", "beforeDelete"]) {
+        hook(`secrets.${name}`, (e) => {
+          ran.push(name);
+          throw new ApiError(400, `Keep ${String(e.record.content)}.`);
+        });
+      }
+      const stranger = nextbase.client().collection("secrets");
+      // As for a record that does not exist.
+      for (const attempt of [
+        () => stranger.update(id, { owner: "x" }),
+        () => stranger.delete(id),
+        () => stranger.delete(newId()),
+      ]) {
+        const error = await failure(attempt());
+        expect([error.status, error.message]).toEqual([
+          404,
+          "Record not found.",
+        ]);
+      }
+      expect(ran).toEqual([]);
+      const error = await failure(owner.collection("secrets").delete(id));
+      expect([error.status, error.message]).toEqual([400, "Keep the plan."]);
+      expect(ran).toEqual(["beforeDelete"]);
+    });
+
+    it("gives hooks a frozen collection without token secrets", async () => {
+      const seen: AnyEvent[] = [];
+      hook("users.beforeCreate", (e) => {
+        seen.push(e);
+      });
+      hook("users.onCreate", (e) => {
+        seen.push(e);
+      });
+      const users = nextbase.client().collection("users");
+      await users.signUp({
+        email: "frozen@example.com",
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      });
+      const stored = await admin.collections.getOne("users");
+      const secrets = Object.values(
+        (stored as { tokens: Record<string, { secret: string }> }).tokens,
+      ).map((config) => config.secret);
+      expect(secrets.every((s) => typeof s === "string" && s !== "")).toBe(
+        true,
+      );
+      for (const e of seen) {
+        const text = JSON.stringify(e.collection);
+        for (const secret of secrets) expect(text).not.toContain(secret);
+        expect(Object.isFrozen(e.collection)).toBe(true);
+        expect(() => {
+          (e.collection as { createRule: string | null }).createRule = null;
+        }).toThrow(TypeError);
+      }
+      // The collection itself is unchanged: sign-ups still work.
+      await users.create({
+        email: "after-frozen@example.com",
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      });
+    });
+
+    it("leaves the caller's session headers out of the request", async () => {
+      let headers: Record<string, string> = {};
+      hook("posts.beforeCreate", (e) => {
+        headers = (e as unknown as { request: { headers: typeof headers } })
+          .request.headers;
+      });
+      const response = await nextbase.handle(
+        new Request(
+          "http://localhost:3000/api/nextbase/collections/posts/records",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: "nextbase_session=abc",
+              "x-trace": "t1",
+            },
+            body: JSON.stringify({ title: "Headers" }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(headers["x-trace"]).toBe("t1");
+      expect(headers).not.toHaveProperty("cookie");
+      expect(headers).not.toHaveProperty("authorization");
+    });
+
+    it("stops after hooks that write the records that fire them", async () => {
+      const log = logged();
+      const loop = await admin.collection("loops").create({ n: 0 });
+      const id = loop?.id as string;
+      hook("loops.afterUpdate", async (e) => {
+        // A bound, so a loop that never stops still ends this test.
+        if (Number(e.record.n) >= 20) return;
+        await e.nextbase
+          .collection("loops")
+          .update(e.record.id, { n: Number(e.record.n) + 1 });
+      });
+      await admin.collection("loops").update(id, { n: 1 });
+      await flush();
+      expect((await admin.collection("loops").getOne(id)).n).toBe(9);
+      expect(
+        log.mock.calls.some(
+          ([message, error]) =>
+            String(message).includes("afterUpdate hook for loops failed") &&
+            String(error).includes("nest more than 8 deep"),
+        ),
+      ).toBe(true);
     });
   });
 

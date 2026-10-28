@@ -125,18 +125,29 @@ function hookScope(
 
 /**
  * The record as stored, for a before hook: a plain read, which locks
- * nothing. Throws `notFound` when there is none.
+ * nothing. It must also match `rule`, the write's rule, so a hook never runs
+ * for, nor tells anything to, a caller the rule refuses. Throws `notFound`,
+ * as the write would, when there is no such record. The transaction checks
+ * the rule again either way.
  */
 async function storedRecord(
   ctx: RecordsContext,
   collection: Collection,
   id: string,
+  rule: string | undefined,
   notFound: ApiError,
 ): Promise<Row> {
+  let condition: Expression | undefined;
+  if (rule && !ctx.principal.superuser) {
+    const compiled = compile(ctx, collection, rule, "rule");
+    // A batch's earlier writes may change what the rule sees; the
+    // transaction checks it then.
+    if (seesEveryWrite(ctx, collection, compiled)) condition = compiled;
+  }
   const [row] = await ctx.db
-    .select()
-    .from(table(collection.name))
-    .where(hash({ id }))
+    .select(`${ALIAS}.*`)
+    .from(`${table(collection.name)} ${ALIAS}`)
+    .where(and(hash({ [`${ALIAS}.id`]: id }), condition))
     .all();
   if (!row) throw notFound;
   return row;
@@ -271,7 +282,7 @@ export async function newRecord(
   query: URLSearchParams,
 ): Promise<Output | undefined> {
   const plan = await planNewRecord(ctx, collection, input, query);
-  return inTransaction(ctx.db, applyCreate(plan));
+  return inTransaction(ctx, applyCreate(plan));
 }
 
 /** A create, checked as far as it can be before its transaction starts. */
@@ -436,9 +447,12 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
  * False when the create or view rule reads the collection being created,
  * through `@collection`, a back-relation or a relation path. A run writes
  * only its own collection, and the batch's earlier writes are done before it
- * starts, so only such a rule could see records the run inserts.
+ * starts, so only such a rule could see records the run inserts. False too
+ * when the collection has on or after hooks: each create's hooks then run
+ * before the next create, and see its record as stored, as in turn.
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
+  if (ctx.hooks?.observes(collection, "create")) return false;
   if (ctx.principal.superuser) return true;
   const own = `{{${table(collection.name)}}}`;
   return [collection.createRule, collection.viewRule].every((rule) => {
@@ -636,7 +650,7 @@ export async function updateRecord(
   query: URLSearchParams,
 ): Promise<Output | undefined> {
   const apply = await planUpdateRecord(ctx, collection, id, input, query);
-  return inTransaction(ctx.db, apply);
+  return inTransaction(ctx, apply);
 }
 
 /**
@@ -655,10 +669,19 @@ export async function planUpdateRecord(
   denyNullRule(ctx, collection.updateRule);
   const notFound = new ApiError(404, "Record not found.");
   if (ctx.hooks?.hasBefore(collection, "update")) {
+    // A rule that reads the body waits for the body the hook leaves.
+    const rule = collection.updateRule ?? "";
+    const record = await storedRecord(
+      ctx,
+      collection,
+      id,
+      rule.includes("@request.body") ? undefined : rule,
+      notFound,
+    );
     input = { ...input };
     await ctx.hooks.before(hookScope(ctx), collection, "update", {
       input,
-      record: await storedRecord(ctx, collection, id, notFound),
+      record,
       request: ctx.request,
     });
   }
@@ -811,7 +834,13 @@ export async function planDeleteRecord(
   const notFound = new ApiError(404, "Record not found.");
   if (ctx.hooks?.hasBefore(collection, "delete")) {
     await ctx.hooks.before(hookScope(ctx), collection, "delete", {
-      record: await storedRecord(ctx, collection, id, notFound),
+      record: await storedRecord(
+        ctx,
+        collection,
+        id,
+        collection.deleteRule ?? "",
+        notFound,
+      ),
       request: ctx.request,
     });
   }
@@ -910,14 +939,19 @@ function checkId(collection: Collection, id: string): void {
 }
 
 // View queries run as the view role, whose privileges limit what they can read.
+// A read for a hook's `e.nextbase` may share the transaction of the write it
+// runs for, which goes on afterwards with its own role.
 function reading<T>(
   ctx: RecordsContext,
   collection: Collection,
   read: (ctx: RecordsContext) => Promise<T>,
 ): Promise<T> {
   if (collection.type !== "view") return read(ctx);
-  return readAsViewRole(ctx.db, ctx.schema.viewRole, (tx) =>
-    read({ ...ctx, db: tx }),
+  return readAsViewRole(
+    ctx.db,
+    ctx.schema.viewRole,
+    (tx) => read({ ...ctx, db: tx }),
+    (ctx.hookChain?.length ?? 0) > 0,
   );
 }
 
@@ -1859,10 +1893,17 @@ function columnValues(
 /**
  * Runs `write` in the caller's transaction if there is one, or in a new one.
  * It makes no savepoint: when a write fails the request fails too, so the
- * whole transaction is rolled back anyway.
+ * whole transaction is rolled back anyway. Once a new one commits, the work
+ * that follows the write is done even if the request fails later.
  */
-function inTransaction<T>(db: DB | Tx, write: Apply<T>): Promise<T> {
-  return db instanceof Tx ? write(db) : db.transaction(write);
+async function inTransaction<T>(
+  ctx: RecordsContext,
+  write: Apply<T>,
+): Promise<T> {
+  if (ctx.db instanceof Tx) return write(ctx.db);
+  const result = await ctx.db.transaction(write);
+  ctx.effects?.commit();
+  return result;
 }
 
 /**

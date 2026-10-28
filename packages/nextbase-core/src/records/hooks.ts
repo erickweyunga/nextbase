@@ -3,6 +3,8 @@ import type {
   Collection,
   NextBaseClient,
   RecordModel,
+  TokenConfig,
+  TokenType,
 } from "@nextbasejs/client";
 import type { Row, Tx } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
@@ -19,12 +21,26 @@ import { serverRecord } from "./serialize.ts";
  */
 export type HookSource = "request" | "system" | "cascade";
 
+/** An auth collection as hooks see it: without its token secrets. */
+export type HookAuthCollection = Omit<AuthCollection, "tokens"> & {
+  tokens: Record<TokenType, Omit<TokenConfig, "secret">>;
+};
+
+/**
+ * A collection as hooks see it, frozen: changing it would change the
+ * collection for every request. Auth collections leave out their token
+ * secrets.
+ */
+export type HookCollection =
+  | Exclude<Collection, AuthCollection>
+  | HookAuthCollection;
+
 /** Who a write is made for. */
 export interface HookPrincipal {
   /** Superusers, `client({ superuser: true })` and NextBase's own writes. */
   superuser: boolean;
   /** The collection of the signed-in record, if any. */
-  collection?: AuthCollection;
+  collection?: HookAuthCollection;
   /** The signed-in record, as hooks see records. */
   record?: RecordModel;
 }
@@ -33,12 +49,15 @@ export interface HookPrincipal {
 export interface HookRequest {
   method: string;
   query: Record<string, string>;
-  /** Lowercased header names. */
+  /**
+   * Lowercased header names. `authorization` and `cookie` are left out:
+   * they carry the caller's session.
+   */
   headers: Record<string, string>;
 }
 
 interface HookEvent {
-  collection: Collection;
+  collection: HookCollection;
   principal: HookPrincipal;
 }
 
@@ -181,7 +200,10 @@ export interface JoinedClient {
 
 /** The superuser clients hooks get, from NextBase. */
 export interface HookClients {
-  plain(): NextBaseClient<Record<string, RecordModel>>;
+  /** For after hooks: requests that carry the hooks that led to them. */
+  chained(
+    chain: readonly string[],
+  ): NextBaseClient<Record<string, RecordModel>>;
   joined(join: Join): JoinedClient;
 }
 
@@ -261,15 +283,12 @@ export class Hooks {
   ): Promise<void> {
     const hooks = this.#find(collection, `before${capitalize(action)}`);
     if (hooks.length === 0) return;
+    const { authorization, cookie, ...headers } = request.headers;
     const event = {
-      collection,
+      collection: hookCollection(collection),
       principal: hookPrincipal(scope.principal),
       source: scope.source,
-      request: {
-        method: request.method,
-        query: request.query,
-        headers: request.headers,
-      },
+      request: { method: request.method, query: request.query, headers },
       ...(input && { input }),
       ...(record && { record: serverRecord(collection, record) }),
     };
@@ -295,7 +314,7 @@ export class Hooks {
     const effects = scope.effects;
     if (!effects) throw new Error("Writes with record hooks need effects.");
     const event = (): Record<string, unknown> => ({
-      collection,
+      collection: hookCollection(collection),
       principal: hookPrincipal(scope.principal),
       source: scope.source,
       record: serverRecord(collection, record),
@@ -307,8 +326,9 @@ export class Hooks {
     if (after.length > 0) {
       // Taken now: later writes of the request may change the record.
       const e = event();
+      const chain = [...scope.chain, `${collection.name}.after${name}`];
       effects.hooks.push(async () => {
-        const run = { ...e, nextbase: this.#clients.plain() };
+        const run = { ...e, nextbase: this.#clients.chained(chain) };
         for (const hook of after) {
           try {
             await hook(run);
@@ -352,11 +372,41 @@ function capitalize<A extends Action>(action: A): Capitalize<A> {
   return `${action[0]?.toUpperCase()}${action.slice(1)}` as Capitalize<A>;
 }
 
+// Schema versions replace their collection objects, so each copy is made once
+// per version of a collection.
+const hookCollections = new WeakMap<Collection, HookCollection>();
+
+/** The collection as hooks see it: a frozen copy without token secrets. */
+function hookCollection(collection: AuthCollection): HookAuthCollection;
+function hookCollection(collection: Collection): HookCollection;
+function hookCollection(collection: Collection): HookCollection {
+  let copy = hookCollections.get(collection);
+  if (!copy) {
+    const clone = structuredClone(collection) as Collection;
+    if (clone.type === "auth") {
+      for (const config of Object.values(clone.tokens)) {
+        delete (config as Partial<TokenConfig>).secret;
+      }
+    }
+    copy = deepFreeze(clone);
+    hookCollections.set(collection, copy);
+  }
+  return copy;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function hookPrincipal(principal: Principal): HookPrincipal {
   const { collection, record, superuser } = principal;
   return {
     superuser,
-    ...(collection && { collection }),
+    ...(collection && { collection: hookCollection(collection) }),
     ...(collection &&
       record && { record: serverRecord(collection, record) as RecordModel }),
   };

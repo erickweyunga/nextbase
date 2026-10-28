@@ -871,9 +871,19 @@ export function beginRoute(db: DB, statementTimeout: number): Promise<Tx> {
  * timeout lasts only until the transaction ends, so it works through
  * transaction poolers.
  */
-function bounded<T>(context: Context, run: (tx: Tx) => Promise<T>): Promise<T> {
+async function bounded<T>(
+  context: Context,
+  run: (tx: Tx) => Promise<T>,
+): Promise<T> {
   if (context.tx) return run(context.tx);
-  return context.db.transaction(run, txOptions(context.statementTimeout));
+  const result = await context.db.transaction(
+    run,
+    txOptions(context.statementTimeout),
+  );
+  // What follows its writes is done even if the request fails after this,
+  // as a sign-up may when it starts the session.
+  context.effects.commit();
+  return result;
 }
 
 function txOptions(statementTimeout: number, startQuery?: string): TxOptions {

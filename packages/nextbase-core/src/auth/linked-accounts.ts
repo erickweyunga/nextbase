@@ -65,6 +65,8 @@ export async function accountFor(
     ),
   );
   ctx.effects.absorb(effects);
+  // Done even if the sign-in fails after this, as on its auth rule.
+  ctx.effects.commit();
   return account;
 }
 

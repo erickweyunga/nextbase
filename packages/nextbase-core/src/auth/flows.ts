@@ -285,4 +285,6 @@ async function privilegedUpdate(
       await unlinkUnproven(tx, collection.id, id);
     }
   });
+  // What follows the update is done even if the request fails after it.
+  ctx.effects.commit();
 }

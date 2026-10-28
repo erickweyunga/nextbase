@@ -104,6 +104,8 @@ export type {
   BeforeDeleteEvent,
   BeforeUpdateEvent,
   CollectionHooks,
+  HookAuthCollection,
+  HookCollection,
   HookPrincipal,
   HookRequest,
   HookSource,
@@ -276,8 +278,7 @@ export class NextBase<C extends Collections = Collections> {
       );
     }
     this.#hooks = new Hooks(options.hooks as RecordHooks | undefined, {
-      plain: () =>
-        this.client({ superuser: true }) as NextBaseClient<Collections>,
+      chained: (chain) => this.#chained(chain),
       joined: (join) => this.#joined(join),
     });
   }
@@ -419,11 +420,15 @@ export class NextBase<C extends Collections = Collections> {
 
   /**
    * The superuser client of an on hook, whose requests join its transaction.
-   * Once the hook returns it is closed, so no request outlasts the hook and
-   * writes after the transaction ended, or into the rest of the write.
+   * They run one at a time, in the order they were sent: each runs in a
+   * savepoint, and savepoints of one transaction nest, so two at once would
+   * undo or release each other's. Once the hook returns the client is closed,
+   * so no request outlasts the hook and writes after the transaction ended,
+   * or into the rest of the write.
    */
   #joined(join: Join): JoinedClient {
-    const pending = new Set<Promise<Response>>();
+    let queue: Promise<unknown> = Promise.resolve();
+    let pending = 0;
     let open = true;
     const hook = join.chain.at(-1);
     const client = new NextBaseClient<C>({
@@ -436,17 +441,15 @@ export class NextBase<C extends Collections = Collections> {
             `e.nextbase was used after the ${hook} hook returned. Await its requests in the hook.`,
           );
         }
-        if (join.chain.length > MAX_HOOK_DEPTH) {
-          throw new Error(
-            `Writes through e.nextbase in on hooks nest more than ${MAX_HOOK_DEPTH} deep: ${join.chain.join(" > ")}. A hook may be writing the records that fire it.`,
-          );
-        }
-        const response = this.#dispatch(request, { http: false, join });
-        pending.add(response);
+        checkHookDepth(join.chain);
+        pending++;
+        const response = queue.then(() =>
+          this.#dispatch(request, { http: false, join }),
+        );
         const done = (): void => {
-          pending.delete(response);
+          pending--;
         };
-        response.then(done, done);
+        queue = response.then(done, done);
         return abortable(response, request.signal);
       },
       authStore: new AuthStore({ storage: null }),
@@ -455,11 +458,46 @@ export class NextBase<C extends Collections = Collections> {
       client: client as NextBaseClient<Collections>,
       close: async () => {
         open = false;
-        if (pending.size === 0) return false;
-        await Promise.allSettled([...pending]);
+        if (pending === 0) return false;
+        await queue;
         return true;
       },
     };
+  }
+
+  /**
+   * The superuser client of an after hook. Its requests run as any other
+   * server code's, but carry the hooks that led to them, so an after hook
+   * that writes the records that fire it stops as an on hook would.
+   */
+  #chained(chain: readonly string[]): NextBaseClient<Collections> {
+    const client = new NextBaseClient<C>({
+      baseUrl: `http://${IN_PROCESS_HOST}${this.#basePath}`,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        request.signal.throwIfAborted();
+        checkHookDepth(chain);
+        return abortable(
+          this.#dispatch(request, {
+            principal: SUPERUSER,
+            http: false,
+            chain,
+          }),
+          request.signal,
+        );
+      },
+      authStore: new AuthStore({ storage: null }),
+    });
+    return client as NextBaseClient<Collections>;
+  }
+
+  /** Does the work of the request's committed writes. */
+  #finish({ committed }: Effects): void {
+    for (const mail of committed.mail) {
+      this.#mailer.send(mail.kind, mail.collection, mail.to);
+    }
+    this.#deleteFiles(committed.obsoleteFiles);
+    this.#runAfterHooks(committed.hooks);
   }
 
   /** Runs after hooks in the background, in the order their writes happened. */
@@ -567,7 +605,8 @@ export class NextBase<C extends Collections = Collections> {
   // Only `client()` passes a `principal`; HTTP requests always use their own
   // credentials. In-process requests write the session cookie through
   // `writeCookie`, when the page can set cookies. Requests from an on hook's
-  // `e.nextbase` pass the hook's `join`.
+  // `e.nextbase` pass the hook's `join`, and those from an after hook's the
+  // `chain` of hooks that led to them.
   async #dispatch(
     request: Request,
     {
@@ -575,11 +614,13 @@ export class NextBase<C extends Collections = Collections> {
       http,
       writeCookie,
       join,
+      chain = [],
     }: {
       principal?: Principal | undefined;
       http: boolean;
       writeCookie?: ((header: string) => boolean) | undefined;
       join?: Join;
+      chain?: readonly string[];
     },
   ): Promise<Response> {
     const { pathname } = new URL(request.url);
@@ -660,20 +701,19 @@ export class NextBase<C extends Collections = Collections> {
             inProcess: !http,
             ...(tx && { tx }),
             effects,
-            hookChain: [],
+            hookChain: chain,
           });
           await tx?.commit();
-          for (const mail of effects.mail) {
-            this.#mailer.send(mail.kind, mail.collection, mail.to);
-          }
-          this.#deleteFiles(effects.obsoleteFiles);
-          this.#runAfterHooks(effects.hooks);
+          effects.commit();
+          this.#finish(effects);
           return response;
         } catch (error) {
           // If the rollback fails, the connection is closed. The error to
           // report is the one that caused the rollback.
           if (tx && !tx.done) await tx.rollback().catch(() => {});
           this.#deleteFiles(effects.newFiles);
+          // Writes the request committed before it failed keep their work.
+          this.#finish(effects);
           const code = (error as { code?: unknown }).code as string;
           // A missing table or column can be retried only if the schema changed meanwhile.
           const raced =
@@ -740,6 +780,15 @@ function api(response: Response): Response {
   }
   response.headers.set("x-content-type-options", "nosniff");
   return response;
+}
+
+/** Refuses a request through `e.nextbase` past MAX_HOOK_DEPTH hooks deep. */
+function checkHookDepth(chain: readonly string[]): void {
+  if (chain.length > MAX_HOOK_DEPTH) {
+    throw new Error(
+      `Writes through e.nextbase in hooks nest more than ${MAX_HOOK_DEPTH} deep: ${chain.join(" > ")}. A hook may be writing the records that fire it.`,
+    );
+  }
 }
 
 async function schemaChanged(db: DB, version: number): Promise<boolean> {
