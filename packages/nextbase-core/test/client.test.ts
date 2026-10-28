@@ -191,7 +191,65 @@ describe("NextBaseClient", () => {
     expect(await aborting.health().catch((e: unknown) => e)).toMatchObject({
       status: 0,
       isAbort: true,
+      isTimeout: false,
     });
+  });
+
+  it("tells aborts from timeouts, whatever the abort reason", async () => {
+    // Rejects with the signal's reason, as fetch does.
+    const nb = new NextBaseClient({
+      fetch: (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason),
+          );
+        }),
+    });
+    const failure = (signal: AbortSignal) =>
+      nb.health({ signal }).catch((e: unknown) => e);
+
+    const timedOut = await failure(AbortSignal.timeout(5));
+    expect(timedOut).toBeInstanceOf(ClientError);
+    expect(timedOut).toMatchObject({
+      status: 0,
+      isAbort: false,
+      isTimeout: true,
+    });
+
+    const controller = new AbortController();
+    const reasoned = failure(controller.signal);
+    controller.abort(new Error("The user left the page."));
+    expect(await reasoned).toMatchObject({
+      status: 0,
+      isAbort: true,
+      isTimeout: false,
+    });
+
+    const plain = new AbortController();
+    const aborted = failure(plain.signal);
+    plain.abort();
+    expect(await aborted).toMatchObject({ isAbort: true, isTimeout: false });
+
+    // Aborted while the body arrives, the request is not an invalid response.
+    const reading = new AbortController();
+    const slow = new NextBaseClient({
+      fetch: async (_input, init) =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode('{"status"'));
+              init?.signal?.addEventListener("abort", () =>
+                stream.error(init.signal?.reason),
+              );
+            },
+          }),
+        ),
+    });
+    const body = slow
+      .health({ signal: reading.signal })
+      .catch((e: unknown) => e);
+    reading.abort();
+    expect(await body).toMatchObject({ status: 0, isAbort: true });
   });
 
   it("reports non-JSON responses with their status", async () => {
@@ -254,6 +312,225 @@ describe("NextBaseClient", () => {
     expect(seen[1]?.url).toBe(
       "https://app.example/api/nextbase/collections/posts/records/..%2F..%2Fcollections",
     );
+  });
+});
+
+/**
+ * A client whose requests wait until the test answers them, to finish
+ * overlapping requests in any order.
+ */
+function heldClient() {
+  const held: {
+    method: string;
+    path: string;
+    body: string;
+    answer(r: Response): void;
+  }[] = [];
+  const nb = new NextBaseClient({
+    baseUrl: "http://example.test",
+    fetch: (input, init) =>
+      new Promise((resolve) => {
+        held.push({
+          method: init?.method ?? "GET",
+          path: new URL(String(input)).pathname,
+          body: typeof init?.body === "string" ? init.body : "",
+          answer: resolve,
+        });
+      }),
+  });
+  // Answers the oldest matching request, or the one whose body contains
+  // `sent`. Waits for it, as a method may do work before sending it.
+  async function answer(
+    method: string,
+    path: string,
+    body?: unknown,
+    sent = "",
+  ): Promise<void> {
+    let i = -1;
+    for (let tries = 0; i === -1 && tries < 100; tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      i = held.findIndex(
+        (r) => r.method === method && r.path === path && r.body.includes(sent),
+      );
+    }
+    const [request] = held.splice(i, 1);
+    if (!request) throw new Error(`No ${method} ${path} is in flight.`);
+    request.answer(
+      body instanceof Response
+        ? body
+        : body === undefined
+          ? new Response(null, { status: 204 })
+          : Response.json(body),
+    );
+  }
+  return { nb, answer };
+}
+
+const user = (id: string): RecordModel => ({
+  id,
+  collectionId: "c1",
+  collectionName: "users",
+});
+
+const currentSession = (record: RecordModel) => ({
+  id: "s1",
+  created: "2026-10-19T00:00:00.000Z",
+  expires: "2026-10-26T00:00:00.000Z",
+  userAgent: "",
+  current: true,
+  record,
+});
+
+describe("overlapping auth requests", () => {
+  it("does not sign back in when getSession answers after a sign-out", async () => {
+    const { nb, answer } = heldClient();
+    nb.authStore.save("token-a", user("a"));
+    const session = nb.getSession();
+    const out = nb.signOut();
+    await answer("DELETE", "/session");
+    await out;
+    await answer("GET", "/session", currentSession(user("a")));
+    expect((await session)?.record.id).toBe("a");
+    expect(nb.authStore.isValid).toBe(false);
+
+    // Also for a cookie session, unknown to the store until getSession.
+    const cookie = heldClient();
+    const first = cookie.nb.getSession();
+    const signOut = cookie.nb.signOut();
+    await cookie.answer("DELETE", "/session");
+    await signOut;
+    await cookie.answer("GET", "/session", currentSession(user("a")));
+    await first;
+    expect(cookie.nb.authStore.isValid).toBe(false);
+  });
+
+  it("does not restore a session that ended while it was refreshed", async () => {
+    const { nb, answer } = heldClient();
+    nb.authStore.save("token-a", user("a"));
+    const refresh = nb.collection("users").refreshSession();
+    const out = nb.signOut();
+    await answer("DELETE", "/session");
+    await out;
+    await answer("POST", "/collections/users/auth-refresh", {
+      token: "token-a",
+      record: user("a"),
+    });
+    await refresh;
+    expect(nb.authStore.isValid).toBe(false);
+  });
+
+  it("keeps a sign-in made while an older session was being read", async () => {
+    const { nb, answer } = heldClient();
+    nb.authStore.save("token-a", user("a"));
+    const session = nb.getSession();
+    const signIn = nb.collection("users").signInWithPassword("b", "secret");
+    await answer("POST", "/collections/users/auth-with-password", {
+      token: "token-b",
+      record: user("b"),
+    });
+    await signIn;
+    await answer("GET", "/session", currentSession(user("a")));
+    await session;
+    expect(nb.authStore.token).toBe("token-b");
+    expect(nb.authStore.record?.id).toBe("b");
+
+    // A signed-out session answered after a sign-in signs nobody out.
+    const late = nb.getSession();
+    const again = nb.collection("users").signInWithPassword("c", "secret");
+    await answer("POST", "/collections/users/auth-with-password", {
+      token: "token-c",
+      record: user("c"),
+    });
+    await again;
+    await answer("GET", "/session", null);
+    await late;
+    expect(nb.authStore.record?.id).toBe("c");
+  });
+
+  it("keeps the latest sign-in or sign-out the user started", async () => {
+    const { nb, answer } = heldClient();
+    const users = nb.collection("users");
+    // Answered in reverse order: the later sign-in wins.
+    const first = users.signInWithPassword("a", "secret");
+    const second = users.signInWithPassword("b", "secret");
+    const signedIn = (id: string) =>
+      answer(
+        "POST",
+        "/collections/users/auth-with-password",
+        { token: `token-${id}`, record: user(id) },
+        `"identity":"${id}"`,
+      );
+    await signedIn("b");
+    await second;
+    await signedIn("a");
+    await first;
+    expect(nb.authStore.record?.id).toBe("b");
+    // In order, each saves its session.
+    const third = users.signInWithPassword("c", "secret");
+    const fourth = users.signInWithPassword("d", "secret");
+    await signedIn("c");
+    await third;
+    expect(nb.authStore.record?.id).toBe("c");
+    await signedIn("d");
+    await fourth;
+    expect(nb.authStore.record?.id).toBe("d");
+
+    // A later sign-in that fails leaves the earlier one's session.
+    const earlier = users.signInWithPassword("h", "secret");
+    const failing = users.signInWithPassword("i", "wrong").catch(() => null);
+    await answer(
+      "POST",
+      "/collections/users/auth-with-password",
+      Response.json(
+        { status: 400, message: "Failed to authenticate.", data: {} },
+        { status: 400 },
+      ),
+      `"identity":"i"`,
+    );
+    await failing;
+    await signedIn("h");
+    await earlier;
+    expect(nb.authStore.record?.id).toBe("h");
+
+    // A sign-in answered after a later sign-out stays signed out.
+    const signIn = users.signInWithPassword("e", "secret");
+    const out = nb.signOut();
+    await answer("DELETE", "/session");
+    await out;
+    await answer("POST", "/collections/users/auth-with-password", {
+      token: "token-e",
+      record: user("e"),
+    });
+    await signIn;
+    expect(nb.authStore.isValid).toBe(false);
+
+    // A sign-out answered after a later sign-in keeps the new session.
+    nb.authStore.save("token-f", user("f"));
+    const signOut = nb.signOut();
+    const next = users.signInWithPassword("g", "secret");
+    await answer("POST", "/collections/users/auth-with-password", {
+      token: "token-g",
+      record: user("g"),
+    });
+    await next;
+    await answer("DELETE", "/session");
+    await signOut;
+    expect(nb.authStore.record?.id).toBe("g");
+  });
+
+  it("signs out after deleting the signed-in record only if it is still signed in", async () => {
+    const { nb, answer } = heldClient();
+    nb.authStore.save("token-a", user("a"));
+    const deleted = nb.collection("users").delete("a");
+    const signIn = nb.collection("users").signInWithPassword("b", "secret");
+    await answer("POST", "/collections/users/auth-with-password", {
+      token: "token-b",
+      record: user("b"),
+    });
+    await signIn;
+    await answer("DELETE", "/collections/users/records/a");
+    await deleted;
+    expect(nb.authStore.record?.id).toBe("b");
   });
 });
 
@@ -599,6 +876,77 @@ describe("the SDK against a real instance", () => {
       .signUp({ title: "x" })
       .catch((e: unknown) => e);
     expect((base as ClientError).status).toBe(404);
+  });
+
+  it("expands and picks the record of a sign-up, sign-in and refresh", async () => {
+    await admin.collections.create({
+      name: "teams",
+      // Rules see the account that signs in, not the anonymous caller.
+      viewRule: "@request.auth.id != ''",
+      fields: [{ name: "title", type: "text" }],
+    });
+    const team = await admin.collection("teams").create({ title: "Blue" });
+    await admin.collections.create({
+      name: "players",
+      type: "auth",
+      createRule: "",
+      viewRule: "id = @request.auth.id",
+      fields: [
+        { name: "name", type: "text" },
+        {
+          name: "team",
+          type: "relation",
+          collectionId: (await admin.collections.getOne("teams")).id,
+          maxSelect: 1,
+        },
+      ],
+    });
+    const players = nextbase.client().collection("players");
+    const options = { expand: "team", fields: "id,name,expand.team.title" };
+    const signedUp = await players.signUp(
+      {
+        email: "kim@example.com",
+        password: "password 123 456",
+        passwordConfirm: "password 123 456",
+        name: "Kim",
+        team: team?.id,
+      },
+      options,
+    );
+    const expected = {
+      id: signedUp?.record.id,
+      name: "Kim",
+      expand: { team: { title: "Blue" } },
+    };
+    expect(signedUp?.record).toEqual(expected);
+
+    const nb = nextbase.client();
+    const signedIn = await nb
+      .collection("players")
+      .signInWithPassword("kim@example.com", "password 123 456", options);
+    expect(signedIn.record).toEqual(expected);
+    expect(
+      (await nb.collection("players").refreshSession(options)).record,
+    ).toEqual(expected);
+
+    // A bad query is refused before a session starts.
+    const sessions = async () =>
+      (
+        await t.pool.query(
+          "SELECT count(*)::int AS n FROM nextbase._sessions WHERE record_id = $1",
+          [expected.id],
+        )
+      ).rows[0].n;
+    const before = await sessions();
+    const tooDeep = await nextbase
+      .client()
+      .collection("players")
+      .signInWithPassword("kim@example.com", "password 123 456", {
+        expand: "a.b.c.d.e.f.g",
+      })
+      .catch((e: unknown) => e);
+    expect((tooDeep as ClientError).status).toBe(400);
+    expect(await sessions()).toBe(before);
   });
 
   it("signs out after deleting the signed-in record", async () => {

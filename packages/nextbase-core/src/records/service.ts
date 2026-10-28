@@ -203,6 +203,20 @@ async function view(
   return record;
 }
 
+/**
+ * A row the caller already has, such as the record of a sign-in, as records
+ * are output: with `expand` and `fields` from `query`, under the same rules.
+ */
+export async function outputRecord(
+  ctx: RecordsContext,
+  collection: Collection,
+  row: Row,
+  query: URLSearchParams,
+): Promise<Output> {
+  const [record] = await output(ctx.db, ctx, collection, [row], query);
+  return record as Output;
+}
+
 /** Returns the record, or undefined when the caller may not view it. */
 export async function newRecord(
   ctx: RecordsContext,

@@ -57,6 +57,9 @@ try {
 ```
 
 A request that never got a response (offline, or aborted) has `status` 0.
+`error.isTimeout` is true when its `signal` timed out, as with
+`AbortSignal.timeout()`, and `error.isAbort` when it was aborted for any other
+reason, such as `controller.abort()`.
 
 ## Request options
 
@@ -71,3 +74,7 @@ Subscribe with `nb.authStore.onChange((token, record) => {})`. A 401 from the
 server clears it, and so does a response saying the request had no session,
 which is how a cookie session that ended elsewhere is noticed. A 403, such as
 for a request that needs another collection's session, leaves it.
+
+When requests overlap, the sign-in or sign-out started last wins, and
+`getSession()` and `refreshSession()` leave the store as it is if it changed
+while they were in flight.

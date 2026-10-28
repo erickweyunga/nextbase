@@ -1,4 +1,5 @@
 import { AuthStore } from "./auth-store.ts";
+import { authSync } from "./auth-sync.ts";
 import { Batch } from "./batch.ts";
 import { ClientError } from "./client-error.ts";
 import { CollectionService } from "./collections.ts";
@@ -172,25 +173,32 @@ export class NextBaseClient<
   /**
    * The current session and record, or null when signed out. Updates the auth
    * store, so call it on startup with cookie sessions, which scripts cannot read.
+   * The store is left as it is if it changed meanwhile, as by a sign-in.
    */
   async getSession<T extends RecordModel = RecordModel>(
     options?: SendOptions,
   ): Promise<CurrentSession<T> | null> {
+    const unchanged = authSync(this.authStore).snapshot();
     const session = await this.send<CurrentSession<T> | null>(
       "/session",
       options,
     );
+    if (!unchanged()) return session;
     if (session) this.authStore.save(this.authStore.token, session.record);
     else if (this.authStore.isValid) this.authStore.clear();
     return session;
   }
 
-  /** Ends the session on the server, removes its cookie, and clears the auth store. */
+  /**
+   * Ends the session on the server, removes its cookie, and clears the auth
+   * store, unless a sign-in started meanwhile has saved a new session.
+   */
   async signOut(options?: SendOptions): Promise<void> {
+    const apply = authSync(this.authStore).intent();
     try {
       await this.send("/session", { ...options, method: "DELETE" });
     } finally {
-      this.authStore.clear();
+      apply(() => this.authStore.clear());
     }
   }
 
@@ -220,6 +228,7 @@ export class NextBaseClient<
   async send<T>(path: string, options: SendOptions = {}): Promise<T> {
     const { query, headers: extraHeaders, body, ...init } = options;
     const { token, record } = this.authStore;
+    const unchanged = authSync(this.authStore).snapshot();
     const headers: Record<string, string> = {};
     if (token) headers.authorization = `Bearer ${token}`;
     let payload: RequestInit["body"];
@@ -243,7 +252,7 @@ export class NextBaseClient<
     } catch (cause) {
       throw new ClientError(
         { status: 0, message: errorMessage(cause), data: {} },
-        { cause },
+        { cause, signal: init.signal },
       );
     }
 
@@ -252,6 +261,13 @@ export class NextBaseClient<
       const text = await response.text();
       parsed = text === "" ? undefined : JSON.parse(text);
     } catch (cause) {
+      // Aborted while the body arrived: no response, as above.
+      if (init.signal?.aborted) {
+        throw new ClientError(
+          { status: 0, message: errorMessage(cause), data: {} },
+          { cause, signal: init.signal },
+        );
+      }
       throw new ClientError(
         {
           status: response.ok ? 0 : response.status,
@@ -264,13 +280,11 @@ export class NextBaseClient<
       );
     }
 
-    // Skip if the store changed while the request was in flight.
-    const unchanged =
-      token === this.authStore.token && record === this.authStore.record;
     // A cookie session that ended. Scripts cannot read its cookie, so the
-    // server says the request had no session.
+    // server says the request had no session. Skipped, as below, if the store
+    // changed while the request was in flight.
     if (
-      unchanged &&
+      unchanged() &&
       token === "" &&
       record !== null &&
       response.headers.get("nextbase-session") === "none"
@@ -281,7 +295,7 @@ export class NextBaseClient<
     if (
       response.status === 401 &&
       (token !== "" || record !== null) &&
-      unchanged
+      unchanged()
     ) {
       this.authStore.clear();
     }
