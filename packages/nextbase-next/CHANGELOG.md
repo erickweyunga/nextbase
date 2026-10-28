@@ -1,5 +1,22 @@
 # @nextbasejs/next
 
+## 0.1.9
+
+### Patch Changes
+
+- d409d18: Record hooks: the new `hooks` option of `new NextBase()` runs your code when records are created, updated or deleted, by collection or for every collection. Before hooks can change or refuse a write before it is checked, on hooks write other records in the write's transaction through `e.nextbase`, and after hooks run in the background once it is committed. They run for every write, including NextBase's own, such as an OAuth2 sign-up, and cascading deletes. `new NextBase<Collections>()`, with the types from `nextbase typegen`, types the hooks and every client it makes, `serverClient()` included. `ApiError` is now exported, for hooks to refuse a write with.
+- 5bc733f: A response that sets a cookie, such as a public file sent while renewing a session, is now `private, no-store`, so a CDN cannot store it and hand one user's session to others. Server actions and route handlers using the server-side client now renew the session cookie, so users of apps without browser API calls are no longer signed out after 7 days; server components, which cannot set cookies, never extend a session. Form data requests are limited to 1000 parts, counted before parsing, and repeated keys no longer take quadratic time. `nextbase superuser` reads both password lines from piped input instead of hanging. A `basePath` that is not an absolute URL path, such as `api/nextbase`, throws a TypeError instead of answering 404 to every request. The server-side client honours `signal`: an aborted request rejects as with `fetch`.
+- Updated dependencies [0d7963b]
+- Updated dependencies [defa6f0]
+- Updated dependencies [446744b]
+- Updated dependencies [d409d18]
+- Updated dependencies [047675a]
+- Updated dependencies [c40ca39]
+- Updated dependencies [5bc733f]
+- Updated dependencies [e55d79b]
+  - @nextbasejs/core@0.1.9
+  - @nextbasejs/client@0.1.9
+
 ## 0.1.8
 
 ### Patch Changes
