@@ -93,3 +93,8 @@ export function phoneKey(collectionId: string, phone: string): string {
 export function mailKey(collectionId: string, email: string): string {
   return `${collectionId}:mail:${email.toLowerCase()}`;
 }
+
+/** Caps the direct uploads an account starts, so no one can fill the bucket. */
+export function uploaderKey(collectionId: string, recordId: string): string {
+  return `${collectionId}:uploads:${recordId}`;
+}

@@ -214,14 +214,69 @@ export async function planNewRecord(
     input.id === undefined || input.id === ""
       ? { ...input, id: randomString(15, LOWER_ALPHANUMERIC) }
       : input;
+  const newFiles = await readFiles(ctx, collection, write);
+  await checkCreateRuleFirst(ctx, collection, write, newFiles);
   await checkNewPassword(ctx, collection, write);
-  return {
-    ctx,
+  const passwordHash = await hashNewPassword(collection, write);
+  await storeFiles(ctx, collection, write.id, newFiles);
+  return { ctx, collection, input: write, query, passwordHash, newFiles };
+}
+
+/**
+ * Checks the create rule with a plain read before the slow work of a create,
+ * such as storing its files or hashing its password, so a caller the rule
+ * refuses causes none of it. Only a create that passes its own checks is
+ * checked here; the rest fail on those first. The transaction checks the rule
+ * again either way.
+ */
+async function checkCreateRuleFirst(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+  newFiles: NewFiles | undefined,
+): Promise<void> {
+  const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
+  if (!slow || ctx.principal.superuser || collection.createRule === "") return;
+  const draft = draftWrite(input, writeOptions(ctx, collection, newFiles));
+  if (!draft.issues.empty) return;
+  const rule = createRule(ctx, collection, draft.prepared.body);
+  if (!rule || !seesEveryWrite(ctx, collection, rule)) return;
+  const refused = await refusedNewRows(ctx.pool, collection, [
+    { row: draft.prepared.row, rule },
+  ]);
+  if (refused.length > 0) throw refusedCreate();
+}
+
+/** The create rule for a create whose checked body is `body`. */
+function createRule(
+  ctx: RecordsContext,
+  collection: Collection,
+  body: Record<string, unknown>,
+): Expression | undefined {
+  return compile(
+    { ...ctx, request: { ...ctx.request, body } },
     collection,
-    input: write,
-    query,
-    passwordHash: await hashNewPassword(collection, write),
-    newFiles: await prepareNewFiles(ctx, collection, write, write.id),
+    collection.createRule ?? "",
+    "rule",
+  );
+}
+
+function refusedCreate(): ApiError {
+  return new ApiError(400, "Failed to create the record.");
+}
+
+/** The options to draft a create in `collection` with. */
+function writeOptions(
+  ctx: RecordsContext,
+  collection: Collection,
+  newFiles: NewFiles | undefined,
+) {
+  return {
+    collection,
+    schema: ctx.schema,
+    privileged: ctx.principal.superuser,
+    ...(ctx.vouched && { vouched: ctx.vouched }),
+    newFiles,
   };
 }
 
@@ -334,49 +389,47 @@ export async function applyCreates(
   const { ctx, collection, query } = first;
   const drafts = plans.map((plan) =>
     draftWrite(plan.input, {
-      collection,
-      schema: ctx.schema,
-      privileged: ctx.principal.superuser,
-      ...(ctx.vouched && { vouched: ctx.vouched }),
-      newFiles: plan.newFiles,
+      ...writeOptions(ctx, collection, plan.newFiles),
       passwordHash: plan.passwordHash,
     }),
   );
-  await checkRelations(tx, ctx.schema, collection, drafts);
-
-  const failures = new Map<number, unknown>();
-  const prepared: PreparedWrite[] = [];
-  for (const [i, draft] of drafts.entries()) {
-    try {
-      prepared[i] = await finishWrite(draft);
-    } catch (error) {
-      failures.set(i, error);
-    }
-  }
-  // Checked before inserting, so a denied caller learns nothing from a
-  // constraint error.
+  // The create rule is checked before the relations, and before anything is
+  // inserted, so a caller it refuses learns nothing about other records,
+  // either from a missing related record or from a constraint error.
+  const refused = new Set<number>();
   if (!ctx.principal.superuser && collection.createRule !== "") {
-    const source = collection.createRule ?? "";
     // Compiled once when no row's own body can change it.
-    const shared = source.includes("@request.body")
-      ? undefined
-      : compile(ctx, collection, source, "rule");
-    const checked = prepared.flatMap((write, i) => {
-      const rule = source.includes("@request.body")
-        ? compile(
-            { ...ctx, request: { ...ctx.request, body: write.body } },
-            collection,
-            source,
-            "rule",
-          )
-        : shared;
-      return rule ? [{ i, row: write.row, rule }] : [];
+    const reads = (collection.createRule ?? "").includes("@request.body");
+    const shared = reads ? undefined : createRule(ctx, collection, {});
+    const checked = drafts.flatMap(({ prepared }, i) => {
+      const rule = reads ? createRule(ctx, collection, prepared.body) : shared;
+      return rule ? [{ i, row: prepared.row, rule }] : [];
     });
     if (checked.length > 0) {
       for (const k of await refusedNewRows(tx, collection, checked)) {
-        const { i } = checked[k] as { i: number };
-        failures.set(i, new ApiError(400, "Failed to create the record."));
+        refused.add((checked[k] as { i: number }).i);
       }
+    }
+  }
+  await checkRelations(
+    tx,
+    ctx.schema,
+    collection,
+    drafts.filter((_, i) => !refused.has(i)),
+  );
+  // Each create is checked as it would be alone: its own problems first,
+  // then the create rule.
+  const failures = new Map<number, unknown>();
+  const prepared: PreparedWrite[] = [];
+  for (const [i, draft] of drafts.entries()) {
+    if (!draft.issues.empty || !refused.has(i)) {
+      try {
+        prepared[i] = await finishWrite(draft);
+      } catch (error) {
+        failures.set(i, error);
+      }
+    } else {
+      failures.set(i, refusedCreate());
     }
   }
   // The creates before the first failure are still inserted, so one of them
@@ -470,16 +523,25 @@ export async function planUpdateRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
-  await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
-  const slow = input.password !== undefined || touchesFiles(collection, input);
+  const newFiles = await readFiles(ctx, collection, input);
+  const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
   const ruleChecked =
-    slow && (await checkUpdateRuleFirst(ctx, collection, id, notFound));
+    slow &&
+    (await checkUpdateRuleFirst(
+      ctx,
+      collection,
+      id,
+      input,
+      newFiles,
+      notFound,
+    ));
   const old = ruleChecked
     ? await checkOldPasswordFirst(ctx, collection, id, input)
     : undefined;
+  await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
-  const newFiles = await prepareNewFiles(ctx, collection, input, id);
+  await storeFiles(ctx, collection, id, newFiles);
   return (tx) =>
     writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
@@ -612,20 +674,30 @@ async function keepFiles(
 }
 
 /**
- * Reads a write's new files and stores them under the record, before its
- * transaction starts, so neither holds a lock or a connection. Undefined
- * when the write cannot set files. Files the write turns out not to keep,
- * because it fails, are deleted again.
+ * Reads a write's new files before its transaction starts. Undefined when
+ * the write cannot set files.
  */
-async function prepareNewFiles(
+async function readFiles(
   ctx: RecordsContext,
   collection: Collection,
   input: Record<string, unknown>,
-  recordId: unknown,
 ): Promise<NewFiles | undefined> {
   if (!ctx.storage) return undefined;
-  const newFiles = await readNewFiles(ctx.pool, ctx.storage, collection, input);
-  if (newFiles.files.size === 0) return newFiles;
+  return readNewFiles(ctx.pool, ctx.storage, collection, input);
+}
+
+/**
+ * Stores a write's new files under the record, before its transaction
+ * starts, so storing holds neither a lock nor a connection. Files the write
+ * turns out not to keep, because it fails, are deleted again.
+ */
+async function storeFiles(
+  ctx: RecordsContext,
+  collection: Collection,
+  recordId: unknown,
+  newFiles: NewFiles | undefined,
+): Promise<void> {
+  if (!ctx.storage || !newFiles || newFiles.files.size === 0) return;
   if (!ctx.effects) {
     throw new Error("Writes that change files need storage and effects.");
   }
@@ -639,20 +711,6 @@ async function prepareNewFiles(
       newFiles,
     );
   }
-  return newFiles;
-}
-
-function touchesFiles(
-  collection: Collection,
-  input: Record<string, unknown>,
-): boolean {
-  return collection.fields.some(
-    (f) =>
-      f.type === "file" &&
-      [f.name, `+${f.name}`, `${f.name}+`, `${f.name}-`].some(
-        (key) => input[key] !== undefined,
-      ),
-  );
 }
 
 // Runs before the write's transaction, so no row stays locked during the lookup.
@@ -705,23 +763,52 @@ async function oldPasswordMatches(
 }
 
 /**
- * Checks the update rule with a plain read before the transaction starts, so
+ * Checks the update rule with plain reads before the transaction starts, so
  * a caller it refuses causes no slow work, such as checking a password or
- * storing files. Throws `notFound` when it refuses. Returns false when the
- * rule reads `@request.body`, which needs the checked body only the
- * transaction has. The transaction checks the rule again either way.
+ * storing files. Throws `notFound` when it refuses. A rule that reads
+ * `@request.body` is checked with the body the transaction would check,
+ * drafted from the stored record. Returns false when the check is left to
+ * the transaction, which checks the rule again either way.
  */
 async function checkUpdateRuleFirst(
   ctx: RecordsContext,
   collection: Collection,
   id: string,
+  input: Record<string, unknown>,
+  newFiles: NewFiles | undefined,
   notFound: ApiError,
 ): Promise<boolean> {
   if (ctx.principal.superuser) return true;
   const rule = collection.updateRule ?? "";
   if (rule === "") return true;
-  if (rule.includes("@request.body")) return false;
-  const condition = compile(ctx, collection, rule, "rule");
+  let body: Record<string, unknown> = {};
+  if (rule.includes("@request.body")) {
+    // The body depends on the stored record and on related records, either
+    // of which earlier writes of the batch may have changed.
+    if ((ctx.written?.size ?? 0) > 0) return false;
+    const [existing] = await ctx.pool
+      .select("*")
+      .from(table(collection.name))
+      .where(hash({ id }))
+      .all();
+    if (!existing) throw notFound;
+    const draft = draftWrite(input, {
+      collection,
+      schema: ctx.schema,
+      existing,
+      privileged: await canManage(ctx.pool, ctx, collection, id),
+      newFiles,
+    });
+    await checkRelations(ctx.pool, ctx.schema, collection, [draft]);
+    // As in the transaction, an invalid write is checked with an empty body.
+    if (draft.issues.empty) body = draft.prepared.body;
+  }
+  const condition = compile(
+    { ...ctx, request: { ...ctx.request, body } },
+    collection,
+    rule,
+    "rule",
+  );
   if (!seesEveryWrite(ctx, collection, condition)) return false;
   if (!(await matchesStoredRow(ctx.pool, collection, id, condition))) {
     throw notFound;
@@ -930,7 +1017,11 @@ async function refusedNewRows(
   const params: Params = {};
   const tuples = rows.map(({ row }, i) => {
     const values = collection.fields.map((field, j) => {
-      params[`nb_v${i}_${j}`] = columnValue(field, row[field.name]);
+      // Rules cannot read secrets, so they are never sent.
+      const secret = field.type === "password" || field.name === "tokenKey";
+      params[`nb_v${i}_${j}`] = secret
+        ? null
+        : columnValue(field, row[field.name]);
       return `{:nb_v${i}_${j}}::${columnCast(field)}`;
     });
     return `(${i}, ${values.join(", ")})`;

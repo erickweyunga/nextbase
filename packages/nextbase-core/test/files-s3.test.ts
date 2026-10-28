@@ -211,6 +211,38 @@ describe("file uploads to an S3-compatible bucket", () => {
     expect(response.status).toBe(403);
   });
 
+  it("lets only signed-in callers start uploads where the rules need it, and limits each account", async () => {
+    await admin.collections.create({ name: "users", type: "auth" });
+    await admin.collections.create({
+      name: "notes",
+      type: "base",
+      createRule: '@request.auth.id != ""',
+      fields: [{ name: "doc", type: "file" }],
+    });
+    const start = (token?: string) =>
+      call(nextbase, "POST", "/collections/notes/upload-url", {
+        ...(token && { token }),
+        body: { field: "doc", filename: "a.txt", size: 1, type: "text/plain" },
+      });
+    expect((await start()).status).toBe(401);
+
+    const password = "password 123 456";
+    await admin.collection("users").create({
+      email: "uma@example.com",
+      password,
+      passwordConfirm: password,
+    });
+    const signedIn = await call(
+      nextbase,
+      "POST",
+      "/collections/users/auth-with-password",
+      { body: { identity: "uma@example.com", password } },
+    );
+    const token = signedIn.body.token as string;
+    for (let i = 0; i < 100; i++) expect((await start(token)).status).toBe(200);
+    expect((await start(token)).status).toBe(429);
+  });
+
   it("deletes a record's and a collection's files from the bucket", async () => {
     const videos = nextbase.client().collection("videos");
     const one = await videos.create({
