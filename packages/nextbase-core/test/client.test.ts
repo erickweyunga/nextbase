@@ -371,6 +371,60 @@ describe("the SDK against a real instance", () => {
     expect(changes.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps the signed-in record current after an update that returns some fields", async () => {
+    const nb = await signUp("fields@example.com");
+    const me = nb.authStore.record as RecordModel;
+    await nb
+      .collection("users")
+      .update(me.id, { name: "Cy" }, { fields: "id" });
+    expect(nb.authStore.record).toMatchObject({ id: me.id, name: "Cy" });
+  });
+
+  it("stays signed in when signed in to another collection than a request needs", async () => {
+    const nb = await signUp("elsewhere@example.com");
+    const error = await nb
+      .collection("_superusers")
+      .refreshSession()
+      .catch((e: unknown) => e);
+    expect((error as ClientError).status).toBe(403);
+    expect(nb.authStore.isValid).toBe(true);
+  });
+
+  it("signs out when a cookie session ends, which scripts cannot see", async () => {
+    await signUp("cookie@example.com");
+    // A browser: requests go over HTTP, carrying the session cookie.
+    let cookie = "";
+    const browser = new NextBaseClient({
+      baseUrl: "http://localhost:3000/api/nextbase",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        request.headers.set("origin", "http://localhost:3000");
+        if (cookie) request.headers.set("cookie", cookie);
+        const response = await nextbase.handle(request);
+        const set = /^nextbase_session=([^;]*)/.exec(
+          response.headers.get("set-cookie") ?? "",
+        );
+        if (set) cookie = set[1] ? `nextbase_session=${set[1]}` : "";
+        return response;
+      },
+      authStore: new AuthStore({ storage: null }),
+    });
+    const { record } = await browser
+      .collection("users")
+      .signInWithPassword("cookie@example.com", "password 123 456", {
+        cookie: true,
+      });
+    expect(browser.authStore.token).toBe("");
+    await browser.collection("notes").getList();
+    expect(browser.authStore.isValid).toBe(true);
+    // The session ends elsewhere, as when signed out on another device.
+    await t.pool.query("DELETE FROM nextbase._sessions WHERE record_id = $1", [
+      record.id,
+    ]);
+    await browser.collection("notes").getList();
+    expect(browser.authStore.isValid).toBe(false);
+  });
+
   it("lists, pages and finds records with safe filters", async () => {
     const nb = await signUp("bo@example.com");
     const owner = nb.authStore.record?.id as string;

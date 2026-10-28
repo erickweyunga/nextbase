@@ -35,7 +35,11 @@ import {
   requestPhoneCode,
   requestPhoneVerification,
 } from "../auth/phone.ts";
-import { type Principal, requireSuperuser } from "../auth/principal.ts";
+import {
+  type Principal,
+  recordIn,
+  requireSuperuser,
+} from "../auth/principal.ts";
 import {
   bearerToken,
   checkSameOrigin,
@@ -762,8 +766,9 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
     async handler({ request, params, schema, principal, db }) {
       const collection = authCollection(schema, params[0] as string);
-      const { record, session } = principal;
-      if (!record || !session || principal.collection?.id !== collection.id) {
+      const record = recordIn(principal, collection, "refresh");
+      const { session } = principal;
+      if (!session) {
         throw new ApiError(401, "Sign in to this collection to refresh.");
       }
       await checkAuthRule(db, schema, collection, record.id as string);

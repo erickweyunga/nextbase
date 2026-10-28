@@ -396,7 +396,8 @@ describe("sessions", () => {
           token: bearer,
         })
       ).status,
-    ).toBe(401);
+      // Signed in, to another collection: refused, but the session stands.
+    ).toBe(403);
   });
 
   it("revokes sessions on email changes, secret rotation and record reuse", async () => {
@@ -763,6 +764,34 @@ describe("sessions", () => {
       expect(cookies.values.get("nextbase_session")?.maxAge).toBe(0);
       expect(await nextbase.client({ cookies }).getSession()).toBeNull();
       expect(await status(stored?.value as string)).toBe(401);
+    });
+
+    it("uses the secure cookie for pages served over HTTPS, as with next dev --experimental-https", async () => {
+      await signUp("kay@example.com");
+      const cookies = new Cookies();
+      // A server action on an HTTPS page signs in.
+      await nextbase
+        .client({ cookies, secure: true })
+        .collection("users")
+        .signInWithPassword("kay@example.com", "password 123 456", {
+          cookie: true,
+        });
+      expect(cookies.values.has("nextbase_session")).toBe(false);
+      const stored = cookies.values.get("__Host-nextbase_session");
+      expect(stored?.httpOnly).toBe(true);
+      // The browser sends it with its requests over HTTPS.
+      const session = await nextbase.handle(
+        new Request("https://localhost:3000/api/nextbase/session", {
+          headers: { cookie: `__Host-nextbase_session=${stored?.value}` },
+        }),
+      );
+      const body = (await session.json()) as { record: unknown };
+      expect(body.record).toMatchObject({ email: "kay@example.com" });
+      // A server component finds it, also without being told the scheme.
+      const readOnly = { get: (name: string) => cookies.get(name) };
+      expect(
+        (await nextbase.client({ cookies: readOnly }).getSession())?.record,
+      ).toMatchObject({ email: "kay@example.com" });
     });
 
     it("signs up into the session cookie from a server action", async () => {

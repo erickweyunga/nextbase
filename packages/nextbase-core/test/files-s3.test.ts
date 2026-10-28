@@ -110,6 +110,55 @@ describe("file uploads to an S3-compatible bucket", () => {
     expect(rows[0].n).toBe(0);
   });
 
+  it("uploads files straight to the bucket when together they are too large for one request", async () => {
+    await admin.collections.create({
+      name: "albums",
+      type: "base",
+      createRule: "",
+      viewRule: "",
+      fields: [
+        {
+          name: "photos",
+          type: "file",
+          maxSelect: 3,
+          maxSize: 20 * 1024 * 1024,
+          mimeTypes: ["image/png"],
+        },
+      ],
+    });
+    const photo = (name: string) =>
+      new File([PNG, new Uint8Array(1_900_000)], name, {
+        type: "image/png",
+      });
+    const direct = () =>
+      s3.requests.filter((r) => r.startsWith(`PUT /${s3.bucket}/_uploads/`))
+        .length;
+    const before = direct();
+    // 5.7 MB in all: one goes to the bucket, and the other two fit in 4 MB.
+    const album = await nextbase
+      .client()
+      .collection("albums")
+      .create({ photos: [photo("a.png"), photo("b.png"), photo("c.png")] });
+    expect(album?.photos).toHaveLength(3);
+    expect(direct() - before).toBe(1);
+  });
+
+  it("uploads a batch's files to the bucket, since batches are sent as JSON", async () => {
+    const [result] = await nextbase
+      .client()
+      .createBatch()
+      .collection("videos")
+      .create({ clip: new File([PNG], "a.png", { type: "image/png" }) })
+      .send();
+    const clip = result?.body?.clip as string;
+    expect(clip).toMatch(/\.png$/);
+    expect(
+      s3.objects.get(
+        `${result?.body?.collectionId}/${result?.body?.id}/${clip}`,
+      )?.body,
+    ).toEqual(PNG);
+  });
+
   it("refuses an upload that is unfinished, of another size, type or field, or expired", async () => {
     const start = async (body: Record<string, unknown>) =>
       call(nextbase, "POST", "/collections/videos/upload-url", { body });

@@ -9,7 +9,7 @@ import { hasNul } from "../storable.ts";
 import { emailIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import { verifyPassword } from "./password.ts";
-import type { Principal } from "./principal.ts";
+import { type Principal, recordIn } from "./principal.ts";
 import {
   accountKey,
   clearAttempts,
@@ -126,10 +126,7 @@ export async function requestEmailChange(
   principal: Principal,
   newEmail: unknown,
 ): Promise<void> {
-  const record = principal.record;
-  if (!record || principal.collection?.id !== collection.id) {
-    throw new ApiError(401, "Sign in to this collection to change its email.");
-  }
+  const record = recordIn(principal, collection, "change its email");
   const address = checkEmail(newEmail, "newEmail");
   if (address.toLowerCase() === String(record.email).toLowerCase()) {
     throw new ApiError(400, "Failed to request the email change.", {

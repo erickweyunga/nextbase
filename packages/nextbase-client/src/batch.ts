@@ -1,3 +1,4 @@
+import { hasFiles, withUploadedFiles } from "./files.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
 
 /** One write's outcome: 200 with the record, or 204 when the caller may not view it. */
@@ -10,6 +11,8 @@ interface BatchRequest {
   method: "POST" | "PATCH" | "DELETE";
   url: string;
   body?: Record<string, unknown>;
+  /** The collection, for uploading the body's files. */
+  collection: string;
 }
 
 export interface BatchWriteOptions {
@@ -34,12 +37,24 @@ export class Batch {
   /**
    * Sends the writes and resolves with one result each, in order. On failure nothing
    * is saved and the 400 ClientError's `data.requests[index]` holds the field errors.
+   * Files are uploaded to the bucket first, so batches with files need one.
    */
-  send(options?: SendOptions): Promise<BatchResult[]> {
+  async send(options: SendOptions = {}): Promise<BatchResult[]> {
+    const requests = [];
+    for (const { collection, body, ...request } of this.#requests) {
+      requests.push({
+        ...request,
+        ...(body && {
+          body: hasFiles(body)
+            ? await withUploadedFiles(this.#client, collection, body, options)
+            : body,
+        }),
+      });
+    }
     return this.#client.send("/batch", {
       ...options,
       method: "POST",
-      body: { requests: this.#requests },
+      body: { requests },
     });
   }
 }
@@ -48,16 +63,23 @@ export class Batch {
 export class BatchCollection {
   readonly #batch: Batch;
   readonly #requests: BatchRequest[];
+  readonly #collection: string;
   readonly #path: string;
 
   constructor(batch: Batch, requests: BatchRequest[], idOrName: string) {
     this.#batch = batch;
     this.#requests = requests;
+    this.#collection = idOrName;
     this.#path = `/collections/${encodeURIComponent(idOrName)}/records`;
   }
 
   create(body: Record<string, unknown>, options?: BatchWriteOptions): Batch {
-    this.#requests.push({ method: "POST", url: this.#url("", options), body });
+    this.#requests.push({
+      method: "POST",
+      url: this.#url("", options),
+      body,
+      collection: this.#collection,
+    });
     return this.#batch;
   }
 
@@ -70,6 +92,7 @@ export class BatchCollection {
       method: "PATCH",
       url: this.#url(`/${encodeURIComponent(id)}`, options),
       body,
+      collection: this.#collection,
     });
     return this.#batch;
   }
@@ -78,6 +101,7 @@ export class BatchCollection {
     this.#requests.push({
       method: "DELETE",
       url: this.#url(`/${encodeURIComponent(id)}`),
+      collection: this.#collection,
     });
     return this.#batch;
   }

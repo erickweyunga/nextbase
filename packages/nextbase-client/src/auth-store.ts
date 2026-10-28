@@ -22,17 +22,25 @@ export type AuthChangeListener = (
   record: RecordModel | null,
 ) => void;
 
+type StorageListener = (event: {
+  key: string | null;
+  newValue: string | null;
+}) => void;
+
 // Typed by hand: the package compiles without the DOM library.
 interface BrowserGlobals {
   document?: unknown;
   localStorage?: AuthStorage;
-  addEventListener?(
-    type: "storage",
-    listener: (event: { key: string | null; newValue: string | null }) => void,
-  ): void;
+  addEventListener?(type: "storage", listener: StorageListener): void;
+  removeEventListener?(type: "storage", listener: StorageListener): void;
 }
 
 const browser = globalThis as BrowserGlobals;
+
+// Removes a store's storage listener once the store is garbage collected.
+const listening = new FinalizationRegistry<StorageListener>((listener) => {
+  browser.removeEventListener?.("storage", listener);
+});
 
 const DEFAULT_KEY = "nextbase_auth";
 const SUPERUSERS = "_superusers";
@@ -51,11 +59,16 @@ export class AuthStore {
     this.#key = options.key ?? DEFAULT_KEY;
     this.#load(this.#read());
     if (this.#storage && this.#storage === browserStorage()) {
-      browser.addEventListener?.("storage", (event) => {
-        if (event.key !== this.#key) return;
-        this.#load(event.newValue);
-        this.#notify();
-      });
+      // Through a WeakRef, so the window's listener does not keep the store.
+      const store = new WeakRef(this);
+      const key = this.#key;
+      const listener: StorageListener = (event) => {
+        if (event.key !== key) return;
+        const current = store.deref();
+        if (current) current.#changedElsewhere(event.newValue);
+      };
+      browser.addEventListener?.("storage", listener);
+      listening.register(this, listener);
     }
   }
 
@@ -108,6 +121,12 @@ export class AuthStore {
     return () => {
       this.#listeners.delete(listener);
     };
+  }
+
+  // Another tab signed in or out.
+  #changedElsewhere(raw: string | null): void {
+    this.#load(raw);
+    this.#notify();
   }
 
   #read(): string | null {

@@ -264,13 +264,24 @@ export class NextBaseClient<
       );
     }
 
-    if (response.ok) return parsed as T;
     // Skip if the store changed while the request was in flight.
+    const unchanged =
+      token === this.authStore.token && record === this.authStore.record;
+    // A cookie session that ended. Scripts cannot read its cookie, so the
+    // server says the request had no session.
+    if (
+      unchanged &&
+      token === "" &&
+      record !== null &&
+      response.headers.get("nextbase-session") === "none"
+    ) {
+      this.authStore.clear();
+    }
+    if (response.ok) return parsed as T;
     if (
       response.status === 401 &&
       (token !== "" || record !== null) &&
-      token === this.authStore.token &&
-      record === this.authStore.record
+      unchanged
     ) {
       this.authStore.clear();
     }

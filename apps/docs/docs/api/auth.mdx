@@ -472,6 +472,9 @@ No body.
 { "status": 401, "message": "Sign in to this collection to verify a phone.", "data": {} }
 ```
 
+Signed out. Signed in to another collection, it is a `403` with the same
+message, and the session stays valid.
+
 </TabItem>
 </Tabs>
 
@@ -559,6 +562,9 @@ POST /collections/{collection}/auth-refresh
 ```json
 { "status": 401, "message": "Sign in to this collection to refresh.", "data": {} }
 ```
+
+Signed out. Signed in to another collection, it is a `403` with the same
+message, and the session stays valid.
 
 </TabItem>
 </Tabs>
