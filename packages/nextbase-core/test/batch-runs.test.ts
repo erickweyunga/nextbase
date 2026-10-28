@@ -111,6 +111,38 @@ describe("batches of creates", () => {
         { name: "customers_name", unique: true, fields: ["custname00"] },
       ],
     });
+    const users = await admin.collections.getOne("users");
+    await admin.collections.create({
+      name: "memberships",
+      fields: [
+        { name: "user", type: "relation", collectionId: users.id },
+        { name: "workspace", type: "relation", collectionId: workspaces.id },
+      ],
+    });
+    // Membership-style: reads another collection, so creates run together.
+    await admin.collections.create({
+      name: "leads",
+      viewRule: "",
+      createRule:
+        "@collection.memberships.user = @request.auth.id && @collection.memberships.workspace = workspace",
+      fields: [
+        { name: "workspace", type: "relation", collectionId: workspaces.id },
+      ],
+    });
+    // Reads the collection itself, so each create runs alone.
+    await admin.collections.create({
+      name: "tickets",
+      viewRule: "",
+      createRule: '@request.auth.id != "" || @collection.tickets.id = "x"',
+    });
+    const folders = await admin.collections.create({
+      name: "folders",
+      viewRule: "",
+    });
+    await admin.collections.update("folders", {
+      createRule: '@request.auth.id != "" || folders_via_parent.id ?= "x"',
+      fields: [{ name: "parent", type: "relation", collectionId: folders.id }],
+    });
     const categories = await admin.collections.create({
       name: "categories",
       createRule: "",
@@ -123,11 +155,14 @@ describe("batches of creates", () => {
     });
     ids.workspace = (await admin.collection("workspaces").create({}))?.id ?? "";
     ids.segment = (await admin.collection("segments").create({}))?.id ?? "";
-    await admin.collection("users").create({
+    const robin = await admin.collection("users").create({
       email: "robin@example.com",
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });
+    await admin
+      .collection("memberships")
+      .create({ user: robin?.id, workspace: ids.workspace });
     const signIn = async (
       collection: string,
       email: string,
@@ -174,6 +209,46 @@ describe("batches of creates", () => {
     await batch(tokens.admin, asAdmin);
     // Superusers skip the create rule.
     expect(queries()).toBe(9);
+  });
+
+  it("creates together when the create rule reads other collections", async () => {
+    const leads = (n: number) =>
+      Array.from({ length: n }, () => ({
+        url: "/collections/leads/records",
+        body: { workspace: ids.workspace },
+      }));
+    queries();
+    const ten = await batch(tokens.user, leads(10));
+    expect(ten.status).toBe(200);
+    const forTen = queries();
+    await batch(tokens.user, leads(30));
+    expect(queries()).toBe(forTen);
+    // Not a member of this workspace: the rule refuses the lead.
+    const other = await nextbase
+      .client({ superuser: true })
+      .collection("workspaces")
+      .create({});
+    const refused = await batch(tokens.user, [
+      ...leads(2),
+      { url: "/collections/leads/records", body: { workspace: other?.id } },
+    ]);
+    expect(refused.body.message).toMatch(/^Request 3 of the batch failed/);
+  });
+
+  it("creates one at a time when a rule reads the collection itself", async () => {
+    for (const collection of ["tickets", "folders"]) {
+      const creates = (n: number) =>
+        Array.from({ length: n }, () => ({
+          url: `/collections/${collection}/records`,
+          body: {},
+        }));
+      queries();
+      expect((await batch(tokens.user, creates(5))).status).toBe(200);
+      const forFive = queries();
+      await batch(tokens.user, creates(6));
+      // The rule, the insert and the read back, for each create.
+      expect(queries() - forFive).toBe(3);
+    }
   });
 
   it("reports the first failing create, as when each is done in turn", async () => {
@@ -296,17 +371,5 @@ describe("splitting creates into runs", () => {
         plan(a, { id: "3", tags: ["x", "2"] }),
       ]),
     ).toEqual([1, 1, 1]);
-  });
-
-  it("runs creates alone when a rule reads other records", () => {
-    for (const rule of [
-      { createRule: "@collection.limits.max > 0" },
-      { viewRule: "comments_via_post.id != ''" },
-    ]) {
-      const a = { id: "a", ...rule };
-      expect(sizes([plan(a, { id: "1" }), plan(a, { id: "2" })])).toEqual([
-        1, 1,
-      ]);
-    }
   });
 });
