@@ -68,7 +68,7 @@ export interface PreparedWrite {
 }
 
 /** A write checked as far as it can be without the database. */
-interface DraftWrite {
+export interface DraftWrite {
   prepared: PreparedWrite;
   /** The problems found so far, thrown by `finishWrite`. */
   issues: Issues;
@@ -93,7 +93,7 @@ export async function prepareWrite(
  * Everything `prepareWrite` checks except relations, which need the
  * database. Problems are collected in the draft, not thrown.
  */
-function draftWrite(
+export function draftWrite(
   input: Record<string, unknown>,
   options: WriteOptions,
 ): DraftWrite {
@@ -282,7 +282,7 @@ function draftWrite(
  * Throws a 400 listing the draft's problems. Otherwise hashes its password,
  * unless that was done before, and returns the write.
  */
-async function finishWrite({
+export async function finishWrite({
   prepared,
   issues,
   options,
@@ -718,7 +718,7 @@ function passwordProblem(
  * locks them until commit, so a concurrent delete cannot leave a dangling
  * reference. Takes one query per target collection, however many drafts.
  */
-async function checkRelations(
+export async function checkRelations(
   q: Builder,
   schema: Schema,
   collection: Collection,
