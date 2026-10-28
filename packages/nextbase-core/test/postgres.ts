@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DB } from "@nextbasejs/dbx";
 import pg from "pg";
+import { endPool } from "../src/db/pool.ts";
 
 const url =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
@@ -114,4 +115,4 @@ export async function createTestDatabase(
   };
 }
 
-export { endPool } from "../src/db/pool.ts";
+export { endPool };
