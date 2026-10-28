@@ -77,6 +77,7 @@ import {
   CreateFailed,
   createRuns,
   listRecords,
+  outputRecord,
   type PlannedCreate,
   planDeleteRecord,
   planNewRecord,
@@ -431,15 +432,8 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-with-password$`),
-    async handler({
-      request,
-      params,
-      db,
-      schema,
-      principal,
-      inProcess,
-      origins,
-    }) {
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { identity, password, cookie } = await readJsonObject(request);
       if (typeof identity !== "string" || typeof password !== "string") {
@@ -461,12 +455,7 @@ export const ROUTES: readonly Route[] = [
         identity,
         password,
       );
-      return startSession(
-        { request, db, principal },
-        collection,
-        record,
-        cookie === true,
-      );
+      return startSession(context, collection, record, cookie === true);
     },
   },
   {
@@ -516,8 +505,7 @@ export const ROUTES: readonly Route[] = [
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
     async handler(context) {
-      const { request, params, db, schema, principal, inProcess, origins } =
-        context;
+      const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { phone, code, cookie } = await readJsonObject(request);
       // Another site must not sign the browser in to an account of its choosing.
@@ -529,12 +517,7 @@ export const ROUTES: readonly Route[] = [
         code,
       );
       await checkAuthRule(db, schema, collection, record.id as string);
-      return startSession(
-        { request, db, principal },
-        collection,
-        record,
-        cookie === true,
-      );
+      return startSession(context, collection, record, cookie === true);
     },
   },
   {
@@ -762,7 +745,8 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
-    async handler({ request, params, schema, principal, db }) {
+    async handler(context) {
+      const { request, params, schema, principal, db } = context;
       const collection = authCollection(schema, params[0] as string);
       const record = recordIn(principal, collection, "refresh");
       const { session } = principal;
@@ -770,11 +754,12 @@ export const ROUTES: readonly Route[] = [
         throw new ApiError(401, "Sign in to this collection to refresh.");
       }
       await checkAuthRule(db, schema, collection, record.id as string);
+      const body = await authRecord(context, collection, record);
       const expires = await extendSession(db, collection, session.id);
       if (!principal.viaCookie) {
-        return authResponse(collection, record, bearerToken(request));
+        return authResponse(body, bearerToken(request));
       }
-      const response = authResponse(collection, record, undefined);
+      const response = authResponse(body, undefined);
       const token = sessionCookie(request);
       if (token) {
         response.headers.append(
@@ -1145,11 +1130,14 @@ function phoneContext({
  * A cookie sign-in ends the replaced cookie's session, so a planted session never signs in.
  */
 async function startSession(
-  { request, db, principal }: Pick<Context, "request" | "db" | "principal">,
+  context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
   cookie: boolean,
 ): Promise<Response> {
+  const { request, db, principal } = context;
+  // Before the session starts, so a refused `expand` or `fields` starts none.
+  const body = await authRecord(context, collection, record);
   if (cookie && principal.viaCookie && principal.session) {
     await deleteSession(db, principal.session);
   }
@@ -1159,7 +1147,7 @@ async function startSession(
     record,
     request.headers.get("user-agent") ?? "",
   );
-  const response = authResponse(collection, record, cookie ? undefined : token);
+  const response = authResponse(body, cookie ? undefined : token);
   if (cookie) {
     response.headers.append(
       "set-cookie",
@@ -1169,20 +1157,33 @@ async function startSession(
   return response;
 }
 
-function authResponse(
+/**
+ * The record of an auth response, with the query's `expand` and `fields`.
+ * Rules see the account it signs in, as on its next request.
+ */
+function authRecord(
+  context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
-  token: string | undefined,
-): Response {
+): Promise<Record<string, unknown>> {
   const principal: Principal = {
     collection,
     record,
-    superuser: collection.id === "_superusers",
+    superuser: collection.id === SUPERUSERS,
   };
-  return Response.json({
-    ...(token !== undefined && { token }),
-    record: serializeRecord(collection, record, principal),
-  });
+  return outputRecord(
+    recordsContext({ ...context, principal }, {}),
+    collection,
+    record,
+    new URL(context.request.url).searchParams,
+  );
+}
+
+function authResponse(
+  record: Record<string, unknown>,
+  token: string | undefined,
+): Response {
+  return Response.json({ ...(token !== undefined && { token }), record });
 }
 
 function requireSession(principal: Principal): Session {

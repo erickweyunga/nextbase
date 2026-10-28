@@ -174,11 +174,26 @@ async function uploadDirectly(
     }
     throw error;
   }
-  const response = await fetch(upload.url, {
-    method: "PUT",
-    headers: upload.headers,
-    body: file,
-  });
+  // The global fetch: the client's own may only reach the NextBase handler,
+  // as an in-process client's does.
+  let response: Response;
+  try {
+    response = await fetch(upload.url, {
+      method: "PUT",
+      headers: upload.headers,
+      body: file,
+      signal: options.signal ?? null,
+    });
+  } catch (cause) {
+    throw new ClientError(
+      {
+        status: 0,
+        message: cause instanceof Error ? cause.message : "The upload failed.",
+        data: {},
+      },
+      { cause, signal: options.signal },
+    );
+  }
   if (!response.ok) {
     throw new ClientError({
       status: response.status,

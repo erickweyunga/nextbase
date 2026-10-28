@@ -37,7 +37,9 @@ export async function startFakeS3(bucket = "test-bucket"): Promise<FakeS3> {
     const [, name, ...rest] = url.pathname.split("/");
     const key = rest.map(decodeURIComponent).join("/");
     if (name !== bucket) return error(response, 404, "NoSuchBucket");
-    const body = await readBody(request);
+    // A client that hangs up while sending, as an aborted upload does.
+    const body = await readBody(request).catch(() => undefined);
+    if (!body) return;
 
     if (
       request.method === "GET" &&

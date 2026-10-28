@@ -32,6 +32,8 @@ POST /collections/{collection}/sign-up
 the session in a cookie, as when [signing in with a
 password](#sign-in-with-a-password).
 
+**Query parameters:** `expand` and `fields`, applied to `record`.
+
 **Responses**
 
 <Tabs>
@@ -654,6 +656,8 @@ POST /collections/{collection}/auth-with-phone-code
 | `code` | string | Required. The six-digit code. |
 | `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token. |
 
+**Query parameters:** `expand` and `fields`, applied to `record`.
+
 **Responses**
 
 <Tabs>
@@ -851,6 +855,8 @@ curl -X POST https://app.example/api/nextbase/collections/users/auth-refresh \
 ```http
 POST /collections/{collection}/auth-refresh
 ```
+
+**Query parameters:** `expand` and `fields`, applied to `record`.
 
 **Responses**
 

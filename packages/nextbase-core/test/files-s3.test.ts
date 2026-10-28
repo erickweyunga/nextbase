@@ -1,9 +1,10 @@
-import type { NextBaseClient } from "@nextbasejs/client";
+import { ClientError, type NextBaseClient } from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { type FakeS3, startFakeS3 } from "./fake-s3.ts";
 import { call, origin } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor } from "./wait.ts";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
@@ -108,6 +109,36 @@ describe("file uploads to an S3-compatible bucket", () => {
       "SELECT count(*)::int AS n FROM nextbase._uploads",
     );
     expect(rows[0].n).toBe(0);
+  });
+
+  it("aborts a direct upload through the request's signal", async () => {
+    const big = new File([PNG, new Uint8Array(5 * 1024 * 1024)], "big.png", {
+      type: "image/png",
+    });
+    const puts = () =>
+      s3.requests.filter((r) => r.startsWith(`PUT /${s3.bucket}/_uploads/`))
+        .length;
+    const before = puts();
+    let release = () => {};
+    s3.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const controller = new AbortController();
+    try {
+      const create = nextbase
+        .client()
+        .collection("videos")
+        .create({ clip: big }, { signal: controller.signal })
+        .catch((e: unknown) => e);
+      await waitFor(() => puts() > before, "the upload to start");
+      controller.abort();
+      const error = await create;
+      expect(error).toBeInstanceOf(ClientError);
+      expect(error).toMatchObject({ status: 0, isAbort: true });
+    } finally {
+      s3.hold = undefined;
+      release();
+    }
   });
 
   it("uploads files straight to the bucket when together they are too large for one request", async () => {
