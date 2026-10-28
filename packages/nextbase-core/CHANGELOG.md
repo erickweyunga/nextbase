@@ -1,5 +1,18 @@
 # nextbasejs
 
+## 0.1.8
+
+### Patch Changes
+
+- c10f01f: Batches of creates whose rows set different fields no longer fail with a 500. A batch now reports the first failing write in order even when an earlier create duplicates a unique value, and a write that follows earlier writes of the batch is checked against them, so a record can have its password changed twice in one batch. A manager who sends an old password no longer counts a failed attempt against the account. The setup command in the server log takes its URL from `appUrl`, never from the request's Host header.
+- b7abc9b: Deleting a record on a cycle of cascading relations, such as records that point at each other, no longer fails with a 500. Next.js builds no longer trace the whole project into the server bundle because of where local file storage lives. Core depends on a compatible range of `@nextbasejs/client` instead of one exact version, so apps install one copy. A failed file claim says "Failed to create the record." or "Failed to update the record." like other write errors.
+- 4490925: `NextBaseProvider` follows a new `session` from the server, so signing in or out in a server action shows without a reload, and `useSession` subscribes once instead of on every render. A session signed in to another collection than a request needs now gets a 403 instead of a 401, so the client no longer signs it out. Responses to requests with no session carry `NextBase-Session: none`, and the client signs out a cookie session that ended. In-process clients use the cookie of the page's scheme, so server components see the session under `next dev --experimental-https`. An update with `fields` keeps the signed-in record current, a batch uploads its files to the bucket instead of sending them as `{}`, the SDK decides on direct uploads by a write's total size, and auth stores no longer leak a storage listener.
+- c10f01f: Transactions report an error when Postgres rolls back a commit because a statement in them failed, instead of reporting success. Multi-row inserts accept rows that set different columns.
+- 42312bf: `:lower` works on fields with several values, lowering each value, where it failed or never matched. A value too long for its field's index is a 400, not a 500. Dates must be ISO 8601: other forms, such as `1/2/2024`, were read in the server's local time. `~` can compare two values, such as `@request.auth.name ~ "a"`, and `ARRAY[[1]]` in raw SQL is no longer read as a column name.
+- 51d669a: A create or update the rules refuse no longer stores its files, hashes its password or asks the breached-password service first, including updates whose rule reads `@request.body`. A create the rule refuses no longer reports whether its related records exist. Signed-out callers can start direct uploads only where the create or update rule is `""`, and each account can start 100 an hour.
+- Updated dependencies [4490925]
+  - @nextbasejs/client@0.1.8
+
 ## 0.1.7
 
 ### Patch Changes
