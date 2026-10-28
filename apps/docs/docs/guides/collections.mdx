@@ -69,6 +69,10 @@ Every field has `name`, `type`, `required` (must not be empty) and `hidden`
 Dates are returned in UTC with milliseconds, such as
 `2026-10-19T09:30:00.000Z`.
 
+Strings, including the keys and values inside `json`, cannot contain NUL
+characters or unpaired UTF-16 surrogates, which Postgres cannot store. Such a
+write fails with a 400.
+
 
 
 ## Relations
@@ -83,7 +87,8 @@ A relation field points at records of another collection (or the same one).
   validation error.
 - When a referenced record is deleted, records pointing at it are deleted too
   with `cascadeDelete: true`. Otherwise the reference is cleared, and if that
-  leaves a `required` field empty, the delete fails with a 400.
+  leaves a `required` field empty, the delete fails with a 400. Records the
+  same delete removes through a cascade never block it.
 - Relations also work backwards: from a post, `comments_via_post` means
   "the comments whose `post` field points at this post". It works in [filters](/docs/guides/filters),
   [rules](/docs/guides/rules) and `expand`.

@@ -364,6 +364,83 @@ describe("records hardening", () => {
       ).toBe(404);
     });
 
+    it("rejects lone surrogates, which UTF-8 cannot store", async () => {
+      await newCollection({
+        name: "unicode",
+        listRule: "",
+        viewRule: "",
+        createRule: "",
+        updateRule: "",
+        fields: [
+          { name: "text", type: "text" },
+          { name: "email", type: "email" },
+          { name: "url", type: "url" },
+          { name: "data", type: "json" },
+          { name: "tags", type: "select", values: ["a", "b"], maxSelect: 2 },
+        ],
+      });
+      const unicode = "/collections/unicode/records";
+      const invalid = { code: "validation_invalid_value" };
+      for (const lone of ["\ud800", "a\udfffb", "\udc00\ud800"]) {
+        for (const body of [
+          { text: lone },
+          { email: `ann${lone}@example.com` },
+          { url: `https://example.com/${lone}` },
+          { data: lone },
+          { data: { nested: [{ deep: lone }] } },
+          { data: { [lone]: 1 } },
+          { tags: [lone] },
+          { "tags+": lone },
+        ]) {
+          const key = Object.keys(body)[0]?.replace("+", "") as string;
+          for (const who of ["ann", "admin"] as const) {
+            const reply = await as(who, "POST", unicode, body);
+            expect(reply.status).toBe(400);
+            expect(reply.body.data).toMatchObject({ [key]: invalid });
+          }
+        }
+      }
+      const created = await ok(as("ann", "POST", unicode, { text: "😀" }));
+      const id = created.body.id as string;
+      expect(
+        (await as("ann", "PATCH", `${unicode}/${id}`, { text: "\ud83d" })).body
+          .data,
+      ).toMatchObject({ text: invalid });
+      // A surrogate pair is one character, stored and served as sent.
+      const pair = await ok(
+        as("ann", "PATCH", `${unicode}/${id}`, {
+          text: "😀",
+          data: { "😀": ["😀"] },
+        }),
+      );
+      expect(pair.body).toMatchObject({
+        text: "😀",
+        data: { "😀": ["😀"] },
+      });
+      // Collections are stored too, so their names, values and rules are checked.
+      for (const body of [
+        { name: "\ud800" },
+        { name: "lone", listRule: '"\ud800" = ""' },
+        {
+          name: "lone",
+          fields: [{ name: "s", type: "select", values: ["\ud800"] }],
+        },
+      ]) {
+        const reply = await as("admin", "POST", "/collections", body);
+        expect(reply.status).toBe(400);
+      }
+      const password = await as(
+        "admin",
+        "PATCH",
+        `/collections/users/records/${ids.ann}`,
+        {
+          password: "password12345678\ud800",
+          passwordConfirm: "password12345678\ud800",
+        },
+      );
+      expect(password.body.data).toMatchObject({ password: invalid });
+    });
+
     it("limits JSON nesting, iteratively, and round-trips everything storable", async () => {
       const nest = (depth: number): unknown => {
         let value: unknown = "leaf";
@@ -413,6 +490,63 @@ describe("records hardening", () => {
       expect(ancient.body.when).toBe("-004712-01-01T00:00:00.000Z");
     });
 
+    it("compares dates with extended years by time, not as text", async () => {
+      const bounds = { min: "-000500-01-01", max: "9999-12-31" };
+      // As text, "-000100" sorts before "-000500" and "+010000" before "9999".
+      expect(
+        (
+          await as("admin", "POST", "/collections", {
+            name: "inverted",
+            fields: [
+              {
+                name: "when",
+                type: "date",
+                min: "+010000-01-01",
+                max: "2000-01-01",
+              },
+            ],
+          })
+        ).body.data,
+      ).toMatchObject({
+        fields: { 0: { min: { code: "validation_out_of_range" } } },
+      });
+      await newCollection({
+        name: "bounded",
+        listRule: "",
+        viewRule: "",
+        createRule: "",
+        fields: [
+          { name: "when", type: "date", ...bounds },
+          {
+            name: "bc",
+            type: "date",
+            min: "-000100-01-01",
+            max: "-000050-01-01",
+          },
+        ],
+      });
+      const bounded = "/collections/bounded/records";
+      const inRange = await ok(
+        as("ann", "POST", bounded, {
+          when: "-000100-01-01T00:00:00Z",
+          bc: "-000075-06-01T00:00:00Z",
+        }),
+      );
+      expect(inRange.body).toMatchObject({
+        when: "-000100-01-01T00:00:00.000Z",
+        bc: "-000075-06-01T00:00:00.000Z",
+      });
+      for (const when of [
+        "+010000-01-01T00:00:00Z",
+        "-000600-01-01T00:00:00Z",
+        "+275760-09-13T00:00:00Z",
+      ]) {
+        expect(
+          (await as("ann", "POST", bounded, { when })).body.data,
+        ).toMatchObject({ when: { code: "validation_out_of_range" } });
+      }
+    });
+
     it("counts text length in characters, not UTF-16 units", async () => {
       expect(
         (await as("ann", "POST", records, { text: "😀😀😀" })).status,
@@ -432,6 +566,19 @@ describe("records hardening", () => {
       expect((await as("ann", "POST", records, { n: "Infinity" })).status).toBe(
         400,
       );
+      // Modifiers can overflow a double: the sum is no number Postgres serves back.
+      const big = await ok(as("ann", "POST", records, { n: 1.7e308 }));
+      const path = `${records}/${big.body.id}`;
+      for (const body of [{ "n+": 1.7e308 }, { "n-": 1.7e308, n: -1.7e308 }]) {
+        expect((await as("ann", "PATCH", path, body)).body.data).toMatchObject({
+          n: { code: "validation_invalid_value" },
+        });
+      }
+      expect(
+        (await as("ann", "POST", records, { n: -1.7e308, "n-": 1.7e308 })).body
+          .data,
+      ).toMatchObject({ n: { code: "validation_invalid_value" } });
+      expect((await ok(as("ann", "GET", path))).body.n).toBe(1.7e308);
       expect(
         (
           await as(

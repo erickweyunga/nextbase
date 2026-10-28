@@ -4,6 +4,17 @@ export function hasNul(value: string): boolean {
   return value.includes("\u0000");
 }
 
+/**
+ * Why Postgres cannot store `value` as sent, if it cannot. Besides NULs, that
+ * is a lone UTF-16 surrogate, which has no UTF-8 encoding: text would be
+ * stored with U+FFFD in its place, and jsonb rejects it.
+ */
+export function unstorableText(value: string): string | undefined {
+  if (hasNul(value)) return "Cannot contain NUL characters.";
+  if (!value.isWellFormed()) return "Cannot contain unpaired surrogates.";
+  return undefined;
+}
+
 // timestamptz starts at 4713 BC; JavaScript dates reach further back, not further forward.
 const MIN_TIME = Date.UTC(-4712, 0, 1);
 

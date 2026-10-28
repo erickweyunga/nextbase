@@ -14,7 +14,7 @@ import { ALPHANUMERIC, isId, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple, passwordField } from "../schema/fields.ts";
 import { Issues, type Path } from "../schema/input.ts";
-import { hasNul, isStorableTime, parseDate } from "../storable.ts";
+import { isStorableTime, parseDate, unstorableText } from "../storable.ts";
 
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -469,19 +469,22 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
 
 const MAX_JSON_DEPTH = 64;
 
-// NULs and deep JSON, which Postgres rejects. An explicit stack keeps hostile
-// nesting from overflowing the call stack.
+// Strings Postgres cannot store, anywhere in the value, and deep JSON, which
+// it rejects. An explicit stack keeps hostile nesting from overflowing the
+// call stack.
 function unstorable(value: unknown): string | undefined {
   const stack: [unknown, number][] = [[value, 0]];
   for (let next = stack.pop(); next; next = stack.pop()) {
     const [item, depth] = next;
     if (typeof item === "string") {
-      if (hasNul(item)) return "Cannot contain NUL characters.";
+      const problem = unstorableText(item);
+      if (problem) return problem;
     } else if (typeof item === "object" && item !== null) {
       if (depth >= MAX_JSON_DEPTH)
         return `Cannot be nested more than ${MAX_JSON_DEPTH} levels deep.`;
       for (const [key, child] of Object.entries(item)) {
-        if (hasNul(key)) return "Cannot contain NUL characters.";
+        const problem = unstorableText(key);
+        if (problem) return problem;
         stack.push([child, depth + 1]);
       }
     }
@@ -554,6 +557,10 @@ function validate(field: Field, value: unknown, issues: Issues): boolean {
     }
     case "number": {
       const n = value as number;
+      // Input is finite, but `n+` and `n-` can overflow. Postgres would store
+      // Infinity, which JSON cannot carry.
+      if (!Number.isFinite(n))
+        return fail("validation_invalid_value", "Must be a finite number.");
       if (field.onlyInt && !Number.isInteger(n))
         return fail("validation_not_integer", "Must be an integer.");
       if (
@@ -570,10 +577,11 @@ function validate(field: Field, value: unknown, issues: Issues): boolean {
     case "date": {
       const date = value as Date | null;
       if (date === null) return true;
-      const iso = date.toISOString();
+      // By time: as text, years past 9999 or before 1 AD sort wrongly.
+      const time = date.getTime();
       if (
-        (field.min !== "" && iso < field.min) ||
-        (field.max !== "" && iso > field.max)
+        (field.min !== "" && time < Date.parse(field.min)) ||
+        (field.max !== "" && time > Date.parse(field.max))
       ) {
         return fail(
           "validation_out_of_range",
@@ -696,6 +704,8 @@ function passwordProblem(
       `Must be ${field.min} to ${field.max} characters.`,
     ];
   }
+  const problem = unstorableText(password);
+  if (problem) return [["password"], "validation_invalid_value", problem];
   if (passwordConfirm !== password) {
     return [
       ["passwordConfirm"],

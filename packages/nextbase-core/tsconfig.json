@@ -1,6 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // Node 22, the oldest this package runs on, has all of ES2024.
+    "lib": ["ES2024"],
     "declaration": true,
     "isolatedDeclarations": true,
     "types": ["node"]

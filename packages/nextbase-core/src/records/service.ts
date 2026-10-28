@@ -35,7 +35,7 @@ import type { Schema } from "../schema/cache.ts";
 import { isMultiple, passwordField } from "../schema/fields.ts";
 import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
-import { hasNul, timestampParam } from "../storable.ts";
+import { timestampParam, unstorableText } from "../storable.ts";
 import { serializeRecord } from "./serialize.ts";
 import {
   checkRelations,
@@ -637,7 +637,12 @@ export async function planUpdateRecord(
       }
       // The owner learns of a password change they may not have made.
       const password = passwordField(collection);
-      if (password && prepared.values[password.name] !== undefined) {
+      // A record with a phone instead of an email has no address to tell.
+      if (
+        password &&
+        prepared.values[password.name] !== undefined &&
+        existing.email
+      ) {
         ctx.effects?.mail.push({
           kind: "passwordChanged",
           collection: collection.name,
@@ -684,7 +689,6 @@ export async function planDeleteRecord(
       ctx.schema,
       collection,
       [id],
-      new Set(),
       ctx.effects?.obsoleteFiles ?? [],
     );
   };
@@ -758,7 +762,7 @@ async function checkNewPassword(
 function checkId(collection: Collection, id: string): void {
   const valid =
     collection.type === "view"
-      ? id !== "" && id.length <= 255 && !hasNul(id)
+      ? id !== "" && id.length <= 255 && unstorableText(id) === undefined
       : isId(id);
   if (!valid) throw new ApiError(404, "Record not found.");
 }
@@ -1171,25 +1175,25 @@ async function viewable(
 // --- deletes ---------------------------------------------------------------
 
 // Cascading relations delete, others drop the reference, and a required field
-// that would be left blank blocks the delete. Works on every record of one
-// level at once, so a delete takes a few queries per level, not per record.
+// that would be left blank blocks the delete. Every record the cascades reach
+// is found first, so that only the records that stay drop their references or
+// block the delete: the result depends neither on cycles nor on the order
+// fields are declared in. Works on every record of one level at once, so a
+// delete takes a few queries per level and collection, not per record.
 async function deleteWithReferences(
   tx: Builder,
   schema: Schema,
   collection: Collection,
   ids: readonly string[],
-  visited: Set<string>,
   obsoleteFiles: string[],
 ): Promise<void> {
-  // A cycle of cascades reaches the same record again.
-  const pending = ids.filter((id) => !visited.has(`${collection.id}/${id}`));
-  if (pending.length === 0) return;
-  for (const id of pending) visited.add(`${collection.id}/${id}`);
-  const params = { ids: pending };
-  for (const source of schema.collections) {
-    for (const field of source.fields) {
-      if (field.type !== "relation" || field.collectionId !== collection.id)
-        continue;
+  const deleting = await cascade(tx, schema, collection, ids);
+  // Collections reached later go first: a cascade reaches the records that
+  // point at those it deletes, so few references are left to clear.
+  const order = [...deleting.keys()].reverse();
+  for (const { collection: target, ids: targetIds } of deleting.values()) {
+    const params = { ids: [...targetIds] };
+    for (const { source, field } of relationsTo(schema, target)) {
       const multiple = isMultiple(field);
       const col = tx.quoteSimpleColumnName(field.name);
       const t = `{{${table(source.name)}}}`;
@@ -1197,41 +1201,38 @@ async function deleteWithReferences(
         ? `${col} && {:ids}::text[]`
         : `${col} = ANY({:ids}::text[])`;
       // What is left of the field once the deleted ids are taken out.
-      const kept = `ARRAY(SELECT v FROM unnest(${col}) AS v WHERE v <> ALL({:ids}::text[]))`;
-      // Locked in id order, so concurrent deletes lock rows in the same order.
-      const referencing = await tx
-        .newQuery(
-          `SELECT id, ${multiple ? `cardinality(${kept})` : "0"} AS kept FROM ${t} WHERE ${refers} ORDER BY id FOR UPDATE`,
-        )
-        .bind(params)
-        .all<{ id: string; kept: number }>();
-      if (referencing.length === 0) continue;
-      if (field.cascadeDelete) {
-        // Around a cycle of cascades, records already being deleted still
-        // point at these until they go, which their foreign key would
-        // refuse. They lose those references first.
-        const deleting = referencing
-          .filter((row) => visited.has(`${source.id}/${row.id}`))
-          .map((row) => row.id);
-        if (deleting.length > 0) {
-          await tx
-            .newQuery(
-              `UPDATE ${t} SET ${col} = ${multiple ? kept : "NULL"} WHERE id = ANY({:deleting}::text[])`,
-            )
-            .bind({ ...params, deleting })
-            .execute();
-        }
-        await deleteWithReferences(
-          tx,
-          schema,
-          source,
-          referencing.map((row) => row.id),
-          visited,
-          obsoleteFiles,
-        );
-        continue;
+      const cleared = multiple
+        ? `ARRAY(SELECT v FROM unnest(${col}) AS v WHERE v <> ALL({:ids}::text[]))`
+        : "NULL";
+      const gone = [...(deleting.get(source.id)?.ids ?? [])];
+      // A record deleted after one it points at would leave a dangling
+      // reference until it goes, which its foreign key refuses. Only single
+      // relations have one, and rows that go in one statement are checked
+      // together.
+      if (
+        !multiple &&
+        gone.length > 0 &&
+        order.indexOf(source.id) > order.indexOf(target.id)
+      ) {
+        await tx
+          .newQuery(
+            `UPDATE ${t} SET ${col} = NULL WHERE ${refers} AND id = ANY({:gone}::text[])`,
+          )
+          .bind({ ...params, gone })
+          .execute();
       }
-      if (field.required && referencing.some((row) => row.kept === 0)) {
+      // Each cascade already put all the records it reaches in `deleting`.
+      if (field.cascadeDelete) continue;
+      const stays = `${refers} AND id <> ALL({:gone}::text[])`;
+      // Locked in id order, so concurrent deletes lock rows in the same order.
+      const remaining = await tx
+        .newQuery(
+          `SELECT id, ${multiple ? `cardinality(${cleared})` : "0"} AS kept FROM ${t} WHERE ${stays} ORDER BY id FOR UPDATE`,
+        )
+        .bind({ ...params, gone })
+        .all<{ id: string; kept: number }>();
+      if (remaining.length === 0) continue;
+      if (field.required && remaining.some((row) => row.kept === 0)) {
         throw new ApiError(
           400,
           `The record is required by ${source.name}.${field.name}. Delete or change those records first.`,
@@ -1239,12 +1240,92 @@ async function deleteWithReferences(
       }
       await tx
         .newQuery(
-          `UPDATE ${t} SET ${col} = ${multiple ? kept : "NULL"} WHERE ${refers}`,
+          `UPDATE ${t} SET ${col} = ${cleared} WHERE id = ANY({:remaining}::text[])`,
         )
-        .bind(params)
+        .bind({ ...params, remaining: remaining.map((row) => row.id) })
         .execute();
     }
   }
+  for (const id of order) {
+    const { collection: target, ids: targetIds } = deleting.get(id) as Deleting;
+    await deleteRows(tx, target, [...targetIds], obsoleteFiles);
+  }
+}
+
+interface Deleting {
+  collection: Collection;
+  ids: Set<string>;
+}
+
+/**
+ * The records to delete, by collection id in the order they are reached:
+ * `ids` and every record a cascading relation reaches from them, each once
+ * however many cycles lead back to it. Locks those it finds.
+ */
+async function cascade(
+  tx: Builder,
+  schema: Schema,
+  collection: Collection,
+  ids: readonly string[],
+): Promise<Map<string, Deleting>> {
+  const deleting = new Map<string, Deleting>([
+    [collection.id, { collection, ids: new Set(ids) }],
+  ]);
+  let level = new Map([[collection, [...ids]]]);
+  while (level.size > 0) {
+    const next = new Map<Collection, string[]>();
+    for (const [target, targetIds] of level) {
+      for (const { source, field } of relationsTo(schema, target)) {
+        if (!field.cascadeDelete) continue;
+        const col = tx.quoteSimpleColumnName(field.name);
+        const refers = isMultiple(field)
+          ? `${col} && {:ids}::text[]`
+          : `${col} = ANY({:ids}::text[])`;
+        // Locked in id order, so concurrent deletes lock rows in the same order.
+        const found = await tx
+          .newQuery(
+            `SELECT id FROM {{${table(source.name)}}} WHERE ${refers} ORDER BY id FOR UPDATE`,
+          )
+          .bind({ ids: targetIds })
+          .column<string>();
+        if (found.length === 0) continue;
+        let entry = deleting.get(source.id);
+        if (!entry) {
+          entry = { collection: source, ids: new Set() };
+          deleting.set(source.id, entry);
+        }
+        for (const id of found) {
+          if (entry.ids.has(id)) continue;
+          entry.ids.add(id);
+          next.set(source, [...(next.get(source) ?? []), id]);
+        }
+      }
+    }
+    level = next;
+  }
+  return deleting;
+}
+
+function* relationsTo(
+  schema: Schema,
+  target: Collection,
+): Generator<{ source: Collection; field: Field & { type: "relation" } }> {
+  for (const source of schema.collections) {
+    for (const field of source.fields) {
+      if (field.type === "relation" && field.collectionId === target.id)
+        yield { source, field };
+    }
+  }
+}
+
+// Deletes the rows, notes their files for deletion and ends their sessions.
+async function deleteRows(
+  tx: Builder,
+  collection: Collection,
+  ids: string[],
+  obsoleteFiles: string[],
+): Promise<void> {
+  const params = { ids };
   const fileFields = collection.fields.filter((f) => f.type === "file");
   if (fileFields.length > 0) {
     const rows = await tx
