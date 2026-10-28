@@ -251,6 +251,21 @@ describe("round trips per request", () => {
     ).toEqual([other?.id]);
   });
 
+  it("reports the first write of a batch that fails, in order", async () => {
+    const reply = await call(nextbase, "POST", "/batch", {
+      body: {
+        requests: [
+          // Refused by posts' create rule, which needs a signed-in caller.
+          { method: "POST", url: "/collections/posts/records", body: {} },
+          // Refused too: notes has no create rule, so only superusers may.
+          { method: "POST", url: "/collections/notes/records", body: {} },
+        ],
+      },
+    });
+    expect(reply.status).toBe(400);
+    expect(reply.body.message).toMatch(/^Request 1 of the batch failed/);
+  });
+
   it("takes six to sign in with a password", async () => {
     const { other, trips } = await another();
     const signIn = await call(

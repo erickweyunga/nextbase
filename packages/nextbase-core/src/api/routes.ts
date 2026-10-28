@@ -67,11 +67,12 @@ import { readJsonObject, readRecordBody } from "../http.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
-  deleteRecord,
+  type Apply,
   listRecords,
-  newRecord,
+  planDeleteRecord,
+  planNewRecord,
+  planUpdateRecord,
   type RecordsContext,
-  updateRecord,
   viewRecord,
 } from "../records/service.ts";
 import { SCHEMA_VERSION_SQL, type Schema } from "../schema/cache.ts";
@@ -150,14 +151,12 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const body = await readRecordBody(context.request);
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "POST",
-            collection: context.params[0] as string,
-            body,
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "POST",
+          collection: context.params[0] as string,
+          body,
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
@@ -188,15 +187,13 @@ export const ROUTES: readonly Route[] = [
       const [collection, id] = context.params as [string, string];
       const body = await readRecordBody(context.request);
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "PATCH",
-            collection,
-            id,
-            body,
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "PATCH",
+          collection,
+          id,
+          body,
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
@@ -206,15 +203,13 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "DELETE",
-            collection,
-            id,
-            body: {},
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "DELETE",
+          collection,
+          id,
+          body: {},
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
@@ -223,21 +218,27 @@ export const ROUTES: readonly Route[] = [
     pattern: /^\/batch$/,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
-      // All or nothing.
+      // Writes are planned before the transaction starts, then all run in it:
+      // all or nothing. Planning stops at the first write that fails. The
+      // writes before it still run, so the batch reports the first failing
+      // write in order, as when each is checked and run in turn.
+      const planned: Apply<Reply>[] = [];
+      let failed: unknown;
+      for (const [i, write] of writes.entries()) {
+        try {
+          planned.push(await inBatch(i, () => planRecordWrite(context, write)));
+        } catch (error) {
+          failed = error;
+          break;
+        }
+      }
+      if (planned.length === 0) throw failed;
       const results = await bounded(context, async (tx) => {
         const replies: Reply[] = [];
-        for (const [i, write] of writes.entries()) {
-          try {
-            replies.push(await writeRecord(context, tx, write));
-          } catch (error) {
-            if (!(error instanceof ApiError)) throw error;
-            throw new ApiError(
-              400,
-              `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
-              { requests: { [i]: error.data } },
-            );
-          }
+        for (const [i, apply] of planned.entries()) {
+          replies.push(await inBatch(i, () => apply(tx)));
         }
+        if (failed !== undefined) throw failed;
         return replies;
       });
       return Response.json(results);
@@ -691,14 +692,12 @@ export const ROUTES: readonly Route[] = [
         typeof input.id === "string" && input.id !== ""
           ? input.id
           : randomString(15, LOWER_ALPHANUMERIC);
-      await bounded(context, (tx) =>
-        writeRecord(context, tx, {
-          method: "POST",
-          collection: collection.id,
-          body: { ...input, id },
-          query: new URLSearchParams(),
-        }),
-      );
+      await writeRecord(context, {
+        method: "POST",
+        collection: collection.id,
+        body: { ...input, id },
+        query: new URLSearchParams(),
+      });
       try {
         await checkAuthRule(db, schema, collection, id);
       } catch (error) {
@@ -897,33 +896,63 @@ interface RecordWrite {
   query: URLSearchParams;
 }
 
-// 204 when the caller may not view the result.
+/** Plans the write, then runs it in its own transaction. */
 async function writeRecord(
   context: Context,
-  db: DB | Tx,
   write: RecordWrite,
 ): Promise<Reply> {
+  return bounded(context, await planRecordWrite(context, write));
+}
+
+/**
+ * Checks a write as far as it can before its transaction starts, and returns
+ * the rest of the work to run in that transaction. The reply is 204 when the
+ * caller may not view the result.
+ */
+async function planRecordWrite(
+  context: Context,
+  write: RecordWrite,
+): Promise<Apply<Reply>> {
   const collection = context.schema.get(write.collection);
   const ctx = recordsContext(context, write.body, {
-    db,
     method: write.method,
     query: write.query,
   });
-  let result: Record<string, unknown> | undefined;
-  if (write.method === "POST") {
-    result = await newRecord(ctx, collection, write.body, write.query);
-  } else if (write.method === "PATCH") {
-    result = await updateRecord(
-      ctx,
-      collection,
-      write.id as string,
-      write.body,
-      write.query,
-    );
-  } else {
-    await deleteRecord(ctx, collection, write.id as string);
+  if (write.method === "DELETE") {
+    const apply = await planDeleteRecord(ctx, collection, write.id as string);
+    return async (tx) => {
+      await apply(tx);
+      return { status: 204 };
+    };
   }
-  return result ? { status: 200, body: result } : { status: 204 };
+  const apply =
+    write.method === "POST"
+      ? await planNewRecord(ctx, collection, write.body, write.query)
+      : await planUpdateRecord(
+          ctx,
+          collection,
+          write.id as string,
+          write.body,
+          write.query,
+        );
+  return async (tx) => {
+    const result = await apply(tx);
+    return result ? { status: 200, body: result } : { status: 204 };
+  };
+}
+
+/** Reports which write of a batch failed, and that nothing was saved. */
+async function inBatch<T>(i: number, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    throw new ApiError(
+      400,
+      `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
+      { requests: { [i]: error.data } },
+    );
+  }
 }
 
 const MAX_BATCH = 50;
