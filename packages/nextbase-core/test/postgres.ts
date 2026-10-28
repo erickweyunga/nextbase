@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DB } from "@nextbasejs/dbx";
 import pg from "pg";
+import { endPool } from "../src/db/pool.ts";
 
 const url =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
@@ -114,19 +115,4 @@ export async function createTestDatabase(
   };
 }
 
-/**
- * Ends a pool and waits until its connections have closed. `pool.end()`
- * resolves while they are still closing, and dropping the database then
- * terminates them with an error nothing is left to handle.
- */
-export async function endPool(pool: pg.Pool): Promise<void> {
-  let open = pool.totalCount;
-  const closed = new Promise<void>((resolve) => {
-    if (open === 0) resolve();
-    pool.on("remove", () => {
-      if (--open === 0) resolve();
-    });
-  });
-  await pool.end();
-  await closed;
-}
+export { endPool };

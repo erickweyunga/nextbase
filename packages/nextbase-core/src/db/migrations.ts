@@ -11,7 +11,11 @@ import { lockSchema, SCHEMA, table } from "./system.ts";
 const MIN_SERVER_VERSION = 160_000;
 
 interface Migration {
-  /** Unique and permanent: never edit or remove a released migration. */
+  /**
+   * Unique and permanent: never rename or remove a released migration. Change
+   * what one does only so it succeeds where it failed, since databases that
+   * applied it never run it again.
+   */
   name: string;
   up(tx: Tx): Promise<void>;
 }
@@ -188,6 +192,8 @@ const MIGRATIONS: readonly Migration[] = [
            )`,
         )
         .execute();
+      await renameClashingUserFields(tx, "phone", "_phone");
+      await renameClashingUserFields(tx, "phoneVerified", "_phoneVerified");
       // Adds phone fields and phoneSignIn to auth collections created before them.
       const collections = await tx
         .newQuery(
@@ -255,6 +261,7 @@ const MIGRATIONS: readonly Migration[] = [
     async up(tx) {
       // `verified` becomes `emailVerified`. The id stays, so indexes survive;
       // rules referring to it are rewritten.
+      await renameClashingUserFields(tx, "emailVerified", "_verified");
       const collections = await loadCollections(tx);
       const auth = collections.filter(
         (c) =>
@@ -265,7 +272,14 @@ const MIGRATIONS: readonly Migration[] = [
       const rename = (rule: string | null, c: Collection): string | null =>
         rule === null
           ? null
-          : renameRuleField(rule, c, collections, "verified", "emailVerified");
+          : renameRuleField(
+              rule,
+              c,
+              collections,
+              "verified",
+              "emailVerified",
+              (owner) => auth.includes(owner),
+            );
       for (const c of collections) {
         const renamed = {
           ...c,
@@ -347,6 +361,94 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
 ];
+
+/**
+ * Before a migration gives auth collections the system field `name`, moves a
+ * user field of that name, which older releases allowed, out of the way:
+ * column, definition, identity fields and the rules that use it all become
+ * `user_<name>`. Names that differ only in case count, since field names are
+ * unique regardless of case. Nothing is lost, and the log says what changed.
+ */
+async function renameClashingUserFields(
+  tx: Tx,
+  name: string,
+  systemId: string,
+): Promise<void> {
+  const collections = await loadCollections(tx);
+  const auth = collections.filter((c) => c.type === "auth");
+  const clashes = auth.flatMap((c) =>
+    c.fields
+      .filter(
+        (f) => f.id !== systemId && f.name.toLowerCase() === name.toLowerCase(),
+      )
+      .map((field) => ({ collection: c, field })),
+  );
+  if (clashes.length === 0) return;
+  // One name free in every auth collection, so `@request.auth.<name>` still
+  // means the same field wherever it is renamed.
+  const taken = new Set(
+    auth.flatMap((c) => c.fields.map((f) => f.name.toLowerCase())),
+  );
+  let to = `user_${name}`;
+  for (let i = 2; taken.has(to.toLowerCase()); i++) to = `user_${name}${i}`;
+
+  let renamed = collections;
+  for (const from of new Set(clashes.map((c) => c.field.name))) {
+    const owners = new Set(
+      clashes.filter((c) => c.field.name === from).map((c) => c.collection.id),
+    );
+    const rename = (rule: string | null, c: Collection): string | null =>
+      rule === null
+        ? null
+        : renameRuleField(rule, c, renamed, from, to, (owner) =>
+            owners.has(owner.id),
+          );
+    renamed = renamed.map(
+      (c) =>
+        ({
+          ...c,
+          listRule: rename(c.listRule, c),
+          viewRule: rename(c.viewRule, c),
+          createRule: rename(c.createRule, c),
+          updateRule: rename(c.updateRule, c),
+          deleteRule: rename(c.deleteRule, c),
+          ...(c.type === "auth" && {
+            authRule: rename(c.authRule, c),
+            manageRule: rename(c.manageRule, c),
+          }),
+        }) as Collection,
+    );
+  }
+  for (const { collection, field } of clashes) {
+    await tx
+      .newQuery(
+        `ALTER TABLE {{${table(collection.name)}}} RENAME COLUMN ${tx.quoteSimpleColumnName(field.name)} TO ${tx.quoteSimpleColumnName(to)}`,
+      )
+      .execute();
+    console.warn(
+      `[nextbase] The ${collection.name} collection's field "${field.name}" is renamed to "${to}", along with the rules that use it, because NextBase now has a system field "${name}".`,
+    );
+  }
+  for (const c of renamed) {
+    const own = clashes.filter((x) => x.collection.id === c.id);
+    if (c.type !== "auth" || own.length === 0) {
+      await saveCollectionRow(tx, c);
+      continue;
+    }
+    const ids = new Set(own.map((x) => x.field.id));
+    const old = new Set(own.map((x) => x.field.name));
+    await saveCollectionRow(tx, {
+      ...c,
+      fields: c.fields.map((f) => (ids.has(f.id) ? { ...f, name: to } : f)),
+      identityFields: c.identityFields.map((n) => (old.has(n) ? to : n)),
+    });
+  }
+  await tx
+    .newQuery(
+      `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+    )
+    .execute();
+}
 
 // Safe to run concurrently: one transaction under the schema lock, skipped
 // without locking when already up to date.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Builder } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
@@ -75,8 +76,15 @@ export function accountKey(collectionId: string, recordId: string): string {
   return `${collectionId}:record:${recordId}`;
 }
 
+/**
+ * Per typed identity. It is hashed, as anyone can type one of any length and
+ * a long key would not fit the table's index.
+ */
 export function identityKey(collectionId: string, identity: string): string {
-  return `${collectionId}:identity:${identity.toLowerCase()}`;
+  const digest = createHash("sha256")
+    .update(identity.toLowerCase())
+    .digest("hex");
+  return `${collectionId}:identity:${digest}`;
 }
 
 /** Caps texts to a phone, so no one can run up SMS costs. */

@@ -8,7 +8,7 @@ import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { ALPHANUMERIC, isId, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
-import { hasNul } from "../storable.ts";
+import { unstorableText } from "../storable.ts";
 import {
   fileKey,
   fileNames,
@@ -90,7 +90,7 @@ export async function createUpload(
     typeof filename !== "string" ||
     filename === "" ||
     filename.length > MAX_ORIGINAL_NAME ||
-    hasNul(filename)
+    unstorableText(filename) !== undefined
   ) {
     issues.filename = {
       code: "validation_invalid_value",
@@ -186,8 +186,7 @@ export async function principalOfFileToken(
   token: string,
 ): Promise<Principal | undefined> {
   const claims = peekToken(token);
-  if (typeof claims?.collectionId !== "string" || typeof claims.id !== "string")
-    return undefined;
+  if (!claims) return undefined;
   let collection: Collection;
   try {
     collection = schema.get(claims.collectionId);

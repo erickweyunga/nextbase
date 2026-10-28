@@ -105,6 +105,7 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 | `oauth2_failed` | The sign-in took too long, started in another browser, or the provider failed. The server log has the details. |
 | `account_exists` | An account with this email exists but cannot be linked automatically (see below). Sign in to it, then link the provider. |
 | `email_required` | The provider did not share an email address, which a new account needs. |
+| `email_not_verified` | The provider did not verify the email it shared, or the account linking a provider has not verified its email. |
 | `sign_up_disabled` | The collection's `createRule` does not allow this sign-up. |
 | `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
 | `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
@@ -113,8 +114,9 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 ## New accounts
 
 A first sign-in creates an account under the collection's `createRule`, as a
-sign-up does. Its email comes from the provider, and it is verified when the
-provider says it verified it. The account gets a random password that nobody
+sign-up does. Its email comes from the provider and counts as verified. A
+provider that did not verify the email creates no account; the sign-in fails
+with `email_not_verified`. The account gets a random password that nobody
 knows; to sign in with a password too, the user sets one through
 [password reset](/docs/guides/auth/password-reset).
 
@@ -138,6 +140,11 @@ stays as it is:
 ```ts
 nb.collection("users").linkOAuth2("github", { redirect: "/settings" });
 ```
+
+The account's email must be [verified](/docs/guides/auth/verification) first,
+or the link fails with `email_not_verified`. Otherwise someone could sign up
+with your email before you do, link their own provider, and keep signing in
+with it after you reset the password.
 
 List and unlink a user's providers. Linking or unlinking emails the account,
 so its owner hears of a change they did not make:

@@ -69,6 +69,7 @@ import {
 import type { Storage } from "../files/storage.ts";
 import { readJsonObject, readRecordBody } from "../http.ts";
 import { newId } from "../random.ts";
+import type { Hooks } from "../records/hooks.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
   type Apply,
@@ -77,6 +78,7 @@ import {
   CreateFailed,
   createRuns,
   listRecords,
+  outputRecord,
   type PlannedCreate,
   planDeleteRecord,
   planNewRecord,
@@ -101,7 +103,10 @@ interface Context {
   inProcess: boolean;
   /** 0 means no limit. */
   statementTimeout: number;
-  /** The route's transaction, if the route is marked `transaction`. */
+  /**
+   * The route's transaction, if the route is marked `transaction`, or the
+   * transaction of the on hook whose `e.nextbase` sent the request.
+   */
   tx?: Tx;
   origins: OriginPolicy;
   mailer: Mailer;
@@ -110,9 +115,12 @@ interface Context {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
+  hooks: Hooks;
+  /** For a request sent through `e.nextbase`: the on hooks that led to it. */
+  hookChain: readonly string[];
 }
 
-interface Route {
+export interface Route {
   method: string;
   /** Matched against the path below `basePath`; groups become `params`. */
   pattern: RegExp;
@@ -123,6 +131,11 @@ interface Route {
    * connection busy while the body arrives.
    */
   transaction?: true;
+  /**
+   * The route writes and locks only through `bounded`, so it can run in the
+   * transaction of an on hook, for the hook's `e.nextbase`.
+   */
+  joinsTransaction?: true;
   handler(context: Context): Promise<Response>;
 }
 
@@ -140,6 +153,7 @@ export const ROUTES: readonly Route[] = [
     method: "GET",
     pattern: records,
     transaction: true,
+    joinsTransaction: true,
     async handler(context) {
       const { url } = parse(context);
       const collection = context.schema.get(context.params[0] as string);
@@ -157,6 +171,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: records,
+    joinsTransaction: true,
     async handler(context) {
       const body = await readRecordBody(context.request);
       return replyOf(
@@ -173,6 +188,7 @@ export const ROUTES: readonly Route[] = [
     method: "GET",
     pattern: record,
     transaction: true,
+    joinsTransaction: true,
     async handler(context) {
       const { url } = parse(context);
       const [collection, id] = context.params as [string, string];
@@ -192,6 +208,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "PATCH",
     pattern: record,
+    joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       const body = await readRecordBody(context.request);
@@ -209,6 +226,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "DELETE",
     pattern: record,
+    joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       return replyOf(
@@ -225,6 +243,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: /^\/batch$/,
+    joinsTransaction: true,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
       // Writes are planned before the transaction starts, then all run in it:
@@ -431,15 +450,8 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-with-password$`),
-    async handler({
-      request,
-      params,
-      db,
-      schema,
-      principal,
-      inProcess,
-      origins,
-    }) {
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { identity, password, cookie } = await readJsonObject(request);
       if (typeof identity !== "string" || typeof password !== "string") {
@@ -461,12 +473,7 @@ export const ROUTES: readonly Route[] = [
         identity,
         password,
       );
-      return startSession(
-        { request, db, principal },
-        collection,
-        record,
-        cookie === true,
-      );
+      return startSession(context, collection, record, cookie === true);
     },
   },
   {
@@ -516,8 +523,7 @@ export const ROUTES: readonly Route[] = [
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
     async handler(context) {
-      const { request, params, db, schema, principal, inProcess, origins } =
-        context;
+      const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { phone, code, cookie } = await readJsonObject(request);
       // Another site must not sign the browser in to an account of its choosing.
@@ -529,12 +535,7 @@ export const ROUTES: readonly Route[] = [
         code,
       );
       await checkAuthRule(db, schema, collection, record.id as string);
-      return startSession(
-        { request, db, principal },
-        collection,
-        record,
-        cookie === true,
-      );
+      return startSession(context, collection, record, cookie === true);
     },
   },
   {
@@ -622,7 +623,7 @@ export const ROUTES: readonly Route[] = [
         }
         const identity = await oauth2.identify(provider, state, request);
         const { record, linkedTo } = await accountFor(
-          { db, schema },
+          { db, schema, effects: context.effects, hooks: context.hooks },
           collection,
           provider.name,
           identity,
@@ -762,7 +763,8 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
-    async handler({ request, params, schema, principal, db }) {
+    async handler(context) {
+      const { request, params, schema, principal, db } = context;
       const collection = authCollection(schema, params[0] as string);
       const record = recordIn(principal, collection, "refresh");
       const { session } = principal;
@@ -770,11 +772,12 @@ export const ROUTES: readonly Route[] = [
         throw new ApiError(401, "Sign in to this collection to refresh.");
       }
       await checkAuthRule(db, schema, collection, record.id as string);
+      const body = await authRecord(context, collection, record);
       const expires = await extendSession(db, collection, session.id);
       if (!principal.viaCookie) {
-        return authResponse(collection, record, bearerToken(request));
+        return authResponse(body, bearerToken(request));
       }
-      const response = authResponse(collection, record, undefined);
+      const response = authResponse(body, undefined);
       const token = sessionCookie(request);
       if (token) {
         response.headers.append(
@@ -868,9 +871,19 @@ export function beginRoute(db: DB, statementTimeout: number): Promise<Tx> {
  * timeout lasts only until the transaction ends, so it works through
  * transaction poolers.
  */
-function bounded<T>(context: Context, run: (tx: Tx) => Promise<T>): Promise<T> {
+async function bounded<T>(
+  context: Context,
+  run: (tx: Tx) => Promise<T>,
+): Promise<T> {
   if (context.tx) return run(context.tx);
-  return context.db.transaction(run, txOptions(context.statementTimeout));
+  const result = await context.db.transaction(
+    run,
+    txOptions(context.statementTimeout),
+  );
+  // What follows its writes is done even if the request fails after this,
+  // as a sign-up may when it starts the session.
+  context.effects.commit();
+  return result;
 }
 
 function txOptions(statementTimeout: number, startQuery?: string): TxOptions {
@@ -885,12 +898,16 @@ function parse({ request }: Context): { url: URL } {
   return { url: new URL(request.url) };
 }
 
-/** The `@request.*` values rules may read. */
+/**
+ * The `@request.*` values rules may read. Reads made while a write is planned
+ * use the transaction of the hook that sent the request, if any, so they see
+ * what it wrote.
+ */
 function recordsContext(
   context: Context,
   body: Record<string, unknown>,
   {
-    db = context.db,
+    db = context.tx ?? context.db,
     method = context.request.method,
     query,
   }: {
@@ -908,6 +925,8 @@ function recordsContext(
     rejectBreachedPasswords: context.rejectBreachedPasswords,
     effects: context.effects,
     storage: context.storage,
+    hooks: context.hooks,
+    hookChain: context.hookChain,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
@@ -1092,9 +1111,9 @@ function flow(
         const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
         const input = await readJsonObject(request);
-        const { rejectBreachedPasswords } = context;
+        const { rejectBreachedPasswords, effects, hooks } = context;
         await run(
-          { db, schema, mailer, rejectBreachedPasswords },
+          { db, schema, mailer, rejectBreachedPasswords, effects, hooks },
           collection,
           input,
           principal,
@@ -1136,8 +1155,10 @@ function phoneContext({
   sms,
   mailer,
   rejectBreachedPasswords,
+  effects,
+  hooks,
 }: Context): PhoneContext {
-  return { db, schema, sms, mailer, rejectBreachedPasswords };
+  return { db, schema, sms, mailer, rejectBreachedPasswords, effects, hooks };
 }
 
 /**
@@ -1145,11 +1166,14 @@ function phoneContext({
  * A cookie sign-in ends the replaced cookie's session, so a planted session never signs in.
  */
 async function startSession(
-  { request, db, principal }: Pick<Context, "request" | "db" | "principal">,
+  context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
   cookie: boolean,
 ): Promise<Response> {
+  const { request, db, principal } = context;
+  // Before the session starts, so a refused `expand` or `fields` starts none.
+  const body = await authRecord(context, collection, record);
   if (cookie && principal.viaCookie && principal.session) {
     await deleteSession(db, principal.session);
   }
@@ -1159,7 +1183,7 @@ async function startSession(
     record,
     request.headers.get("user-agent") ?? "",
   );
-  const response = authResponse(collection, record, cookie ? undefined : token);
+  const response = authResponse(body, cookie ? undefined : token);
   if (cookie) {
     response.headers.append(
       "set-cookie",
@@ -1169,20 +1193,33 @@ async function startSession(
   return response;
 }
 
-function authResponse(
+/**
+ * The record of an auth response, with the query's `expand` and `fields`.
+ * Rules see the account it signs in, as on its next request.
+ */
+function authRecord(
+  context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
-  token: string | undefined,
-): Response {
+): Promise<Record<string, unknown>> {
   const principal: Principal = {
     collection,
     record,
-    superuser: collection.id === "_superusers",
+    superuser: collection.id === SUPERUSERS,
   };
-  return Response.json({
-    ...(token !== undefined && { token }),
-    record: serializeRecord(collection, record, principal),
-  });
+  return outputRecord(
+    recordsContext({ ...context, principal }, {}),
+    collection,
+    record,
+    new URL(context.request.url).searchParams,
+  );
+}
+
+function authResponse(
+  record: Record<string, unknown>,
+  token: string | undefined,
+): Response {
+  return Response.json({ ...(token !== undefined && { token }), record });
 }
 
 function requireSession(principal: Principal): Session {

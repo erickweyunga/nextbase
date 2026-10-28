@@ -1,3 +1,4 @@
+import { authSync } from "./auth-sync.ts";
 import { ClientError } from "./client-error.ts";
 import { hasFiles, toFormData } from "./files.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
@@ -157,15 +158,13 @@ export class RecordService<T extends RecordModel = RecordModel> {
 
   /** Deletes a record. Deleting the signed-in record signs out. */
   async delete(id: string, options?: SendOptions): Promise<void> {
-    const store = this.#client.authStore;
-    const signedIn = store.record;
     await this.#send(`/records/${encodeURIComponent(id)}`, {
       ...options,
       method: "DELETE",
     });
-    if (signedIn && signedIn.id === id && this.#matches(signedIn)) {
-      store.clear();
-    }
+    // Checked once deleted: another account may have signed in meanwhile.
+    const store = this.#client.authStore;
+    if (store.record?.id === id && this.#matches(store.record)) store.clear();
   }
 
   /**
@@ -177,6 +176,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: AuthOptions = {},
   ): Promise<AuthResponse<T> | null> {
     const { cookie, ...rest } = options;
+    const apply = authSync(this.#client.authStore).intent();
     const response = await this.#send<AuthResponse<T> | undefined>("/sign-up", {
       ...rest,
       method: "POST",
@@ -185,12 +185,14 @@ export class RecordService<T extends RecordModel = RecordModel> {
         rest,
       ),
     });
-    return response ? this.#saveAuth(response) : null;
+    if (response) apply(() => this.#save(response));
+    return response ?? null;
   }
 
   /**
    * Signs in and saves the session in the auth store. With `cookie: true` it goes
    * in an HttpOnly cookie instead, and the response and store hold no token.
+   * Of sign-ins and sign-outs that overlap, the one started last wins.
    */
   async signInWithPassword(
     identity: string,
@@ -198,23 +200,25 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: AuthOptions = {},
   ): Promise<AuthResponse<T>> {
     const { cookie, ...rest } = options;
-    return this.#saveAuth(
-      await this.#send<AuthResponse<T>>("/auth-with-password", {
-        ...rest,
-        method: "POST",
-        body: { identity, password, ...(cookie && { cookie: true }) },
-      }),
-    );
+    return this.#signIn("/auth-with-password", rest, {
+      identity,
+      password,
+      ...(cookie && { cookie: true }),
+    });
   }
 
-  /** Extends the session to its full lifetime and reloads the record. */
+  /**
+   * Extends the session to its full lifetime and reloads the record. The store
+   * is left as it is if it changed meanwhile, as by a sign-out.
+   */
   async refreshSession(options?: RecordOptions): Promise<AuthResponse<T>> {
-    return this.#saveAuth(
-      await this.#send<AuthResponse<T>>("/auth-refresh", {
-        ...options,
-        method: "POST",
-      }),
-    );
+    const unchanged = authSync(this.#client.authStore).snapshot();
+    const response = await this.#send<AuthResponse<T>>("/auth-refresh", {
+      ...options,
+      method: "POST",
+    });
+    if (unchanged()) this.#save(response);
+    return response;
   }
 
   /**
@@ -369,13 +373,11 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: AuthOptions = {},
   ): Promise<AuthResponse<T>> {
     const { cookie, ...rest } = options;
-    return this.#saveAuth(
-      await this.#send<AuthResponse<T>>("/auth-with-phone-code", {
-        ...rest,
-        method: "POST",
-        body: { phone, code, ...(cookie && { cookie: true }) },
-      }),
-    );
+    return this.#signIn("/auth-with-phone-code", rest, {
+      phone,
+      code,
+      ...(cookie && { cookie: true }),
+    });
   }
 
   /** Sets a new password with a texted reset code. Ends every session of the account. */
@@ -421,9 +423,23 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  #saveAuth(response: AuthResponse<T>): AuthResponse<T> {
-    this.#client.authStore.save(response.token ?? "", response.record);
+  async #signIn(
+    path: string,
+    options: RecordOptions,
+    body: Record<string, unknown>,
+  ): Promise<AuthResponse<T>> {
+    const apply = authSync(this.#client.authStore).intent();
+    const response = await this.#send<AuthResponse<T>>(path, {
+      ...options,
+      method: "POST",
+      body,
+    });
+    apply(() => this.#save(response));
     return response;
+  }
+
+  #save(response: AuthResponse<T>): void {
+    this.#client.authStore.save(response.token ?? "", response.record);
   }
 
   #matches(record: RecordModel): boolean {

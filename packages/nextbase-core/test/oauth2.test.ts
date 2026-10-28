@@ -16,6 +16,7 @@ const PASSWORD = "password 123 456";
 interface Account {
   sub: string;
   email?: string;
+  /** Whether the provider verified `email`; it did unless this says no. */
   emailVerified?: boolean;
   /** Overrides the nonce in the ID token. */
   nonce?: string;
@@ -35,6 +36,8 @@ describe("OAuth2 sign-in", () => {
   const sent: MailMessage[] = [];
   const pending: Promise<unknown>[] = [];
   const grants = new Map<string, Grant>();
+  /** The record hooks that ran for `users`, with their source. */
+  const hooked: string[] = [];
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -88,7 +91,7 @@ describe("OAuth2 sign-in", () => {
       const idToken = await new SignJWT({
         ...(grant.account.email !== undefined && {
           email: grant.account.email,
-          email_verified: grant.account.emailVerified ?? false,
+          email_verified: grant.account.emailVerified ?? true,
         }),
         nonce: grant.account.nonce ?? grant.nonce,
       })
@@ -216,14 +219,23 @@ describe("OAuth2 sign-in", () => {
       .record;
   };
 
-  /** Creates an account with a password and signs it in with a token. */
-  const passwordAccount = async (email: string) => {
+  /**
+   * Creates an account with a password, its email verified unless `verified`
+   * says no, and signs it in with a token.
+   */
+  const passwordAccount = async (email: string, verified = true) => {
     const users = nextbase.client().collection("users");
     await users.create({
       email,
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });
+    const { record } = await users.signInWithPassword(email, PASSWORD);
+    if (verified) {
+      await admin
+        .collection("users")
+        .update(record.id, { emailVerified: true });
+    }
     return users.signInWithPassword(email, PASSWORD);
   };
 
@@ -270,6 +282,19 @@ describe("OAuth2 sign-in", () => {
         },
       },
       waitUntil: (promise) => pending.push(promise),
+      hooks: {
+        users: {
+          onCreate: (e) => void hooked.push(`onCreate ${e.source}`),
+          onUpdate: (e) => {
+            hooked.push(`onUpdate ${e.source}`);
+            if (e.record.email === "refused@example.com") {
+              throw new Error("Refused by a hook.");
+            }
+          },
+          afterCreate: (e) => void hooked.push(`afterCreate ${e.source}`),
+          afterUpdate: (e) => void hooked.push(`afterUpdate ${e.source}`),
+        },
+      },
     });
     admin = nextbase.client({ superuser: true });
     await admin.collections.create({
@@ -303,7 +328,7 @@ describe("OAuth2 sign-in", () => {
     expect(superusers.oauth2).toEqual({ enabled: false, providers: [] });
   });
 
-  it("signs up a new account, verified when the provider verified its email", async () => {
+  it("signs up a new account with the email the provider verified", async () => {
     const response = await signIn(
       "idp",
       { sub: "u1", email: "ada@example.com", emailVerified: true },
@@ -317,11 +342,39 @@ describe("OAuth2 sign-in", () => {
     });
   });
 
+  it("runs record hooks for a sign-up as NextBase's own writes", async () => {
+    hooked.length = 0;
+    sessionOf(
+      await signIn("idp", { sub: "u-hooks", email: "hook@example.com" }),
+    );
+    await Promise.all(pending.splice(0));
+    expect(hooked).toEqual([
+      "onCreate system",
+      "onUpdate system",
+      "afterCreate system",
+      "afterUpdate system",
+    ]);
+
+    // A sign-up that fails after its first write keeps nothing: the record
+    // is gone, and the after hook of its create never runs.
+    hooked.length = 0;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failed = await signIn("idp", {
+      sub: "u-hooks-2",
+      email: "refused@example.com",
+    });
+    expect(errorOf(failed)).toBe("oauth2_failed");
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+    await Promise.all(pending.splice(0));
+    expect(hooked).toEqual(["onCreate system", "onUpdate system"]);
+    expect(await findUser("refused@example.com")).toBeUndefined();
+  });
+
   it("signs the same provider account in to the same record, even after an email change there", async () => {
     const first = await whoami(
       sessionOf(await signIn("idp", { sub: "u2", email: "bo@example.com" })),
     );
-    expect(first.emailVerified).toBe(false);
     const again = await whoami(
       sessionOf(
         await signIn("idp", { sub: "u2", email: "bo.new@example.com" }),
@@ -439,8 +492,14 @@ describe("OAuth2 sign-in", () => {
     await users.update(existing.id, { emailVerified: true });
     // The provider did not verify it.
     expect(
-      errorOf(await signIn("idp", { sub: "u6", email: "eve@example.com" })),
-    ).toBe("account_exists");
+      errorOf(
+        await signIn("idp", {
+          sub: "u6",
+          email: "eve@example.com",
+          emailVerified: false,
+        }),
+      ),
+    ).toBe("email_not_verified");
 
     const record = await whoami(
       sessionOf(
@@ -606,7 +665,7 @@ describe("OAuth2 sign-in", () => {
     ).toBe("sign_up_disabled");
     await admin.collections.update("users", {
       createRule: "",
-      authRule: "emailVerified = true",
+      authRule: 'email != "lee@example.com"',
     });
     expect(
       errorOf(await signIn("idp", { sub: "u11", email: "lee@example.com" })),
@@ -616,6 +675,108 @@ describe("OAuth2 sign-in", () => {
 
   it("needs a provider that shares an email to sign up", async () => {
     expect(errorOf(await signIn("idp", { sub: "u12" }))).toBe("email_required");
+  });
+
+  it("creates no account from an email the provider did not verify", async () => {
+    // Otherwise someone could claim your email at a provider that does not
+    // check it, and hold the account before you sign up.
+    const response = await signIn("idp", {
+      sub: "u16",
+      email: "pam@example.com",
+      emailVerified: false,
+    });
+    expect(errorOf(response)).toBe("email_not_verified");
+    expect(cookieOf(response, "nextbase_session")).toBeUndefined();
+    expect(await findUser("pam@example.com")).toBeUndefined();
+  });
+
+  it("links no provider to an account whose email nobody verified", async () => {
+    // Someone signed up with your email: they must not add a way in that
+    // survives you resetting the password.
+    const { record } = await passwordAccount("quin@example.com", false);
+    const response = await signIn(
+      "idp",
+      { sub: "u17", email: "attacker@example.com" },
+      { query: "?link=true", cookie: await cookieSignIn("quin@example.com") },
+    );
+    expect(errorOf(response)).toBe("email_not_verified");
+    const path = `/collections/users/records/${record.id}/linked-accounts`;
+    const { token } = await nextbase
+      .client()
+      .collection("users")
+      .signInWithPassword("quin@example.com", PASSWORD);
+    expect((await call(nextbase, "GET", path, { token })).body.items).toEqual(
+      [],
+    );
+  });
+
+  it("drops the providers linked before the owner first proved the email", async () => {
+    const users = nextbase.client().collection("users");
+    const tokenTo = async (email: string): Promise<string> => {
+      await Promise.all(pending.splice(0));
+      const message = sent.filter((m) => m.to === email).at(-1);
+      return /token=([\w.-]+)/.exec(message?.text ?? "")?.[1] ?? "";
+    };
+    /**
+     * An account someone set up under another's email, with their provider
+     * linked, as linking allowed before it needed a verified email.
+     */
+    const preHijacked = async (email: string, sub: string) => {
+      const { record } = await passwordAccount(email);
+      const linked = await signIn(
+        "idp",
+        { sub },
+        { query: "?link=true", cookie: await cookieSignIn(email) },
+      );
+      expect(errorOf(linked)).toBeNull();
+      await admin.collection("users").update(record.id, {
+        emailVerified: false,
+      });
+      return record.id;
+    };
+    const linkedTo = async (id: string): Promise<unknown[]> =>
+      (
+        await t.db
+          .newQuery(
+            "SELECT id FROM nextbase._linked_accounts WHERE record_id = {:id}",
+          )
+          .bind({ id })
+          .all()
+      ).map((row) => row.id);
+
+    // The owner resets the password.
+    const reset = await preHijacked("rae@example.com", "u18");
+    await users.requestPasswordReset("rae@example.com");
+    await users.confirmPasswordReset(
+      await tokenTo("rae@example.com"),
+      "the owner's password",
+      "the owner's password",
+    );
+    expect(await linkedTo(reset)).toEqual([]);
+    // The provider account no longer signs in to it, and cannot sign up
+    // without an email.
+    expect(errorOf(await signIn("idp", { sub: "u18" }))).toBe("email_required");
+
+    // The owner verifies the email.
+    const verified = await preHijacked("sol@example.com", "u19");
+    await users.requestEmailVerification("sol@example.com");
+    await users.confirmEmailVerification(await tokenTo("sol@example.com"));
+    expect(await linkedTo(verified)).toEqual([]);
+
+    // Once the email is proven, a reset keeps the owner's own providers.
+    const { record } = await passwordAccount("tia@example.com");
+    await signIn(
+      "idp",
+      { sub: "u20", email: "tia@example.com" },
+      { query: "?link=true", cookie: await cookieSignIn("tia@example.com") },
+    );
+    await users.requestPasswordReset("tia@example.com");
+    await users.confirmPasswordReset(
+      await tokenTo("tia@example.com"),
+      "tia's new password",
+      "tia's new password",
+    );
+    expect(await linkedTo(record.id)).toHaveLength(1);
   });
 
   it("is not offered to superusers or for unknown providers", async () => {

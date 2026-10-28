@@ -55,6 +55,7 @@ const post = await db
 - These tokens are only recognized in SQL code. Text inside string literals, quoted identifiers, dollar-quoted strings and comments is left alone.
 - Positional `$1` parameters are rejected; use `{:name}`.
 - Running a query that has a placeholder with no bound value throws.
+- SQL with several statements separated by `;` can only run without placeholders. Its result is that of the last statement.
 
 `query.sql` is the SQL as written and `query.rawSQL` is the SQL sent to Postgres.
 
@@ -104,7 +105,9 @@ Details worth knowing:
 - An `undefined` value in `hash()`, `isIn()` or `notIn()` throws. Skipping it would silently widen the condition, for example from one row to every row.
 - A `null` value becomes an explicit `IS NULL` or `IS NOT NULL` test, because `= NULL` and `IN (NULL)` never match.
 - `isIn()` with no values matches nothing; `notIn()` with no values has no effect.
-- `and()` and `or()` skip `null`, `undefined` and empty expressions, so optional filters can be passed directly.
+- An Expression value in `isIn()` or `notIn()` is written as its own `IN (...)` or `NOT IN (...)`, so it may be a sub-query: `isIn("id", exp("SELECT post FROM likes"))`.
+- `and()` and `or()` skip `null` and `undefined`, so optional filters can be passed directly.
+- An empty expression, such as `hash({})` or `notIn("a")`, has no effect: it matches every row. So `and()` skips it, `or()` with it is empty too, and `not()` of it matches nothing.
 - LIKE values are escaped and wrapped in `%`, so they match as literal substrings. `.match(left, right)` controls the `%` on each side, `.escape()` sets the escape pairs (with no arguments, values are used as patterns), and `.caseInsensitive()` uses `ILIKE`.
 
 ## Writing rows
@@ -158,7 +161,8 @@ await db.transaction(async (tx) => {
 - `Tx` has every query method of `DB`, all running on one connection.
 - `transaction()` commits when the callback resolves and rolls back when it rejects. If the rollback fails too, it rejects with an `AggregateError` holding both errors.
 - Options set the transaction modes: `{ isolation: "serializable", readOnly: true, deferrable: true }`.
-- `tx.transaction(fn)` runs `fn` in a savepoint. When `fn` rejects, only its changes are rolled back and the outer transaction stays usable.
+- `tx.transaction(fn)` runs `fn` in a savepoint. When `fn` rejects, only its changes are rolled back and the outer transaction stays usable. The same happens when `fn` resolves after a statement in it failed, and then `tx.transaction()` rejects with `TxAbortedError`.
+- `commit()` rejects with `TxAbortedError` when Postgres rolled the transaction back instead, because a statement in it failed and the error was caught.
 - `db.begin()` returns a `Tx` to finish yourself with `commit()` or `rollback()`. One of them must always be called, or the connection is never returned to the pool.
 - After commit or rollback, every query on the `Tx` throws `TxDoneError`.
 

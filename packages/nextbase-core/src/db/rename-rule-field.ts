@@ -1,8 +1,9 @@
 import type { Collection } from "@nextbasejs/client";
 
-// For migrations: renames an auth system field inside rules. String literals
-// are untouched, and a segment is renamed only where it resolves to an auth
-// collection's field; same-named fields elsewhere are left alone.
+// For migrations: renames a field of some auth collections inside rules.
+// String literals are untouched, and a segment is renamed only where it
+// resolves to the field of a collection `owns` accepts; same-named fields
+// elsewhere are left alone. `@request.auth.<from>` is always renamed.
 
 const IDENTIFIER =
   /@?[A-Za-z_][A-Za-z0-9_]*(:[A-Za-z_][A-Za-z0-9_]*)?(\.[A-Za-z0-9_]+(:[A-Za-z_][A-Za-z0-9_]*)?)*/y;
@@ -15,6 +16,7 @@ export function renameRuleField(
   collections: readonly Collection[],
   from: string,
   to: string,
+  owns: (collection: Collection) => boolean,
 ): string {
   let out = "";
   let i = 0;
@@ -40,7 +42,14 @@ export function renameRuleField(
     IDENTIFIER.lastIndex = i;
     const identifier = IDENTIFIER.exec(rule);
     if (identifier) {
-      out += renameIdentifier(identifier[0], collection, collections, from, to);
+      out += renameIdentifier(
+        identifier[0],
+        collection,
+        collections,
+        from,
+        to,
+        owns,
+      );
       i += identifier[0].length;
       continue;
     }
@@ -56,14 +65,13 @@ function renameIdentifier(
   collections: readonly Collection[],
   from: string,
   to: string,
+  owns: (collection: Collection) => boolean,
 ): string {
   const segments = text.split(".");
   const names = segments.map((s) => s.split(":")[0] as string);
   const renamed = new Set<number>();
   const isField = (c: Collection | undefined, name: string): boolean =>
-    c?.type === "auth" &&
-    c.fields.some((f) => f.system && f.name === from) &&
-    name === from;
+    c !== undefined && name === from && owns(c);
 
   // Walks a path from `start` in `current`, through relations.
   const walk = (current: Collection | undefined, start: number): void => {
@@ -85,7 +93,8 @@ function renameIdentifier(
   };
 
   if (names[0] === "@request") {
-    // Every auth collection has the field, so `@request.auth.<field>` is it.
+    // The field is renamed in every auth collection that has it, so
+    // `@request.auth.<field>` is it.
     if (names[1] === "auth" && names[2] === from) renamed.add(2);
     if (names[1] === "body" && isField(collection, names[2] as string)) {
       renamed.add(2);

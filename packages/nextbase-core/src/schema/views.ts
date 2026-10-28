@@ -106,18 +106,32 @@ async function asViewRole<T>(
 }
 
 // Functions in a view run with the caller's privileges, hence the role switch.
+// The role lasts until the transaction ends, even when `db` is a transaction
+// and this runs in a savepoint of it. With `restore`, for a transaction that
+// goes on after the read, the role is set back once the read succeeds; when
+// it fails, rolling back the savepoint sets it back.
 export function readAsViewRole<T>(
   db: { transaction<R>(fn: (tx: Tx) => Promise<R>): Promise<R> },
   role: string | null,
   run: (tx: Tx) => Promise<T>,
+  restore = false,
 ): Promise<T> {
   if (role === null)
     throw new Error("A view collection exists without a view role.");
   return db.transaction(async (tx) => {
+    const [previous] = restore
+      ? await tx.newQuery("SELECT current_user").column<string>()
+      : [];
     await tx
       .newQuery(`SET LOCAL ROLE ${tx.quoteSimpleColumnName(role)}`)
       .execute();
-    return run(tx);
+    const result = await run(tx);
+    if (previous !== undefined) {
+      await tx
+        .newQuery(`SET LOCAL ROLE ${tx.quoteSimpleColumnName(previous)}`)
+        .execute();
+    }
+    return result;
   });
 }
 

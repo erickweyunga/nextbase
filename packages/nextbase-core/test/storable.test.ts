@@ -5,6 +5,7 @@ import {
   parseDate,
   parseTimestamptz,
   timestampParam,
+  unstorableText,
 } from "../src/storable.ts";
 
 describe("storable values", () => {
@@ -57,5 +58,10 @@ describe("storable values", () => {
     expect(isStorableTime(Date.UTC(-4712, 0, 1))).toBe(true);
     expect(isStorableTime(Date.UTC(-4713, 11, 31))).toBe(false);
     expect(isStorableTime(Number.NaN)).toBe(false);
+    expect(unstorableText("a\u0000b")).toBe("Cannot contain NUL characters.");
+    for (const lone of ["\ud800", "a\udfff", "\udc00\ud800"]) {
+      expect(unstorableText(lone)).toBe("Cannot contain unpaired surrogates.");
+    }
+    expect(unstorableText("\ud83d\ude00")).toBeUndefined();
   });
 });

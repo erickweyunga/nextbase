@@ -1,7 +1,7 @@
 import type { Collection, Field } from "@nextbasejs/client";
 import { isMultiple } from "../schema/fields.ts";
 
-/** Record types plus a `Collections` map, for `new NextBaseClient<Collections>()`. */
+/** Record types plus a `Collections` map, for `NextBase<Collections>` and `NextBaseClient<Collections>`. */
 export function typegen(collections: readonly Collection[]): string {
   const names = new Map<string, string>();
   const used = new Set<string>();
@@ -36,7 +36,7 @@ export function typegen(collections: readonly Collection[]): string {
     out.push("}", "");
   }
   out.push(
-    "/** Every collection by name, for `new NextBaseClient<Collections>()`. */",
+    "/** Every collection by name, for `NextBase<Collections>` and `NextBaseClient<Collections>`. */",
     "export type Collections = {",
     ...collections.map((c) => `  ${c.name}: ${names.get(c.id)};`),
     "};",

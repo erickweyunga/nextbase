@@ -47,7 +47,7 @@ A file field's value may be:
 | empty | No files. |
 
 `field+` adds files and `field-` removes names. Form data requests are limited
-to 32 MiB.
+to 32 MiB and 1000 parts; send longer lists of values in `@jsonPayload`.
 
 **Errors** on the field: `validation_file_too_large`,
 `validation_invalid_mime_type`, `validation_too_many`, `validation_invalid_upload`

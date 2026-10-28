@@ -37,19 +37,35 @@ const SUPERUSERS = "_superusers";
 /**
  * An invalid Bearer token is a 401 so API clients notice; an invalid cookie is
  * cleared and the request continues anonymously so public pages never break.
- * Pass `extend` only when the response can also renew the cookie.
+ * Pass `extend` only when the response can also renew the cookie. With
+ * `writeCookie`, cookie changes are written through it instead of returned,
+ * and a cookie session is extended only once its renewed cookie is written.
+ * It returns false when it cannot write, as in a Next.js server component:
+ * a session extended past its cookie would end early all the same.
  */
 export async function resolvePrincipal(
   request: Request,
   db: DB,
   schemas: SchemaCache,
-  { extend }: { extend: boolean },
+  {
+    extend,
+    writeCookie,
+  }: {
+    extend: boolean;
+    writeCookie?: ((header: string) => boolean) | undefined;
+  },
 ): Promise<Resolved> {
   const bearer = bearerToken(request);
   const cookie = bearer === undefined ? sessionCookie(request) : undefined;
   const token = bearer ?? cookie;
   if (token === undefined) return { principal: ANONYMOUS };
-  const { schema, active } = await findSession(db, schemas, token, { extend });
+  const { schema, active } = await findSession(db, schemas, token, {
+    extend:
+      cookie !== undefined && writeCookie
+        ? (expires) =>
+            writeCookie(setSessionCookie(request, { token: cookie, expires }))
+        : extend,
+  });
   if (!active) {
     if (cookie === undefined) {
       throw new ApiError(
@@ -57,11 +73,11 @@ export async function resolvePrincipal(
         "The authorization token is invalid or has expired.",
       );
     }
-    return {
-      principal: ANONYMOUS,
-      schema,
-      setCookie: setSessionCookie(request),
-    };
+    const cleared = setSessionCookie(request);
+    if (!writeCookie)
+      return { principal: ANONYMOUS, schema, setCookie: cleared };
+    writeCookie(cleared);
+    return { principal: ANONYMOUS, schema };
   }
   const { session, collection, record, extended } = active;
   return {
@@ -74,7 +90,8 @@ export async function resolvePrincipal(
       superuser: collection.id === SUPERUSERS,
     },
     ...(cookie !== undefined &&
-      extended && {
+      extended &&
+      !writeCookie && {
         setCookie: setSessionCookie(request, {
           token: cookie,
           expires: session.expires,

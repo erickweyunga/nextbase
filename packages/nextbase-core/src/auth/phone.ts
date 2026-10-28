@@ -2,9 +2,11 @@ import { createHash, randomInt } from "node:crypto";
 import type { AuthCollection } from "@nextbasejs/client";
 import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
+import type { Effects } from "../effects.ts";
 import { ApiError } from "../errors.ts";
 import { normalizePhone } from "../phone.ts";
 import { newId } from "../random.ts";
+import type { Hooks } from "../records/hooks.ts";
 import { newRecord, systemContext, updateRecord } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
 import { randomPassword } from "../schema/fields.ts";
@@ -33,6 +35,8 @@ export interface PhoneContext {
   sms: Sms;
   mailer: Mailer;
   rejectBreachedPasswords: boolean;
+  effects: Effects;
+  hooks: Hooks;
 }
 
 /** A code is accepted only for the purpose it was sent for. */
@@ -122,6 +126,9 @@ export async function authWithPhoneCode(
       request: { method: "POST", query: {}, headers: {}, body: input },
       // Callers may not set phoneVerified themselves; the code just proved it.
       vouched: new Set(["phone", "phoneVerified"]),
+      effects: ctx.effects,
+      hooks: ctx.hooks,
+      source: "system",
     },
     collection,
     input,
@@ -140,14 +147,12 @@ export async function confirmPasswordResetByPhone(
   await consumeCode(ctx.db, collection, phone, "passwordReset", input.code);
   const record = await findByPhone(ctx.db, collection, phone);
   if (record?.phoneVerified !== true) throw invalidCode();
+  // The update tells the owner their password changed, if they have an email.
   await privilegedUpdate(ctx, collection, record, {
     password: input.password,
     passwordConfirm: input.passwordConfirm,
   });
   await clearAttempts(ctx.db, [accountKey(collection.id, record.id as string)]);
-  if (record.email) {
-    ctx.mailer.send("passwordChanged", collection.name, record.email as string);
-  }
 }
 
 export async function requestPhoneVerification(

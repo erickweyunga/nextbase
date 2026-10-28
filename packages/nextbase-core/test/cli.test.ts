@@ -1,12 +1,14 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import {
   NextBaseClient,
   type RecordModel,
   type RecordService,
 } from "@nextbasejs/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { newPrompter } from "../src/cli/prompt.ts";
 import { type Io, run } from "../src/cli/run.ts";
 import { NextBase } from "../src/index.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
@@ -174,5 +176,33 @@ describe("nextbase CLI", () => {
     const explicit: RecordService<PostsRecord> =
       nb.collection<PostsRecord>("legacy");
     expect([posts, other, explicit]).toHaveLength(3);
+  });
+});
+
+describe("CLI prompts", () => {
+  it("reads every piped answer, even when they arrive together", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let asked = "";
+    output.on("data", (chunk: Buffer) => {
+      asked += chunk.toString();
+    });
+    const prompter = newPrompter(input, output);
+    // As with `printf 'pw\npw\n' | nextbase superuser --email ...`.
+    input.end("a long secret password\na long secret password\n");
+    try {
+      expect(await prompter.prompt("Password: ", true)).toBe(
+        "a long secret password",
+      );
+      expect(await prompter.prompt("Repeat the password: ", true)).toBe(
+        "a long secret password",
+      );
+      await expect(prompter.prompt("Again: ", true)).rejects.toThrow(
+        "The input ended before every question was answered.",
+      );
+    } finally {
+      prompter.close();
+    }
+    expect(asked).toBe("Password: Repeat the password: Again: ");
   });
 });

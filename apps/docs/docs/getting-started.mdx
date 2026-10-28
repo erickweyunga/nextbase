@@ -84,8 +84,30 @@ const nb = new NextBaseClient(); // defaults to /api/nextbase
 await nb.health(); // { status: "ok" }
 ```
 
+## 6. Type your collections
+
+Once you have collections, write their record types with the CLI, and run it
+again whenever they change:
+
+```sh
+npx nextbase typegen --out lib/nextbase-types.ts
+```
+
+Pass the `Collections` type it exports to the instance. Then
+`collection("posts")` is typed on every client `nextbase` makes, `nb()`
+included, and so are its [record hooks](/docs/guides/hooks):
+
+```ts title="lib/nextbase.ts"
+import type { Collections } from "./nextbase-types";
+
+export const nextbase = new NextBase<Collections>();
+```
+
+In the browser, use `new NextBaseClient<Collections>()`.
+
 ## Next steps
 
 - [Authentication](/docs/guides/auth)
 - [Collections and fields](/docs/guides/collections)
+- [Record hooks](/docs/guides/hooks)
 - [REST API reference](/docs/api)

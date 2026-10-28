@@ -1,4 +1,5 @@
 import type { ErrorData, FieldError } from "@nextbasejs/client";
+import { unstorableText } from "../storable.ts";
 
 export type Path = readonly (string | number)[];
 
@@ -63,7 +64,7 @@ export class Reader {
   string(key: string, fallback: string): string {
     if (!this.has(key)) return fallback;
     const value = this.input[key];
-    if (typeof value === "string") return value;
+    if (typeof value === "string") return this.#storable(key, value, fallback);
     this.fail(key, "validation_invalid_type", "Must be a string.");
     return fallback;
   }
@@ -71,7 +72,8 @@ export class Reader {
   stringOrNull(key: string, fallback: string | null): string | null {
     if (!this.has(key)) return fallback;
     const value = this.input[key];
-    if (value === null || typeof value === "string") return value;
+    if (value === null) return value;
+    if (typeof value === "string") return this.#storable(key, value, fallback);
     this.fail(key, "validation_invalid_type", "Must be a string or null.");
     return fallback;
   }
@@ -119,9 +121,20 @@ export class Reader {
     if (!this.has(key)) return [...fallback];
     const value = this.input[key];
     if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
-      return value;
+      const problem = value.map(unstorableText).find(Boolean);
+      if (!problem) return value;
+      this.fail(key, "validation_invalid_value", problem);
+      return [...fallback];
     }
     this.fail(key, "validation_invalid_type", "Must be an array of strings.");
     return [...fallback];
+  }
+
+  // Schemas are stored in Postgres, so their strings must be storable too.
+  #storable<T>(key: string, value: string, fallback: T): string | T {
+    const problem = unstorableText(value);
+    if (!problem) return value;
+    this.fail(key, "validation_invalid_value", problem);
+    return fallback;
   }
 }

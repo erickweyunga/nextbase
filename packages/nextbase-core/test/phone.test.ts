@@ -199,6 +199,16 @@ describe("phone sign-in", () => {
     expect(misused.status).toBe(400);
   });
 
+  it("sends no password-changed email to an account with no email", async () => {
+    const { record } = await signIn("+255713000009");
+    await admin
+      .collection("users")
+      .update(record.id, { password: PASSWORD, passwordConfirm: PASSWORD });
+    await users().signInWithPassword("+255713000009", PASSWORD);
+    await flush();
+    expect(mails.filter((m) => m.to === "")).toEqual([]);
+  });
+
   it("verifies and changes the signed-in account's phone, telling the old phone and email", async () => {
     const nb = nextbase.client();
     await nb.collection("users").signUp({
