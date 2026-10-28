@@ -1,4 +1,9 @@
-import type { Builder, QueryConfig, QueryResult } from "./builder.ts";
+import {
+  type Builder,
+  lastResult,
+  type QueryConfig,
+  type QueryResult,
+} from "./builder.ts";
 
 /** Values for `{:name}` placeholders, keyed by name. */
 export type Params = Record<string, unknown>;
@@ -81,21 +86,23 @@ export class Query {
     return rows[0] as T;
   }
 
+  // SQL with several statements and no parameters is sent as one simple
+  // query, which returns a result for each statement. Only the last one counts.
   async #run(kind: "query" | "exec", rowMode?: "array"): Promise<QueryResult> {
-    const values = this.#placeholders.map((name) => {
-      if (!Object.hasOwn(this.#params, name)) {
-        throw new Error(`dbx: named parameter not found: ${name}`);
-      }
-      return this.#params[name];
-    });
     const { executor, options } = this.#builder;
     const log = kind === "exec" ? options.execLog : options.queryLog;
     const start = performance.now();
     try {
+      const values = this.#placeholders.map((name) => {
+        if (!Object.hasOwn(this.#params, name)) {
+          throw new Error(`dbx: named parameter not found: ${name}`);
+        }
+        return this.#params[name];
+      });
       const config: QueryConfig = { text: this.rawSQL, values };
       if (rowMode) config.rowMode = rowMode;
       if (options.types) config.types = options.types;
-      const result = await executor.query(config);
+      const result = lastResult(await executor.query(config));
       log?.({
         sql: this.sql,
         params: this.params,
