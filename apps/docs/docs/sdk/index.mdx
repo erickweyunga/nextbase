@@ -64,7 +64,10 @@ reason, such as `controller.abort()`.
 ## Request options
 
 Every method takes fetch options such as `signal`, `cache` and Next.js's
-`next: { revalidate }`, plus `query` and `headers`.
+`next: { revalidate }`, plus `query` and `headers`. The server-side client
+from `nextbase.client()` or `serverClient()` calls NextBase in-process, without
+`fetch`, so `cache` and `next` do nothing there; `signal` works as with
+`fetch`: an aborted request fails with a `ClientError` whose `isAbort` is true.
 
 ## Auth store
 

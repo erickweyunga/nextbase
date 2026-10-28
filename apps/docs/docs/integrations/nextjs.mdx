@@ -49,8 +49,8 @@ export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
 :::info
 
 You can mount NextBase elsewhere with the `basePath` option of
-`new NextBase()`, but we recommend keeping it at `/api/nextbase`, the default
-of every client.
+`new NextBase()`, an absolute path such as `/backend`, but we recommend keeping
+it at `/api/nextbase`, the default of every client.
 
 :::
 
@@ -169,9 +169,10 @@ export async function addNote(form: FormData) {
 
 :::warning
 
-Server components cannot set cookies. Reading the session there works, but a
-renewal of the cookie that the request would trigger is skipped until the user
-next calls a server action or the API, which happens at most once a day.
+Server components cannot set cookies. Reading the session there works, but it
+never renews the session. Server actions and route handlers using `nb()` renew
+it, as do the browser's requests to the API, at most once a day. However
+active, a session ends 30 days after sign-in, and the user signs in again.
 
 :::
 

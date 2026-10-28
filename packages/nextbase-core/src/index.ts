@@ -143,7 +143,10 @@ export interface NextBaseOptions {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-/** The part of Next.js's `cookies()` store `client()` uses; `set` lets sign-in/out update it. */
+/**
+ * The part of Next.js's `cookies()` store `client()` uses; `set` lets sign-in,
+ * sign-out and session renewal update it.
+ */
 export interface CookieStore {
   get(name: string): { value: string } | undefined;
   set?(
@@ -192,10 +195,18 @@ export class NextBase {
   #setupLoggedAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: NextBaseOptions = {}) {
-    this.#basePath = (options.basePath ?? DEFAULT_BASE_PATH).replace(
-      /\/+$/,
-      "",
-    );
+    const basePath = options.basePath ?? DEFAULT_BASE_PATH;
+    // Requests are matched on their URL's pathname, so any other form, such
+    // as one without the leading slash, would match nothing.
+    if (
+      !basePath.startsWith("/") ||
+      new URL(basePath, `http://${IN_PROCESS_HOST}`).pathname !== basePath
+    ) {
+      throw new TypeError(
+        `basePath must be an absolute URL path such as "${DEFAULT_BASE_PATH}", not ${JSON.stringify(basePath)}.`,
+      );
+    }
+    this.#basePath = basePath.replace(/\/+$/, "");
     this.#database = options.database;
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     const appUrl =
@@ -311,8 +322,10 @@ export class NextBase {
 
   /**
    * An in-process client with the same routing, rules and output as HTTP. With
-   * `cookies`, it acts as that session's user and sign-in/out updates the cookie.
-   * Create one per request; never share a signed-in client between users.
+   * `cookies`, it acts as that session's user; sign-in, sign-out and session
+   * renewal update the cookie where the page can set it, so not in server
+   * components. Create one per request; never share a signed-in client
+   * between users.
    */
   client(options: ServerClientOptions = {}): NextBaseClient {
     const principal: Principal | undefined = options.superuser
@@ -325,19 +338,37 @@ export class NextBase {
       process.env.NODE_ENV === "production" ||
       (options.secure ??
         options.cookies?.get(SESSION_COOKIES.secure) !== undefined);
+    const { cookies } = options;
+    // Next.js throws on cookie writes outside server actions and route
+    // handlers, as in server components, and sessions are then not renewed.
+    const writeCookie =
+      cookies?.set &&
+      ((header: string): boolean => {
+        try {
+          writeSessionCookie(cookies, header);
+          return true;
+        } catch {
+          return false;
+        }
+      });
     return new NextBaseClient({
       baseUrl: `${secure ? "https" : "http"}://${IN_PROCESS_HOST}${this.#basePath}`,
       fetch: async (input, init) => {
         const request = new Request(input, init);
+        // As fetch does, an aborted signal rejects before anything is sent.
+        request.signal.throwIfAborted();
         const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
-        const value = options.cookies?.get(name)?.value;
+        const value = cookies?.get(name)?.value;
         if (value) request.headers.set("cookie", `${name}=${value}`);
-        const response = await this.#dispatch(request, {
+        const response = this.#dispatch(request, {
           principal,
           http: false,
+          writeCookie,
+        }).then((response) => {
+          if (cookies) applySessionCookie(cookies, response);
+          return response;
         });
-        if (options.cookies) applySessionCookie(options.cookies, response);
-        return response;
+        return abortable(response, request.signal);
       },
       authStore: new AuthStore({ storage: null }),
     });
@@ -376,10 +407,20 @@ export class NextBase {
     }
   }
 
-  // Only `client()` passes a `principal`; HTTP requests always use their own credentials.
+  // Only `client()` passes a `principal`; HTTP requests always use their own
+  // credentials. In-process requests write the session cookie through
+  // `writeCookie`, when the page can set cookies.
   async #dispatch(
     request: Request,
-    { principal, http }: { principal?: Principal | undefined; http: boolean },
+    {
+      principal,
+      http,
+      writeCookie,
+    }: {
+      principal?: Principal | undefined;
+      http: boolean;
+      writeCookie?: ((header: string) => boolean) | undefined;
+    },
   ): Promise<Response> {
     const { pathname } = new URL(request.url);
     const basePath = this.#basePath;
@@ -421,10 +462,11 @@ export class NextBase {
           let caller = principal;
           if (!caller) {
             // With a token, this also reads the schema, in the same query as
-            // the session. Server components cannot set cookies, so in-process
-            // reads neither renew sessions nor remove a stale cookie.
+            // the session. In-process requests renew a cookie session only
+            // where the cookie can be written, so not in server components.
             const resolved = await resolvePrincipal(request, db, this.#schema, {
               extend: http,
+              writeCookie,
             });
             schema = resolved.schema;
             caller = resolved.principal;
@@ -525,10 +567,16 @@ export class NextBase {
 
 /**
  * No caching: responses depend on the cookie, which shared caches cannot see.
- * No sniffing: it could turn a JSON response into a page that runs scripts.
+ * Setting a cookie does not stop a shared cache from storing the response
+ * (RFC 9111, section 7.3), so one that sets a cookie, such as a public file
+ * sent with a renewed session, is never stored: the cache would hand the
+ * session to everyone. No sniffing: it could turn a JSON response into a page
+ * that runs scripts.
  */
 function api(response: Response): Response {
-  if (!response.headers.has("cache-control")) {
+  if (response.headers.getSetCookie().length > 0) {
+    response.headers.set("cache-control", "private, no-store");
+  } else if (!response.headers.has("cache-control")) {
     response.headers.set("cache-control", "no-store");
   }
   response.headers.set("x-content-type-options", "nosniff");
@@ -573,21 +621,43 @@ function errorResponse(error: unknown, schemaRaced: boolean): Response {
 
 // Next.js allows setting cookies in server actions and route handlers only.
 function applySessionCookie(cookies: CookieStore, response: Response): void {
-  const names: ReadonlySet<string> = new Set(Object.values(SESSION_COOKIES));
   for (const header of response.headers.getSetCookie()) {
-    const [pair = "", ...attributes] = header.split("; ");
-    const separator = pair.indexOf("=");
-    const name = pair.slice(0, separator);
-    if (!names.has(name)) continue;
-    const maxAge = Number(
-      attributes.find((a) => a.startsWith("Max-Age="))?.slice(8) ?? 0,
-    );
-    cookies.set?.(name, pair.slice(separator + 1), {
-      path: "/",
-      maxAge,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: attributes.includes("Secure"),
-    });
+    writeSessionCookie(cookies, header);
   }
+}
+
+const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set(
+  Object.values(SESSION_COOKIES),
+);
+
+/** Writes a session cookie's Set-Cookie header to the store; other cookies are left out. */
+function writeSessionCookie(cookies: CookieStore, header: string): void {
+  const [pair = "", ...attributes] = header.split("; ");
+  const separator = pair.indexOf("=");
+  const name = pair.slice(0, separator);
+  if (!SESSION_COOKIE_NAMES.has(name)) return;
+  const maxAge = Number(
+    attributes.find((a) => a.startsWith("Max-Age="))?.slice(8) ?? 0,
+  );
+  cookies.set?.(name, pair.slice(separator + 1), {
+    path: "/",
+    maxAge,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: attributes.includes("Secure"),
+  });
+}
+
+/**
+ * Settles as `fetch` would with this signal: rejected with its reason once it
+ * aborts. As over HTTP, work the request started may still finish.
+ */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }

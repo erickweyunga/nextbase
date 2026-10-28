@@ -825,6 +825,76 @@ describe("sessions", () => {
       ).toMatchObject({ email: "zed@example.com" });
     });
 
+    it("renews the cookie from server actions, never from server components", async () => {
+      await signUp("lu@example.com");
+      const cookies = new Cookies();
+      await nextbase
+        .client({ cookies })
+        .collection("users")
+        .signInWithPassword("lu@example.com", "password 123 456", {
+          cookie: true,
+        });
+      const token = cookies.values.get("nextbase_session")?.value;
+      const expiresIn = async (): Promise<number> => {
+        const [seconds] = await t.db
+          .newQuery(
+            "SELECT extract(epoch FROM expires - now()) FROM nextbase._sessions s JOIN nextbase.users u ON u.id = s.record_id WHERE u.email = 'lu@example.com'",
+          )
+          .column<number>();
+        return Number(seconds);
+      };
+      await t.db
+        .newQuery(
+          "UPDATE nextbase._sessions SET expires = now() + interval '1 hour' WHERE collection_id <> '_superusers'",
+        )
+        .execute();
+      cookies.values.set("nextbase_session", {
+        value: token as string,
+        maxAge: 3600,
+        httpOnly: true,
+      });
+
+      // Server components throw on cookie writes, so the session is left
+      // as it is: extending it would outlive the cookie the browser keeps.
+      const page: CookieStore = {
+        get: (name) => cookies.get(name),
+        set: () => {
+          throw new Error(
+            "Cookies can only be modified in a Server Action or Route Handler.",
+          );
+        },
+      };
+      expect(
+        (await nextbase.client({ cookies: page }).getSession())?.record,
+      ).toMatchObject({ email: "lu@example.com" });
+      expect(await expiresIn()).toBeLessThan(3700);
+
+      // A server action or route handler renews both.
+      expect(
+        (await nextbase.client({ cookies }).getSession())?.record,
+      ).toMatchObject({ email: "lu@example.com" });
+      expect(cookies.values.get("nextbase_session")).toMatchObject({
+        value: token,
+        httpOnly: true,
+      });
+      expect(cookies.values.get("nextbase_session")?.maxAge).toBeGreaterThan(
+        WEEK - 60,
+      );
+      expect(await expiresIn()).toBeGreaterThan(WEEK - 60);
+
+      // Server components also leave a cookie whose session ended, and
+      // server actions remove it.
+      await t.db
+        .newQuery(
+          "UPDATE nextbase._sessions SET expires = now() - interval '1 second' WHERE collection_id <> '_superusers'",
+        )
+        .execute();
+      expect(await nextbase.client({ cookies: page }).getSession()).toBeNull();
+      expect(cookies.values.get("nextbase_session")?.maxAge).toBeGreaterThan(0);
+      expect(await nextbase.client({ cookies }).getSession()).toBeNull();
+      expect(cookies.values.get("nextbase_session")?.maxAge).toBe(0);
+    });
+
     it("never extends sessions from in-process reads, which cannot renew the cookie", async () => {
       await signUp("jo@example.com");
       const cookies = new Cookies();

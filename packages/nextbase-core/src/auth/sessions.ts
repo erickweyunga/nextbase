@@ -142,13 +142,15 @@ async function readSession(
 /**
  * Finds the token's session and returns it with the current schema. This
  * takes one query. When the schema changed since it was cached, the schema
- * is reloaded and the record is read again, which takes a few more.
+ * is reloaded and the record is read again, which takes a few more. With
+ * `extend`, a session due for it is extended; a function is first given the
+ * new end, and the session is extended only if it returns true.
  */
 export async function findSession(
   db: DB,
   schemas: SchemaCache,
   token: string,
-  { extend }: { extend: boolean },
+  { extend }: { extend: boolean | ((expires: Date) => boolean) },
 ): Promise<{ schema: Schema; active: ActiveSession | undefined }> {
   const hashed = tokenHash(token);
   let built = schemas.cached ?? (await schemas.get(db));
@@ -187,10 +189,15 @@ export async function findSession(
   const { duration } = collection.tokens.auth;
   const remaining = (session.expires.getTime() - now.getTime()) / 1000;
   const cap = session.created.getTime() + MAX_AGE * 1000;
-  const extended =
-    extend &&
+  const due =
     remaining < duration - Math.min(UPDATE_AGE, duration / 2) &&
     session.expires.getTime() < cap;
+  let extended = false;
+  if (due && extend !== false) {
+    // The end extendSession sets, by the database's clock.
+    const expires = new Date(Math.min(now.getTime() + duration * 1000, cap));
+    extended = extend === true || extend(expires);
+  }
   if (extended)
     session.expires = await extendSession(db, collection, session.id);
   return { schema, active: { session, collection, record, extended } };

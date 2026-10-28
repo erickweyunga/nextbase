@@ -35,7 +35,8 @@ export function newNextHandler(nextbase: NextBase): NextRouteHandlers {
 
 /**
  * A client acting as the session cookie's user. Call it per request; in server
- * actions and route handlers, sign-in with `{ cookie: true }` and sign-out update the cookie.
+ * actions and route handlers, sign-in with `{ cookie: true }`, sign-out and
+ * session renewal update the cookie. Server components cannot set cookies.
  */
 export async function serverClient(
   nextbase: NextBase,

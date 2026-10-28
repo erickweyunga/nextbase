@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { emitKeypressEvents } from "node:readline";
-import { createInterface } from "node:readline/promises";
+import { newPrompter } from "./prompt.ts";
 import { type Io, run } from "./run.ts";
 
 // loadEnvFile keeps set variables, so precedence is env, .env.local, .env (as in Next.js).
@@ -9,51 +8,16 @@ for (const file of [".env.local", ".env"]) {
   if (existsSync(file)) process.loadEnvFile(file);
 }
 
+const prompter = newPrompter(process.stdin, process.stdout);
 const io: Io = {
   env: process.env,
   out: (line) => process.stdout.write(`${line}\n`),
   err: (line) => process.stderr.write(`${line}\n`),
-  prompt,
+  prompt: prompter.prompt,
 };
 
-process.exitCode = await run(process.argv.slice(2), io);
-
-// Hidden input uses raw mode so nothing is echoed; piped input is read as a line.
-async function prompt(question: string, hidden: boolean): Promise<string> {
-  const { stdin, stdout } = process;
-  if (!hidden || !stdin.isTTY) {
-    const lines = createInterface({ input: stdin, output: stdout });
-    try {
-      return await lines.question(question);
-    } finally {
-      lines.close();
-    }
-  }
-  stdout.write(question);
-  emitKeypressEvents(stdin);
-  stdin.setRawMode(true);
-  stdin.resume();
-  return new Promise((resolve, reject) => {
-    let value = "";
-    const done = (finish: () => void): void => {
-      stdin.off("keypress", onKey);
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdout.write("\n");
-      finish();
-    };
-    const onKey = (
-      text: string | undefined,
-      key: { name?: string; ctrl?: boolean },
-    ): void => {
-      if (key.ctrl && key.name === "c")
-        done(() => reject(new Error("Canceled.")));
-      else if (key.name === "return" || key.name === "enter")
-        done(() => resolve(value));
-      else if (key.name === "backspace")
-        value = [...value].slice(0, -1).join("");
-      else if (text && !key.ctrl) value += text;
-    };
-    stdin.on("keypress", onKey);
-  });
+try {
+  process.exitCode = await run(process.argv.slice(2), io);
+} finally {
+  prompter.close();
 }
