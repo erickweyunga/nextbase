@@ -11,6 +11,7 @@ import {
   updateRecord,
 } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
+import { phoneIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import type { Principal } from "./principal.ts";
 import type { Sms } from "./sms.ts";
@@ -226,7 +227,7 @@ async function findByPhone(
   const [record] = await q
     .select()
     .from(table(collection.name))
-    .where(hash({ phone }))
+    .where(phoneIs("phone", phone))
     .limit(1)
     .all();
   return record;

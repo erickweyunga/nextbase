@@ -1,18 +1,12 @@
 import type { AuthCollection } from "@nextbasejs/client";
-import {
-  and,
-  type DB,
-  type Expression,
-  exp,
-  hash,
-  type Row,
-} from "@nextbasejs/dbx";
+import { and, type DB, type Expression, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { compileFilter } from "../filter/compiler.ts";
 import { normalizePhone } from "../phone.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
+import { emailIs, phoneIs } from "./identity.ts";
 import {
   hashPassword,
   needsRehash,
@@ -110,14 +104,13 @@ async function findByIdentity(
   for (const name of collection.identityFields) {
     const field = collection.fields.find((f) => f.name === name);
     if (!field || identity === "") continue;
-    // Emails are unique case-insensitively; phones are stored in E.164.
     let condition: Expression;
     if (field.type === "email") {
-      condition = exp(`lower([[${name}]]) = lower({:identity})`, { identity });
+      condition = emailIs(name, identity);
     } else if (field.type === "phone") {
       const phone = normalizePhone(identity);
       if (phone === undefined) continue;
-      condition = hash({ [name]: phone });
+      condition = phoneIs(name, phone);
     } else {
       condition = hash({ [name]: identity });
     }
