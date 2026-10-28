@@ -29,14 +29,26 @@ export interface QueryResult {
   command?: string;
 }
 
-/** The subset of a `pg` Pool or PoolClient that dbx calls. */
+/**
+ * The subset of a `pg` Pool or PoolClient that dbx calls. SQL with several
+ * statements and no parameters gives one result for each statement.
+ */
 export interface Queryable {
-  query(config: QueryConfig): Promise<QueryResult>;
+  query(config: QueryConfig): Promise<QueryResult | QueryResult[]>;
 }
 
 /** The pool for `DB`, one pinned connection for `Tx`. */
 export interface Executor {
-  query(config: QueryConfig): Promise<QueryResult>;
+  query(config: QueryConfig): Promise<QueryResult | QueryResult[]>;
+}
+
+/**
+ * The result of the last statement, as libpq's `PQexec` returns for SQL with
+ * several statements.
+ */
+export function lastResult(result: QueryResult | QueryResult[]): QueryResult {
+  if (!Array.isArray(result)) return result;
+  return result.at(-1) ?? { rows: [], rowCount: null };
 }
 
 export interface LogEvent {

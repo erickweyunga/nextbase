@@ -4,7 +4,8 @@ import { bindParam, mergeParams, quoteIdentifierPath } from "./sql.ts";
 
 /**
  * A SQL fragment for a condition or a written value. `build` adds its values to
- * `params` and returns "" when it has no effect, so callers skip it.
+ * `params` and returns "" when it has no effect, so callers skip it. As a
+ * condition, "" restricts nothing: it is true for every row.
  */
 export interface Expression {
   build(builder: Builder, params: Params): string;
@@ -72,9 +73,10 @@ class NotExp implements Expression {
     this.#exp = exp;
   }
 
+  // An empty condition is true, so its negation matches nothing.
   build(builder: Builder, params: Params): string {
     const sql = this.#exp.build(builder, params);
-    return sql === "" ? "" : `NOT (${sql})`;
+    return sql === "" ? "0=1" : `NOT (${sql})`;
   }
 }
 
@@ -90,13 +92,18 @@ class AndOrExp implements Expression {
     this.#op = op;
   }
 
+  // Missing expressions are left out. An empty one is true, so it adds nothing
+  // to AND and makes OR true as a whole.
   build(builder: Builder, params: Params): string {
     const parts: string[] = [];
+    let alwaysTrue = false;
     for (const exp of this.#exps) {
       if (!exp) continue;
       const sql = exp.build(builder, params);
       if (sql !== "") parts.push(sql);
+      else alwaysTrue = true;
     }
+    if (alwaysTrue && this.#op === "OR") return "";
     if (parts.length <= 1) return parts[0] ?? "";
     return `(${parts.join(`) ${this.#op} (`)})`;
   }
@@ -113,20 +120,29 @@ class InExp implements Expression {
     this.#not = not;
   }
 
-  // `= NULL` never matches, so null becomes an explicit IS [NOT] NULL test.
+  // `= NULL` never matches, so null becomes an explicit IS [NOT] NULL test. An
+  // Expression value gets its own IN (...), so it may be a sub-query, and one
+  // that is empty is left out.
   build(builder: Builder, params: Params): string {
-    if (this.#values.length === 0) return this.#not ? "" : "0=1";
-
     const col = quoteIdentifierPath(this.#col);
     let hasNull = false;
     const values: string[] = [];
+    const expressions: string[] = [];
     for (const value of this.#values) {
       if (value === undefined) {
         throw new TypeError(`dbx: IN value for "${this.#col}" is undefined.`);
       }
-      if (value === null) hasNull = true;
-      else if (isExpression(value)) values.push(value.build(builder, params));
-      else values.push(bindParam(params, value));
+      if (value === null) {
+        hasNull = true;
+      } else if (isExpression(value)) {
+        const sql = value.build(builder, params);
+        if (sql !== "") expressions.push(sql);
+      } else {
+        values.push(bindParam(params, value));
+      }
+    }
+    if (!hasNull && values.length === 0 && expressions.length === 0) {
+      return this.#not ? "" : "0=1";
     }
 
     const parts: string[] = [];
@@ -136,6 +152,9 @@ class InExp implements Expression {
       parts.push(
         `${col} ${this.#not ? "NOT IN" : "IN"} (${values.join(", ")})`,
       );
+    }
+    for (const sql of expressions) {
+      parts.push(`${col} ${this.#not ? "NOT IN" : "IN"} (${sql})`);
     }
     if (hasNull) parts.push(`${col} ${this.#not ? "IS NOT NULL" : "IS NULL"}`);
     if (parts.length === 1) return parts[0] as string;
@@ -274,7 +293,7 @@ export function hash(values: Record<string, unknown>): Expression {
   return new HashExp(values);
 }
 
-/** `NOT (exp)`. Has no effect when `exp` is empty. */
+/** `NOT (exp)`. Matches nothing when `exp` is empty, since that matches everything. */
 export function not(exp: Expression): Expression {
   return new NotExp(exp);
 }
@@ -284,17 +303,26 @@ export function and(...exps: (Expression | null | undefined)[]): Expression {
   return new AndOrExp(exps, "AND");
 }
 
-/** Joins expressions with OR. Empty and missing expressions are skipped. */
+/**
+ * Joins expressions with OR. Missing expressions are skipped; an empty one
+ * matches everything, so the whole OR is empty.
+ */
 export function or(...exps: (Expression | null | undefined)[]): Expression {
   return new AndOrExp(exps, "OR");
 }
 
-/** With no values it matches nothing. `null` matches NULL; `undefined` throws. */
+/**
+ * With no values it matches nothing. `null` matches NULL; an Expression is
+ * written as `col IN (sql)`, so it may be a sub-query; `undefined` throws.
+ */
 export function isIn(col: string, ...values: unknown[]): Expression {
   return new InExp(col, values, false);
 }
 
-/** With no values it has no effect. `null` excludes NULL; `undefined` throws. */
+/**
+ * With no values it has no effect. `null` excludes NULL; an Expression is
+ * written as `col NOT IN (sql)`; `undefined` throws.
+ */
 export function notIn(col: string, ...values: unknown[]): Expression {
   return new InExp(col, values, true);
 }

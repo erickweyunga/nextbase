@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  and,
   CompositePKError,
   DB,
+  type Expression,
   exp,
   hash,
   isIn,
@@ -9,7 +11,9 @@ import {
   like,
   MissingPKError,
   NoRowsError,
+  not,
   notIn,
+  or,
   Tx,
   TxAbortedError,
   TxDoneError,
@@ -130,6 +134,70 @@ describe("queries", () => {
         .where(like("name", "ANN").caseInsensitive())
         .column(),
     ).resolves.toEqual([1]);
+  });
+
+  it("returns the last result of SQL with several statements", async () => {
+    // Without parameters these go to Postgres together, as one simple query.
+    const sql =
+      "UPDATE customer SET status = 3 WHERE id = 1; SELECT id, status FROM customer WHERE status = 3";
+    await expect(db.newQuery(sql).all()).resolves.toEqual([
+      { id: 1, status: 3 },
+    ]);
+    await expect(db.newQuery(sql).one()).resolves.toEqual({
+      id: 1,
+      status: 3,
+    });
+    await expect(db.newQuery(sql).row()).resolves.toEqual([1, 3]);
+    await expect(
+      db
+        .newQuery(
+          "SELECT 1; UPDATE customer SET name = 'x' WHERE status IN (1, 3)",
+        )
+        .execute(),
+    ).resolves.toEqual({ rowsAffected: 2 });
+  });
+
+  it("matches IN and NOT IN against a sub-query", async () => {
+    const ids = (condition: Expression) =>
+      db.select("id").from("customer").where(condition).orderBy("id").column();
+    const active = exp("SELECT id FROM customer WHERE status = {:s}", { s: 1 });
+    await expect(ids(isIn("id", active))).resolves.toEqual([1, 3]);
+    await expect(ids(notIn("id", active))).resolves.toEqual([2]);
+    await expect(ids(isIn("id", 2, active))).resolves.toEqual([1, 2, 3]);
+    await expect(ids(notIn("id", 3, active))).resolves.toEqual([2]);
+    await expect(ids(isIn("id", 1, exp("")))).resolves.toEqual([1]);
+    await expect(ids(notIn("id", exp("")))).resolves.toEqual([1, 2, 3]);
+  });
+
+  it("reads [[...]] after ARRAY as an array", async () => {
+    await expect(
+      db
+        .newQuery("SELECT ARRAY [[1]], ARRAY\n[[2, 3], [4, 5]], ARRAY[[[6]]]")
+        .row(),
+    ).resolves.toEqual([
+      [[1]],
+      [
+        [2, 3],
+        [4, 5],
+      ],
+      [[[6]]],
+    ]);
+  });
+
+  it("matches nothing with the negation of an empty condition", async () => {
+    // An empty NOT IN has no effect, so it matches every row and its negation
+    // matches none.
+    await db.delete("customer", not(notIn("id"))).execute();
+    await expect(
+      db.delete("customer", not(and(hash({}), notIn("id")))).execute(),
+    ).resolves.toEqual({ rowsAffected: 0 });
+    const ids = (condition: Expression) =>
+      db.select("id").from("customer").where(condition).orderBy("id").column();
+    await expect(ids(or(notIn("id"), hash({ id: 2 })))).resolves.toEqual([
+      1, 2, 3,
+    ]);
+    await expect(ids(or(null, hash({ id: 2 })))).resolves.toEqual([2]);
+    await expect(ids(not(or(hash({}), hash({ id: 2 }))))).resolves.toEqual([]);
   });
 
   it("filters by NULL", async () => {
@@ -561,6 +629,29 @@ describe("transactions", () => {
       .execute();
   });
 
+  it("rolls back a nested transaction whose callback caught a failed statement", async () => {
+    await db.transaction(async (tx) => {
+      await tx.insert("customer", { email: "outer@x.io" }).execute();
+      await expect(
+        tx.transaction(async (inner) => {
+          await inner.insert("customer", { email: "inner@x.io" }).execute();
+          await inner
+            .insert("customer", { email: "a@x.io" })
+            .execute()
+            .catch(() => {});
+          return "resolved";
+        }),
+      ).rejects.toBeInstanceOf(TxAbortedError);
+      // The outer transaction is still usable.
+      await tx.insert("customer", { email: "after@x.io" }).execute();
+    });
+    const emails = await db
+      .newQuery("SELECT email FROM customer WHERE id > 3 ORDER BY email")
+      .column();
+    expect(emails).toEqual(["after@x.io", "outer@x.io"]);
+    expect(test.pool.idleCount).toBe(test.pool.totalCount);
+  });
+
   it("lets the callback roll back itself", async () => {
     await db.transaction(async (tx) => {
       await tx.insert("customer", { email: "t@x.io" }).execute();
@@ -702,6 +793,22 @@ describe("logging", () => {
     expect(queries[1]?.error).toBeInstanceOf(Error);
     expect(execs).toEqual([
       expect.objectContaining({ params: { p0: "x", p1: 1 }, rowCount: 1 }),
+    ]);
+  });
+  it("reports a query with an unbound placeholder", async () => {
+    const queries: LogEvent[] = [];
+    const logged = new DB(test.pool, {
+      queryLog: (event) => queries.push(event),
+    });
+    await expect(
+      logged.newQuery("SELECT {:missing}").bind({ other: 1 }).all(),
+    ).rejects.toThrow(/named parameter not found: missing/);
+    expect(queries).toEqual([
+      expect.objectContaining({
+        sql: "SELECT {:missing}",
+        params: { other: 1 },
+        error: expect.any(Error),
+      }),
     ]);
   });
 });

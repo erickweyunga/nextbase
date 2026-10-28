@@ -50,11 +50,11 @@ export function rewriteSQL(
       } else {
         i++;
       }
-    } else if (char === "{" || (char === "[" && !inIdentifier)) {
-      // After a name, `[[` is SQL, as in `ARRAY[[1, 2], [3, 4]]`.
+    } else if (char === "{" || (char === "[" && !isArrayBracket(sql, i))) {
       TOKEN.lastIndex = i;
       const match = TOKEN.exec(sql);
-      if (match) {
+      // A name has a letter or `_`; `[[1]]` is a nested array.
+      if (match && (match[3] === undefined || /[A-Za-z_]/.test(match[3]))) {
         const [token, param, table, column] = match;
         const result =
           param !== undefined
@@ -73,6 +73,22 @@ export function rewriteSQL(
     }
   }
   return out + sql.slice(copied);
+}
+
+// After a name, `[` is a subscript or, after ARRAY, an array constructor, as in
+// `ARRAY [[1, 2], [3, 4]]`, so `[[` there is SQL. Whitespace may come between.
+function isArrayBracket(sql: string, i: number): boolean {
+  let end = i;
+  while (end > 0 && /\s/.test(sql[end - 1] as string)) end--;
+  if (end === 0 || !IDENTIFIER_CHAR.test(sql[end - 1] as string)) return false;
+  if (end === i) return true;
+  // With whitespace between, only ARRAY: in `SELECT [[id]]` it is a column.
+  const start = end - "array".length;
+  return (
+    start >= 0 &&
+    sql.slice(start, end).toLowerCase() === "array" &&
+    !(start > 0 && IDENTIFIER_CHAR.test(sql[start - 1] as string))
+  );
 }
 
 // Returns the index after the closing quote, honoring doubled quotes.

@@ -1,6 +1,7 @@
 import {
   Builder,
   type DBOptions,
+  lastResult,
   type Queryable,
   type QueryResult,
 } from "./builder.ts";
@@ -57,12 +58,15 @@ export class TxDoneError extends Error {
 
 /**
  * Thrown by `commit()` when Postgres rolled the transaction back instead,
- * because a statement in it failed and the error was caught.
+ * because a statement in it failed and the error was caught. A nested
+ * transaction whose callback resolves after such a failure is rolled back to
+ * its savepoint and throws it too.
  */
 export class TxAbortedError extends Error {
-  constructor() {
+  constructor(options?: ErrorOptions) {
     super(
       "dbx: the transaction was rolled back because a statement in it failed.",
+      options,
     );
     this.name = "TxAbortedError";
   }
@@ -97,23 +101,21 @@ export class DB extends Builder {
     }
     if (startQuery !== undefined) statements.push(startQuery);
     const client = await this.pool.connect();
-    let result: QueryResult | QueryResult[];
+    let startRows: Row[] = [];
     try {
       // Statements without parameters are sent to Postgres together, in one
       // round trip. Postgres returns one result for each.
-      result = (await client.query({
+      const result = await client.query({
         text: statements.join("; "),
         values: [],
         ...(this.options.types && { types: this.options.types }),
-      })) as QueryResult | QueryResult[];
+      });
+      if (startQuery !== undefined)
+        startRows = lastResult(result).rows as Row[];
     } catch (error) {
       client.release(asError(error));
       throw error;
     }
-    const startRows =
-      startQuery === undefined
-        ? []
-        : ((asArray(result).at(-1)?.rows ?? []) as Row[]);
     return new Tx(client, this.options, startRows);
   }
 
@@ -182,7 +184,8 @@ export class Tx extends Builder {
 
   /**
    * Runs `fn` in a savepoint. On reject only its changes are rolled back and the
-   * outer transaction stays usable.
+   * outer transaction stays usable. The same happens when `fn` resolves after a
+   * statement in it failed, which then throws TxAbortedError.
    */
   async transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const name = `dbx_savepoint_${++this.#savepoints}`;
@@ -204,7 +207,26 @@ export class Tx extends Builder {
       }
       throw error;
     }
-    if (!this.done) await this.newQuery(`RELEASE SAVEPOINT ${name}`).execute();
+    if (this.done) return result;
+    try {
+      await this.newQuery(`RELEASE SAVEPOINT ${name}`).execute();
+    } catch (releaseError) {
+      // A failed statement whose error `fn` caught leaves the transaction
+      // aborted, so RELEASE fails too. Rolling back to the savepoint undoes
+      // `fn` and makes the outer transaction usable again.
+      try {
+        await this.newQuery(`ROLLBACK TO SAVEPOINT ${name}`).execute();
+        await this.newQuery(`RELEASE SAVEPOINT ${name}`).execute();
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [releaseError, rollbackError],
+          "dbx: nested transaction failed and could not be rolled back.",
+        );
+      }
+      throw isAborted(releaseError)
+        ? new TxAbortedError({ cause: releaseError })
+        : releaseError;
+    }
     return result;
   }
 
@@ -223,7 +245,9 @@ export class Tx extends Builder {
     this.#state.done = true;
     let result: QueryResult;
     try {
-      result = await this.#client.query({ text: command, values: [] });
+      result = lastResult(
+        await this.#client.query({ text: command, values: [] }),
+      );
     } catch (error) {
       // Transaction state is unknown, so discard the connection.
       this.#client.release(asError(error));
@@ -254,8 +278,13 @@ function beginSQL({ isolation, readOnly, deferrable }: TxOptions): string {
   return modes.length === 0 ? "BEGIN" : `BEGIN ${modes.join(", ")}`;
 }
 
-function asArray(result: QueryResult | QueryResult[]): QueryResult[] {
-  return Array.isArray(result) ? result : [result];
+// SQLSTATE 25P02: commands are ignored until the transaction block ends.
+function isAborted(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "25P02"
+  );
 }
 
 function asError(error: unknown): Error {

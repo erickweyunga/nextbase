@@ -70,6 +70,13 @@ describe("named parameters", () => {
     expect(db.newQuery("SELECT ARRAY[[1]], ARRAY[[2, 3]]").rawSQL).toBe(
       "SELECT ARRAY[[1]], ARRAY[[2, 3]]",
     );
+    // After ARRAY and whitespace too, and a nested array is never a name.
+    expect(
+      db.newQuery("SELECT ARRAY [[1]], array\n\t[[x]], ARRAY[[[2]]]").rawSQL,
+    ).toBe("SELECT ARRAY [[1]], array\n\t[[x]], ARRAY[[[2]]]");
+    expect(
+      db.newQuery("SELECT [[a]], x AS [[b]], my_array [[c]], ([[d]])").rawSQL,
+    ).toBe('SELECT "a", x AS "b", my_array "c", ("d")');
   });
 
   it("merges bindings", () => {
@@ -133,7 +140,16 @@ describe("expressions", () => {
     });
     expect(build(and())).toEqual({ sql: "", params: {} });
     expect(build(not(exp("a")))).toEqual({ sql: "NOT (a)", params: {} });
-    expect(build(not(and()))).toEqual({ sql: "", params: {} });
+    // An empty condition matches every row: OR with it does too, and its
+    // negation matches none.
+    expect(build(not(and()))).toEqual({ sql: "0=1", params: {} });
+    expect(build(not(notIn("a")))).toEqual({ sql: "0=1", params: {} });
+    expect(build(or(and(), exp("a")))).toEqual({ sql: "", params: {} });
+    expect(build(or(null, exp("a"), undefined))).toEqual({
+      sql: "a",
+      params: {},
+    });
+    expect(build(or())).toEqual({ sql: "", params: {} });
   });
 
   it("builds IN", () => {
@@ -153,6 +169,27 @@ describe("expressions", () => {
       '("a"={:p0} OR "a" IS NULL)',
     );
     expect(() => build(isIn("a", 1, undefined))).toThrow(TypeError);
+  });
+
+  it("writes an Expression IN value as its own IN (...)", () => {
+    const sub = exp("SELECT id FROM t WHERE x={:x}", { x: 1 });
+    expect(build(isIn("a", sub))).toEqual({
+      sql: '"a" IN (SELECT id FROM t WHERE x={:x})',
+      params: { x: 1 },
+    });
+    expect(build(notIn("a", sub)).sql).toBe(
+      '"a" NOT IN (SELECT id FROM t WHERE x={:x})',
+    );
+    expect(build(isIn("a", 2, sub, null)).sql).toBe(
+      '("a"={:p0} OR "a" IN (SELECT id FROM t WHERE x={:x}) OR "a" IS NULL)',
+    );
+    expect(build(notIn("a", 2, 3, sub)).sql).toBe(
+      '"a" NOT IN ({:p0}, {:p1}) AND "a" NOT IN (SELECT id FROM t WHERE x={:x})',
+    );
+    // An empty Expression is left out, like no value at all.
+    expect(build(isIn("a", exp(""))).sql).toBe("0=1");
+    expect(build(notIn("a", exp(""))).sql).toBe("");
+    expect(build(isIn("a", 1, exp(""))).sql).toBe('"a"={:p0}');
   });
 
   it("builds LIKE with escaping", () => {
@@ -441,7 +478,7 @@ describe("more builder cases", () => {
 
   it("builds NOT", () => {
     expect(build(not(exp("s1"))).sql).toBe("NOT (s1)");
-    expect(build(not(exp(""))).sql).toBe("");
+    expect(build(not(exp(""))).sql).toBe("0=1");
   });
 
   it("builds AND and OR with params", () => {
