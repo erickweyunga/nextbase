@@ -12,6 +12,28 @@ describe("migrating from an older release", () => {
   });
   afterAll(() => t.close());
 
+  it("indexes the expiry columns that cleanups delete by", async () => {
+    await new NextBase({ database: t.pool }).migrate();
+    const names = [
+      "_auth_attempts_window_end",
+      "_oauth2_states_expires",
+      "_phone_codes_expires",
+    ];
+    // Rewinds to a release before the indexes.
+    for (const name of names) {
+      await t.pool.query(`DROP INDEX nextbase."${name}"`);
+    }
+    await t.pool.query(
+      "DELETE FROM nextbase._migrations WHERE name = '0009_expiry_indexes'",
+    );
+    await migrate(t.db);
+    const { rows } = await t.pool.query<{ indexname: string }>(
+      "SELECT indexname FROM pg_indexes WHERE schemaname = 'nextbase' AND indexname = ANY($1) ORDER BY indexname",
+      [names],
+    );
+    expect(rows.map((r) => r.indexname)).toEqual(names);
+  });
+
   it("renames verified to emailVerified, in the table, the field and the rules that use it", async () => {
     const before = new NextBase({ database: t.pool });
     const admin = before.client({ superuser: true });

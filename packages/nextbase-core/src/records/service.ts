@@ -757,17 +757,29 @@ async function expandItems(
     if (subtree.size > 0)
       await expandItems(q, ctx, target, related, subtree, depth + 1);
 
+    // Built once, so matching records to items takes one pass, not one per item.
+    const byId = new Map<string, Output>();
+    const byParent = new Map<string, Output[]>();
+    for (const r of related) {
+      if (!back) {
+        byId.set(r.row.id as string, r.out);
+        continue;
+      }
+      // A record may list the same parent twice; it is expanded once.
+      for (const parent of new Set(references(r.row[field.name]))) {
+        const children = byParent.get(parent);
+        if (children) children.push(r.out);
+        else byParent.set(parent, [r.out]);
+      }
+    }
+
     for (const item of items) {
       let found: Output[];
       let value: Output | Output[];
       if (back) {
-        const id = item.row.id as string;
-        found = related
-          .filter((r) => references(r.row[field.name]).includes(id))
-          .map((r) => r.out);
+        found = byParent.get(item.row.id as string) ?? [];
         value = found.slice(0, MAX_BACK_RELATIONS);
       } else {
-        const byId = new Map(related.map((r) => [r.row.id as string, r.out]));
         found = references(item.row[name]).flatMap((id): Output[] => {
           const out = byId.get(id);
           return out ? [out] : [];

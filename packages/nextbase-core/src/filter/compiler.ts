@@ -4,7 +4,12 @@ import type { Principal } from "../auth/principal.ts";
 import { table } from "../db/system.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
-import { hasNul, isStorableTime, timestampParam } from "../storable.ts";
+import {
+  hasNul,
+  isStorableTime,
+  parseDate,
+  timestampParam,
+} from "../storable.ts";
 import {
   FilterError,
   type Literal,
@@ -515,6 +520,23 @@ class Compiler {
       return `cardinality(${this.#column(left, left.root, leftType)}) ${op === "=" ? "=" : ">"} 0`;
     }
 
+    // A field compared with a value: `tags ?= "news"` means "has this value".
+    // Written as array containment, which the field's GIN index can serve.
+    // The column is never NULL, so the result never is either.
+    if (
+      any &&
+      op === "=" &&
+      isPlural(left) &&
+      left.steps.length === 0 &&
+      leftType === "text" &&
+      right.kind === "constant" &&
+      right.value !== BLANK &&
+      right.value !== null
+    ) {
+      const value = this.#bind(coerce(right.value, "text", false), "text");
+      return `${this.#column(left, left.root, leftType)} @> ARRAY[${value}]`;
+    }
+
     const leftValues = needsSubquery(left)
       ? this.#values(left, leftType)
       : undefined;
@@ -815,7 +837,7 @@ function coerce(value: unknown, type: SqlType, nullable: boolean): unknown {
         value instanceof Date
           ? value.getTime()
           : typeof value === "string"
-            ? Date.parse(value)
+            ? parseDate(value)
             : Number.NaN;
       if (isStorableTime(time)) return timestampParam(new Date(time));
       break;

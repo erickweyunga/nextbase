@@ -1,6 +1,6 @@
 import { createHash, randomInt } from "node:crypto";
 import type { AuthCollection } from "@nextbasejs/client";
-import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
+import { type Builder, type DB, exp, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { normalizePhone } from "../phone.ts";
@@ -226,7 +226,8 @@ async function findByPhone(
   const [record] = await q
     .select()
     .from(table(collection.name))
-    .where(hash({ phone }))
+    // The unique index leaves out empty phones, so `<> ''` lets Postgres use it.
+    .where(exp(`"phone" = {:phone} AND "phone" <> ''`, { phone }))
     .limit(1)
     .all();
   return record;

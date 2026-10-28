@@ -14,7 +14,7 @@ import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
 import { Issues } from "../schema/input.ts";
-import { hasNul, isStorableTime } from "../storable.ts";
+import { hasNul, isStorableTime, parseDate } from "../storable.ts";
 
 const ID_PATTERN = /^[a-z0-9]{15}$/;
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -412,7 +412,7 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
       return fail("Must be a boolean.");
     case "date": {
       if (raw === null || raw === "") return null;
-      const time = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+      const time = typeof raw === "string" ? parseDate(raw) : Number.NaN;
       return isStorableTime(time)
         ? new Date(time)
         : fail("Must be an ISO 8601 date from 4713 BC to 275760 AD.");

@@ -11,6 +11,19 @@ export function isStorableTime(time: number): boolean {
   return Number.isFinite(time) && time >= MIN_TIME;
 }
 
+// A date and time with no zone, such as `2026-01-02 03:04:05`.
+const NO_ZONE = /^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d(?::\d\d(?:\.\d+)?)?)$/;
+
+/**
+ * Parses an ISO 8601 date, like `Date.parse`, but reads a date and time with
+ * no zone as UTC. `Date.parse` reads it in the server's local time, so the
+ * same input would mean a different moment on each server.
+ */
+export function parseDate(text: string): number {
+  const m = NO_ZONE.exec(text);
+  return Date.parse(m ? `${m[1]}T${m[2]}Z` : text);
+}
+
 const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
 
 // UTC with Postgres's BC notation: node-postgres's local-time form shifts dates

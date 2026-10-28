@@ -202,7 +202,10 @@ function checkEmail(value: unknown, field = "email"): string {
   return value;
 }
 
-/** Case-insensitive, matching how email uniqueness is enforced. */
+/**
+ * Case-insensitive, matching how email uniqueness is enforced. The unique
+ * index leaves out empty emails, so `<> ''` lets Postgres use it.
+ */
 export async function findByEmail(
   db: Builder,
   collection: AuthCollection,
@@ -211,7 +214,7 @@ export async function findByEmail(
   const [record] = await db
     .select()
     .from(table(collection.name))
-    .where(exp(`lower("email") = lower({:email})`, { email }))
+    .where(exp(`lower("email") = lower({:email}) AND "email" <> ''`, { email }))
     .limit(1)
     .all();
   return record;

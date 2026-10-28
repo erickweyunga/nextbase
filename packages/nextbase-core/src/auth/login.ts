@@ -110,14 +110,20 @@ async function findByIdentity(
   for (const name of collection.identityFields) {
     const field = collection.fields.find((f) => f.name === name);
     if (!field || identity === "") continue;
-    // Emails are unique case-insensitively; phones are stored in E.164.
+    // Emails are unique case-insensitively; phones are stored in E.164. Their
+    // unique indexes leave out empty values, so `<> ''` lets Postgres use them.
     let condition: Expression;
     if (field.type === "email") {
-      condition = exp(`lower([[${name}]]) = lower({:identity})`, { identity });
+      condition = exp(
+        `lower([[${name}]]) = lower({:identity}) AND [[${name}]] <> ''`,
+        { identity },
+      );
     } else if (field.type === "phone") {
       const phone = normalizePhone(identity);
       if (phone === undefined) continue;
-      condition = hash({ [name]: phone });
+      condition = exp(`[[${name}]] = {:phone} AND [[${name}]] <> ''`, {
+        phone,
+      });
     } else {
       condition = hash({ [name]: identity });
     }
