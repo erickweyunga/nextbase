@@ -68,7 +68,12 @@ import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
   type Apply,
+  applyCreate,
+  applyCreates,
+  CreateFailed,
+  createRuns,
   listRecords,
+  type PlannedCreate,
   planDeleteRecord,
   planNewRecord,
   planUpdateRecord,
@@ -222,7 +227,7 @@ export const ROUTES: readonly Route[] = [
       // all or nothing. Planning stops at the first write that fails. The
       // writes before it still run, so the batch reports the first failing
       // write in order, as when each is checked and run in turn.
-      const planned: Apply<Reply>[] = [];
+      const planned: PlannedWrite[] = [];
       let failed: unknown;
       for (const [i, write] of writes.entries()) {
         try {
@@ -235,8 +240,29 @@ export const ROUTES: readonly Route[] = [
       if (planned.length === 0) throw failed;
       const results = await bounded(context, async (tx) => {
         const replies: Reply[] = [];
-        for (const [i, apply] of planned.entries()) {
-          replies.push(await inBatch(i, () => apply(tx)));
+        while (replies.length < planned.length) {
+          const i = replies.length;
+          const write = planned[i] as PlannedWrite;
+          if ("apply" in write) {
+            replies.push(await inBatch(i, () => write.apply(tx)));
+            continue;
+          }
+          // Consecutive creates are done together, a run at a time.
+          const creates: PlannedCreate[] = [];
+          for (const next of planned.slice(i)) {
+            if (!("create" in next)) break;
+            creates.push(next.create);
+          }
+          for (const run of createRuns(creates)) {
+            const start = replies.length;
+            try {
+              const records = await applyCreates(tx, run);
+              replies.push(...records.map(replyWith));
+            } catch (error) {
+              if (!(error instanceof CreateFailed)) throw error;
+              throw batchError(start + error.index, error.error);
+            }
+          }
         }
         if (failed !== undefined) throw failed;
         return replies;
@@ -901,44 +927,56 @@ async function writeRecord(
   context: Context,
   write: RecordWrite,
 ): Promise<Reply> {
-  return bounded(context, await planRecordWrite(context, write));
+  const planned = await planRecordWrite(context, write);
+  if ("apply" in planned) return bounded(context, planned.apply);
+  const apply = applyCreate(planned.create);
+  return bounded(context, async (tx) => replyWith(await apply(tx)));
 }
 
 /**
- * Checks a write as far as it can before its transaction starts, and returns
- * the rest of the work to run in that transaction. The reply is 204 when the
- * caller may not view the result.
+ * A write checked as far as it can be before its transaction starts. A batch
+ * does consecutive creates together, so they stay planned creates; other
+ * writes come with the rest of their work.
  */
+type PlannedWrite = { create: PlannedCreate } | { apply: Apply<Reply> };
+
+/** Plans a write; see `PlannedWrite`. */
 async function planRecordWrite(
   context: Context,
   write: RecordWrite,
-): Promise<Apply<Reply>> {
+): Promise<PlannedWrite> {
   const collection = context.schema.get(write.collection);
   const ctx = recordsContext(context, write.body, {
     method: write.method,
     query: write.query,
   });
-  if (write.method === "DELETE") {
-    const apply = await planDeleteRecord(ctx, collection, write.id as string);
-    return async (tx) => {
-      await apply(tx);
-      return { status: 204 };
+  if (write.method === "POST") {
+    return {
+      create: await planNewRecord(ctx, collection, write.body, write.query),
     };
   }
-  const apply =
-    write.method === "POST"
-      ? await planNewRecord(ctx, collection, write.body, write.query)
-      : await planUpdateRecord(
-          ctx,
-          collection,
-          write.id as string,
-          write.body,
-          write.query,
-        );
-  return async (tx) => {
-    const result = await apply(tx);
-    return result ? { status: 200, body: result } : { status: 204 };
-  };
+  if (write.method === "DELETE") {
+    const apply = await planDeleteRecord(ctx, collection, write.id as string);
+    return {
+      apply: async (tx) => {
+        await apply(tx);
+        return { status: 204 };
+      },
+    };
+  }
+  const apply = await planUpdateRecord(
+    ctx,
+    collection,
+    write.id as string,
+    write.body,
+    write.query,
+  );
+  return { apply: async (tx) => replyWith(await apply(tx)) };
+}
+
+/** 204 when the caller may not view the record. */
+function replyWith(record: Record<string, unknown> | undefined): Reply {
+  return record ? { status: 200, body: record } : { status: 204 };
 }
 
 /** Reports which write of a batch failed, and that nothing was saved. */
@@ -946,13 +984,17 @@ async function inBatch<T>(i: number, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
-    if (!(error instanceof ApiError)) throw error;
-    throw new ApiError(
-      400,
-      `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
-      { requests: { [i]: error.data } },
-    );
+    throw batchError(i, error);
   }
+}
+
+function batchError(i: number, error: unknown): unknown {
+  if (!(error instanceof ApiError)) return error;
+  return new ApiError(
+    400,
+    `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
+    { requests: { [i]: error.data } },
+  );
 }
 
 const MAX_BATCH = 50;

@@ -37,7 +37,15 @@ import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { hasNul, timestampParam } from "../storable.ts";
 import { serializeRecord } from "./serialize.ts";
-import { isRecordId, newPassword, prepareWrite } from "./values.ts";
+import {
+  checkRelations,
+  draftWrite,
+  finishWrite,
+  isRecordId,
+  newPassword,
+  type PreparedWrite,
+  prepareWrite,
+} from "./values.ts";
 
 export interface RecordsContext {
   db: DB | Tx;
@@ -62,6 +70,8 @@ const MAX_EXPAND_DEPTH = 6;
 const SUPERUSERS = "_superusers";
 const MAX_BACK_RELATIONS = 1000;
 const TOTAL = "_total";
+// Postgres takes at most 65535 parameters per statement.
+const MAX_PARAMETERS = 65_000;
 
 type Rule = string | null;
 type Output = Record<string, unknown>;
@@ -166,20 +176,31 @@ export async function newRecord(
   input: Record<string, unknown>,
   query: URLSearchParams,
 ): Promise<Output | undefined> {
-  const apply = await planNewRecord(ctx, collection, input, query);
-  return inTransaction(ctx.db, apply);
+  const plan = await planNewRecord(ctx, collection, input, query);
+  return inTransaction(ctx.db, applyCreate(plan));
+}
+
+/** A create, checked as far as it can be before its transaction starts. */
+export interface PlannedCreate {
+  ctx: RecordsContext;
+  collection: Collection;
+  /** The input, with the record id chosen while planning. */
+  input: Record<string, unknown>;
+  query: URLSearchParams;
+  passwordHash: string | undefined;
+  newFiles: NewFiles | undefined;
 }
 
 /**
- * Checks a create as far as it can before its transaction starts, and returns
- * the rest of the work to run in that transaction.
+ * Checks a create as far as it can before its transaction starts. The rest is
+ * done by `applyCreate`, or by `applyCreates` together with other creates.
  */
 export async function planNewRecord(
   ctx: RecordsContext,
   collection: Collection,
   input: Record<string, unknown>,
   query: URLSearchParams,
-): Promise<Apply<Output | undefined>> {
+): Promise<PlannedCreate> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
   // Chosen now, so new files can be stored under the record beforehand.
@@ -188,44 +209,220 @@ export async function planNewRecord(
       ? { ...input, id: randomString(15, LOWER_ALPHANUMERIC) }
       : input;
   await checkNewPassword(ctx, collection, write);
-  const passwordHash = await hashNewPassword(collection, write);
-  const newFiles = await prepareNewFiles(ctx, collection, write, write.id);
-  return (tx) =>
-    writing(collection, async () => {
-      const prepared = await prepareWrite(tx, write, {
-        collection,
-        schema: ctx.schema,
-        privileged: ctx.principal.superuser,
-        ...(ctx.vouched && { vouched: ctx.vouched }),
-        newFiles,
-        passwordHash,
-      });
-      // Checked before inserting, so a denied caller learns nothing from a
-      // constraint error.
-      if (!ctx.principal.superuser && collection.createRule !== "") {
-        const rule = compile(
-          { ...ctx, request: { ...ctx.request, body: prepared.body } },
-          collection,
-          collection.createRule ?? "",
-          "rule",
-        );
-        if (
-          rule &&
-          (await refusedNewRows(tx, collection, [{ row: prepared.row, rule }]))
-            .length > 0
-        ) {
-          throw new ApiError(400, "Failed to create the record.");
-        }
-      }
-      await keepFiles(tx, ctx, collection, prepared.row.id as string, prepared);
-      await tx
-        .insert(
-          table(collection.name),
-          columnValues(collection, prepared.values),
-        )
-        .execute();
-      return afterWrite(tx, ctx, collection, prepared.row.id as string, query);
+  return {
+    ctx,
+    collection,
+    input: write,
+    query,
+    passwordHash: await hashNewPassword(collection, write),
+    newFiles: await prepareNewFiles(ctx, collection, write, write.id),
+  };
+}
+
+/** The rest of one create, to run in its transaction. */
+export function applyCreate(plan: PlannedCreate): Apply<Output | undefined> {
+  return async (tx) => {
+    try {
+      const [record] = await applyCreates(tx, [plan]);
+      return record;
+    } catch (error) {
+      throw error instanceof CreateFailed ? error.error : error;
+    }
+  };
+}
+
+/** Thrown by `applyCreates`: the first create that failed, by position. */
+export class CreateFailed extends Error {
+  readonly index: number;
+  readonly error: unknown;
+
+  constructor(index: number, error: unknown) {
+    super(`Create ${index + 1} failed.`);
+    this.index = index;
+    this.error = error;
+  }
+}
+
+/**
+ * Splits consecutive creates into runs that `applyCreates` can do together.
+ * A run is one collection and one URL query, so the records come back the
+ * same way. A create starts a new run when it points at a record created
+ * earlier in the run, which does not exist until the run is inserted. A
+ * create rule or view rule that reads other records, with `@collection` or a
+ * back-relation, could see records inserted earlier in the same request, so
+ * such creates run alone, as when each is done in turn.
+ */
+export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
+  const runs: PlannedCreate[][] = [];
+  let run: PlannedCreate[] = [];
+  let ids = new Set<string>();
+  for (const plan of plans) {
+    const [first] = run;
+    if (
+      !first ||
+      !runsWithOthers(plan) ||
+      !runsWithOthers(first) ||
+      plan.collection.id !== first.collection.id ||
+      plan.query.toString() !== first.query.toString() ||
+      referencesAny(plan.input, ids)
+    ) {
+      if (first) runs.push(run);
+      run = [];
+      ids = new Set();
+    }
+    run.push(plan);
+    ids.add(plan.input.id as string);
+  }
+  if (run.length > 0) runs.push(run);
+  return runs;
+}
+
+function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
+  if (ctx.principal.superuser) return true;
+  const readsOthers = /@collection|_via_/;
+  return (
+    !readsOthers.test(collection.createRule ?? "") &&
+    !readsOthers.test(collection.viewRule ?? "")
+  );
+}
+
+function referencesAny(
+  input: Record<string, unknown>,
+  ids: ReadonlySet<string>,
+): boolean {
+  return Object.entries(input).some(
+    ([key, value]) =>
+      key !== "id" &&
+      (Array.isArray(value) ? value : [value]).some(
+        (v) => typeof v === "string" && ids.has(v),
+      ),
+  );
+}
+
+/**
+ * Finishes creates of one collection in one transaction, with a few queries
+ * for all of them: one per relation target, one for the create rule, the
+ * insert, and one to read them back. Each create is checked as it would be
+ * alone: its own problems first, then the create rule. Throws `CreateFailed`
+ * for the first that fails. Returns each record, or undefined when the caller
+ * may not view it.
+ */
+export async function applyCreates(
+  tx: Tx,
+  plans: readonly PlannedCreate[],
+): Promise<(Output | undefined)[]> {
+  const [first] = plans;
+  if (!first) return [];
+  const { ctx, collection, query } = first;
+  const drafts = plans.map((plan) =>
+    draftWrite(plan.input, {
+      collection,
+      schema: ctx.schema,
+      privileged: ctx.principal.superuser,
+      ...(ctx.vouched && { vouched: ctx.vouched }),
+      newFiles: plan.newFiles,
+      passwordHash: plan.passwordHash,
+    }),
+  );
+  await checkRelations(tx, ctx.schema, collection, drafts);
+
+  const failures = new Map<number, unknown>();
+  const prepared: PreparedWrite[] = [];
+  for (const [i, draft] of drafts.entries()) {
+    try {
+      prepared[i] = await finishWrite(draft);
+    } catch (error) {
+      failures.set(i, error);
+    }
+  }
+  // Checked before inserting, so a denied caller learns nothing from a
+  // constraint error.
+  if (!ctx.principal.superuser && collection.createRule !== "") {
+    const source = collection.createRule ?? "";
+    // Compiled once when no row's own body can change it.
+    const shared = source.includes("@request.body")
+      ? undefined
+      : compile(ctx, collection, source, "rule");
+    const checked = prepared.flatMap((write, i) => {
+      const rule = source.includes("@request.body")
+        ? compile(
+            { ...ctx, request: { ...ctx.request, body: write.body } },
+            collection,
+            source,
+            "rule",
+          )
+        : shared;
+      return rule ? [{ i, row: write.row, rule }] : [];
     });
+    if (checked.length > 0) {
+      for (const k of await refusedNewRows(tx, collection, checked)) {
+        const { i } = checked[k] as { i: number };
+        failures.set(i, new ApiError(400, "Failed to create the record."));
+      }
+    }
+  }
+  if (failures.size > 0) {
+    const index = Math.min(...failures.keys());
+    throw new CreateFailed(index, failures.get(index));
+  }
+
+  for (const [i, write] of prepared.entries()) {
+    try {
+      await keepFiles(tx, ctx, collection, write.row.id as string, write);
+    } catch (error) {
+      throw new CreateFailed(i, error);
+    }
+  }
+  await insertRows(tx, collection, prepared);
+  return afterWrites(
+    tx,
+    ctx,
+    collection,
+    prepared.map((write) => write.row.id as string),
+    query,
+  );
+}
+
+/**
+ * One INSERT for all rows, in chunks under Postgres's 65535 parameters per
+ * statement. A unique value can be duplicated by any row, and Postgres does
+ * not say which, so on that error the rows are inserted one at a time to
+ * find the first that fails.
+ */
+async function insertRows(
+  tx: Tx,
+  collection: Collection,
+  prepared: readonly PreparedWrite[],
+): Promise<void> {
+  const rows = prepared.map((write) => columnValues(collection, write.values));
+  const insertOne = async (row: Record<string, unknown>, i: number) => {
+    try {
+      await writing(collection, () =>
+        tx.insert(table(collection.name), row).execute(),
+      );
+    } catch (error) {
+      throw new CreateFailed(i, error);
+    }
+  };
+  const [only] = rows;
+  if (rows.length === 1 && only) return insertOne(only, 0);
+  const perChunk = Math.max(
+    1,
+    Math.floor(MAX_PARAMETERS / collection.fields.length),
+  );
+  try {
+    // In a savepoint, so a duplicate can be undone and traced to its row.
+    await tx.transaction(async (savepoint) => {
+      for (let i = 0; i < rows.length; i += perChunk) {
+        await savepoint
+          .insertMany(table(collection.name), rows.slice(i, i + perChunk))
+          .execute();
+      }
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== "23505") throw error;
+    for (const [i, row] of rows.entries()) await insertOne(row, i);
+  }
 }
 
 /** Returns the record, or undefined when the caller may not view it. */
@@ -753,6 +950,34 @@ async function afterWrite(
     query,
     ruleCondition(ctx, collection, collection.viewRule),
   );
+}
+
+/** Like `afterWrite` for several records, with one read. */
+async function afterWrites(
+  q: Builder,
+  ctx: RecordsContext,
+  collection: Collection,
+  ids: readonly string[],
+  query: URLSearchParams,
+): Promise<(Output | undefined)[]> {
+  if (!ctx.principal.superuser && collection.viewRule === null)
+    return ids.map(() => undefined);
+  const rows = await q
+    .select(`${ALIAS}.*`)
+    .from(`${table(collection.name)} ${ALIAS}`)
+    .where(
+      and(
+        exp(`"${ALIAS}"."id" = ANY({:nb_ids}::text[])`, { nb_ids: [...ids] }),
+        ruleCondition(ctx, collection, collection.viewRule),
+      ),
+    )
+    .all();
+  // In the order of `rows`, and maybe without ids when `fields` leaves them out.
+  const records = await output(q, ctx, collection, rows, query);
+  const byId = new Map(
+    rows.map((row, i) => [row.id as string, records[i] as Output]),
+  );
+  return ids.map((id) => byId.get(id));
 }
 
 async function viewable(
