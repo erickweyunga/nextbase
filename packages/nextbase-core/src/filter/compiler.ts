@@ -407,6 +407,9 @@ class Compiler {
       jsType(right.value) ??
       "text";
     const l = this.#bind(coerce(left.value, type, false), type);
+    // A text value matched like a field, such as `@request.auth.name ~ "a"`.
+    if ((op === "~" || op === "!~") && type === "text")
+      return this.#compareColumn(l, type, false, op, right);
     const r = this.#bind(coerce(right.value, type, false), type);
     return this.#operator(l, type, op, r, true);
   }
@@ -529,6 +532,7 @@ class Compiler {
       isPlural(left) &&
       left.steps.length === 0 &&
       leftType === "text" &&
+      left.modifier !== "lower" &&
       right.kind === "constant" &&
       right.value !== BLANK &&
       right.value !== null
@@ -601,7 +605,13 @@ class Compiler {
     const source = `unnest(${quote(last)}.${quote(path.field.name)}) AS ${quote(values)}("v")`;
     if (from.length === 0) from.push(source);
     else from[from.length - 1] += ` CROSS JOIN LATERAL ${source}`;
-    return { from, joins, element: `${quote(values)}."v"` };
+    const element = `${quote(values)}."v"`;
+    // :lower on a field with several values lowers each value.
+    return {
+      from,
+      joins,
+      element: path.modifier === "lower" ? `lower(${element})` : element,
+    };
   }
 
   #chain(
@@ -677,7 +687,8 @@ class Compiler {
           : undefined;
       sql = `(CASE WHEN ${quote(alias)}."id" = ${this.#bind(owner ?? "", "text")} THEN ${col} ELSE '' END)`;
     }
-    return modifier === "lower" ? `lower(${sql})` : sql;
+    // A field with several values is lowered value by value, in `#values`.
+    return modifier === "lower" && !isPlural(path) ? `lower(${sql})` : sql;
   }
 
   // A mistyped or missing value reads as NULL rather than failing a cast.

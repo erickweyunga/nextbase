@@ -457,9 +457,9 @@ export async function applyCreates(
 
 /**
  * One INSERT for all rows, in chunks under Postgres's 65535 parameters per
- * statement. A unique value can be duplicated by any row, and Postgres does
- * not say which, so on that error the rows are inserted one at a time to
- * find the first that fails.
+ * statement. When an index refuses a row, because it duplicates a unique
+ * value or is too long to index, Postgres does not say which row, so the
+ * rows are then inserted one at a time to find the first that fails.
  */
 async function insertRows(
   tx: Tx,
@@ -492,7 +492,8 @@ async function insertRows(
       }
     });
   } catch (error) {
-    if ((error as { code?: unknown }).code !== "23505") throw error;
+    const { code } = error as { code?: unknown };
+    if (code !== "23505" && code !== "54000") throw error;
     for (const [i, row] of rows.entries()) await insertOne(row, i);
   }
 }
@@ -1520,7 +1521,6 @@ function columnValues(
   return out;
 }
 
-// A unique-index violation becomes a 400 on the indexed fields.
 /**
  * Runs `write` in the caller's transaction if there is one, or in a new one.
  * It makes no savepoint: when a write fails the request fails too, so the
@@ -1530,6 +1530,10 @@ function inTransaction<T>(db: DB | Tx, write: Apply<T>): Promise<T> {
   return db instanceof Tx ? write(db) : db.transaction(write);
 }
 
+/**
+ * Runs a write, turning what the indexes refuse into a 400 on the indexed
+ * fields: a duplicate in a unique index, or a value too long to index.
+ */
 async function writing<T>(
   collection: Collection,
   write: () => Promise<T>,
@@ -1537,30 +1541,71 @@ async function writing<T>(
   try {
     return await write();
   } catch (error) {
-    const { code, constraint } = error as {
+    const { code, constraint, message } = error as {
       code?: unknown;
       constraint?: unknown;
+      message?: unknown;
     };
-    if (code !== "23505") throw error;
-    let names: string[] = [];
-    if (constraint === `_${collection.id}_pkey`) names = ["id"];
-    else if (constraint === `_${collection.id}_email`) names = ["email"];
-    else if (constraint === `_${collection.id}_phone`) names = ["phone"];
-    else {
-      const index = collection.indexes.find((i) => i.name === constraint);
-      names = (index?.fields ?? []).flatMap(
-        (id) => collection.fields.find((f) => f.id === id)?.name ?? [],
+    if (code === "23505") {
+      throw indexError(
+        collection,
+        constraint,
+        "A record with these values already exists.",
+        { code: "validation_not_unique", message: "Must be unique." },
       );
     }
-    throw new ApiError(
-      400,
-      "A record with these values already exists.",
-      Object.fromEntries(
-        names.map((n) => [
-          n,
-          { code: "validation_not_unique", message: "Must be unique." },
-        ]),
-      ),
+    // An index entry must fit in a page. Postgres says so in one of two
+    // messages, and names the index only in the second:
+    // `index row requires 9016 bytes, maximum size is 8191`, or
+    // `index row size 2720 exceeds btree version 4 maximum 2704 for index "x"`.
+    if (
+      code === "54000" &&
+      typeof message === "string" &&
+      message.startsWith("index row ")
+    ) {
+      throw indexError(
+        collection,
+        /for index "(.+)"$/.exec(message)?.[1],
+        "A value is too long to index.",
+        {
+          code: "validation_length_out_of_range",
+          message: "Too long for the field's index.",
+        },
+      );
+    }
+    throw error;
+  }
+}
+
+function indexError(
+  collection: Collection,
+  indexName: unknown,
+  message: string,
+  problem: { code: string; message: string },
+): ApiError {
+  let names: string[];
+  if (indexName === `_${collection.id}_pkey`) names = ["id"];
+  else if (indexName === `_${collection.id}_email`) names = ["email"];
+  else if (indexName === `_${collection.id}_phone`) names = ["phone"];
+  else {
+    const index = collection.indexes.find((i) => i.name === indexName);
+    // System indexes are named `_{collection id}_{field id}`, and a suffix.
+    const ids = index
+      ? index.fields
+      : collection.fields
+          .filter(
+            (f) =>
+              typeof indexName === "string" &&
+              indexName.startsWith(`_${collection.id}_${f.id}`),
+          )
+          .map((f) => f.id);
+    names = ids.flatMap(
+      (id) => collection.fields.find((f) => f.id === id)?.name ?? [],
     );
   }
+  return new ApiError(
+    400,
+    message,
+    Object.fromEntries(names.map((n) => [n, problem])),
+  );
 }

@@ -66,6 +66,10 @@ describe("named parameters", () => {
     expect(query.rawSQL).toBe(
       'SELECT "p"."title", "id" FROM "nextbase"."posts" p',
     );
+    // After a name, `[[` is SQL.
+    expect(db.newQuery("SELECT ARRAY[[1]], ARRAY[[2, 3]]").rawSQL).toBe(
+      "SELECT ARRAY[[1]], ARRAY[[2, 3]]",
+    );
   });
 
   it("merges bindings", () => {

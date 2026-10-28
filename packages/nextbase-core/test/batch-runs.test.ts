@@ -324,6 +324,23 @@ describe("batches of creates", () => {
     expect(await count("customers")).toBe(before);
   });
 
+  it("names the create whose value is too long for its index", async () => {
+    // 3000 different three-byte characters, which do not compress, are over
+    // the most an index entry takes.
+    const long = Array.from({ length: 3000 }, (_, i) =>
+      String.fromCharCode(0x4e00 + ((i * 7919) % 20_000)),
+    ).join("");
+    const one = await call(nextbase, "POST", CREATE, {
+      token: tokens.user,
+      body: customer(long).body,
+    });
+    expect(one.status).toBe(400);
+    expect(one.body.message).toBe("A value is too long to index.");
+    const reply = await batch(tokens.user, [customer("f1"), customer(long)]);
+    expect(reply.status).toBe(400);
+    expect(reply.body.message).toMatch(/^Request 2 of the batch failed/);
+  });
+
   it("creates rows that set different fields", async () => {
     const reply = await batch(tokens.user, [
       { body: { name: "e1" } },

@@ -186,6 +186,11 @@ describe("compileFilter", () => {
     expect(compile('author !~ "x"').sql).toMatch(
       /^COALESCE\("t0"."author", ''\) NOT ILIKE/,
     );
+    // Two values match the same way.
+    expect(compile('"Spring sale" ~ "sale"')).toEqual({
+      sql: `{:f0}::text ILIKE {:f1}::text ESCAPE '\\'`,
+      params: { f0: "Spring sale", f1: "%sale%" },
+    });
   });
 
   it("compares blanks as each type's blank value", () => {
