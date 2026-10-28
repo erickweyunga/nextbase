@@ -184,6 +184,73 @@ describe("round trips per request", () => {
     expect(trips()).toBe(5);
   });
 
+  it("deletes a record and what cascades from it in a few queries per level", async () => {
+    const admin = nextbase.client({ superuser: true });
+    const threads = await admin.collections.create({ name: "threads" });
+    const replies = await admin.collections.create({
+      name: "replies",
+      fields: [
+        {
+          name: "thread",
+          type: "relation",
+          collectionId: threads.id,
+          cascadeDelete: true,
+        },
+      ],
+    });
+    await admin.collections.create({
+      name: "likes",
+      fields: [
+        {
+          name: "reply",
+          type: "relation",
+          collectionId: replies.id,
+          cascadeDelete: true,
+        },
+      ],
+    });
+    await admin.collections.create({
+      name: "mentions",
+      fields: [
+        {
+          name: "replies",
+          type: "relation",
+          collectionId: replies.id,
+          maxSelect: 10,
+        },
+      ],
+    });
+    const thread = await admin.collection("threads").create({});
+    const other = await admin.collection("replies").create({});
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      const reply = await admin
+        .collection("replies")
+        .create({ thread: thread?.id });
+      ids.push(reply?.id ?? "");
+      await admin.collection("likes").create({ reply: reply?.id });
+      await admin.collection("likes").create({ reply: reply?.id });
+    }
+    const mention = await admin
+      .collection("mentions")
+      .create({ replies: [ids[0], other?.id, ids[1]] });
+
+    const { other: process, trips } = await another();
+    await process
+      .client({ superuser: true })
+      .collection("threads")
+      .delete(thread?.id ?? "");
+    // The schema version, BEGIN, the thread's lock and COMMIT, plus a lookup
+    // per relation and a delete or update per level: the same for 3 replies
+    // as for 30.
+    expect(trips()).toBe(11);
+    expect((await admin.collection("replies").getList()).totalItems).toBe(1);
+    expect((await admin.collection("likes").getList()).totalItems).toBe(0);
+    expect(
+      (await admin.collection("mentions").getOne(mention?.id ?? "")).replies,
+    ).toEqual([other?.id]);
+  });
+
   it("takes six to sign in with a password", async () => {
     const { other, trips } = await another();
     const signIn = await call(
