@@ -2,6 +2,7 @@ import type { AuthCollection, Collection, FileField } from "@nextbasejs/client";
 import { type DB, hash } from "@nextbasejs/dbx";
 import parseRange from "range-parser";
 import type { Principal } from "../auth/principal.ts";
+import { countAttempt, type Limit, uploaderKey } from "../auth/throttle.ts";
 import { peekToken, signToken, verifyToken } from "../auth/tokens.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
@@ -23,10 +24,15 @@ const UPLOAD_SECONDS = 15 * 60;
 /** How long a signed download URL works. */
 const DOWNLOAD_SECONDS = 5 * 60;
 const MAX_ORIGINAL_NAME = 255;
+/** How many direct uploads an account may start. */
+const UPLOAD_LIMIT: Limit = { max: 100, window: "1 hour" };
 
 /**
  * Starts a direct upload to the bucket: a signed PUT URL, and the token the
- * record's field takes afterwards. Write rules apply when the record is written.
+ * record's field takes afterwards. Write rules apply when the record is
+ * written; an upload is not a record yet, so it cannot be checked against
+ * them. Instead, someone signed out may start one only where anyone may
+ * create or update records, and an account may start a limited number.
  */
 export async function createUpload(
   db: DB,
@@ -55,6 +61,19 @@ export async function createUpload(
       collection.updateRule === null)
   ) {
     throw new ApiError(403, "Files cannot be uploaded to this collection.");
+  }
+  if (!principal.superuser) {
+    if (!principal.record || !principal.collection) {
+      if (collection.createRule !== "" && collection.updateRule !== "") {
+        throw new ApiError(401, "Sign in to upload files to this collection.");
+      }
+    } else {
+      await countAttempt(
+        db,
+        [uploaderKey(principal.collection.id, principal.record.id as string)],
+        UPLOAD_LIMIT,
+      );
+    }
   }
   const field = collection.fields.find(
     (f): f is FileField => f.type === "file" && f.name === input.field,

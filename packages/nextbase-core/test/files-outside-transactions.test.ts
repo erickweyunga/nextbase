@@ -107,6 +107,28 @@ describe("files are stored before the write's transaction", () => {
     expect(puts()).toBe(before);
   });
 
+  it("stores no file for a caller the create rule or a body-reading update rule refuses", async () => {
+    await admin.collections.create({
+      name: "photos",
+      createRule: '@request.auth.id != ""',
+      updateRule: '@request.auth.id != "" && @request.body.title:isset = false',
+      fields: [
+        { name: "title", type: "text" },
+        { name: "image", type: "file", mimeTypes: ["image/png"] },
+      ],
+    });
+    const photo = await admin.collection("photos").create({});
+    const before = puts();
+    const anonymous = nextbase.client().collection("photos");
+    await expect(anonymous.create({ image: png() })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      anonymous.update(photo?.id ?? "", { image: png() }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(puts()).toBe(before);
+  });
+
   it("claims a direct upload once, even when two writes read it", async () => {
     const upload = await call(
       nextbase,

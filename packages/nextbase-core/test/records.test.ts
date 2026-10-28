@@ -167,12 +167,20 @@ describe("records API", () => {
           },
         },
       });
-      const missing = await as("ann", "POST", "/collections/posts/records", {
+      const missing = await as("admin", "POST", "/collections/posts/records", {
         author: "nobody000000000",
       });
       expect(missing.body.data).toMatchObject({
         title: { code: "validation_required" },
         author: { code: "validation_missing_relation" },
+      });
+      // The create rule refuses Ann this author, so she does not learn
+      // whether the record exists.
+      const refused = await as("ann", "POST", "/collections/posts/records", {
+        author: "nobody000000000",
+      });
+      expect(refused.body.data).toEqual({
+        title: { code: "validation_required", message: "Cannot be blank." },
       });
     });
 

@@ -240,6 +240,8 @@ see it. The SDK returns `null`.
 }
 ```
 Also returned, with no field errors, when the `createRule` does not match.
+Missing related records are only reported to callers the `createRule`
+matches, so they never reveal whether a record exists.
 
 </TabItem>
 <TabItem value="403" label="403">
