@@ -67,6 +67,14 @@ export interface PreparedWrite {
   files: FileChanges;
 }
 
+/** A write checked as far as it can be without the database. */
+interface DraftWrite {
+  prepared: PreparedWrite;
+  /** The problems found so far, thrown by `finishWrite`. */
+  issues: Issues;
+  options: WriteOptions;
+}
+
 /**
  * Applies `field+`, `+field` and `field-` modifiers and ignores unknown keys.
  * Throws a 400 listing every problem.
@@ -76,6 +84,19 @@ export async function prepareWrite(
   input: Record<string, unknown>,
   options: WriteOptions,
 ): Promise<PreparedWrite> {
+  const draft = draftWrite(input, options);
+  await checkRelations(q, options.schema, options.collection, [draft]);
+  return finishWrite(draft);
+}
+
+/**
+ * Everything `prepareWrite` checks except relations, which need the
+ * database. Problems are collected in the draft, not thrown.
+ */
+function draftWrite(
+  input: Record<string, unknown>,
+  options: WriteOptions,
+): DraftWrite {
   const { collection, existing, privileged } = options;
   const creating = existing === undefined;
   const issues = new Issues();
@@ -244,7 +265,31 @@ export async function prepareWrite(
   // Rules see what was submitted, never secrets derived from it.
   delete body.password;
   delete body.tokenKey;
-  await checkRelations(q, options.schema, collection, values, issues);
+  return {
+    prepared: {
+      values,
+      row,
+      body,
+      ...(oldPassword !== undefined && { oldPassword }),
+      files,
+    },
+    issues,
+    options,
+  };
+}
+
+/**
+ * Throws a 400 listing the draft's problems. Otherwise hashes its password,
+ * unless that was done before, and returns the write.
+ */
+async function finishWrite({
+  prepared,
+  issues,
+  options,
+}: DraftWrite): Promise<PreparedWrite> {
+  const { collection, existing } = options;
+  const creating = existing === undefined;
+  const { values, row } = prepared;
   if (!issues.empty) {
     throw new ApiError(
       400,
@@ -261,13 +306,7 @@ export async function prepareWrite(
       options.passwordHash ??
       (await hashPassword(values[password.name] as string));
   }
-  return {
-    values,
-    row,
-    body,
-    ...(oldPassword !== undefined && { oldPassword }),
-    files,
-  };
+  return prepared;
 }
 
 function blankValue(field: Field): unknown {
@@ -674,35 +713,58 @@ function passwordProblem(
   return undefined;
 }
 
-// Locks referenced records until commit so a concurrent delete cannot leave a dangling reference.
+/**
+ * Checks that the records the drafts' relation fields point at exist, and
+ * locks them until commit, so a concurrent delete cannot leave a dangling
+ * reference. Takes one query per target collection, however many drafts.
+ */
 async function checkRelations(
   q: Builder,
   schema: Schema,
   collection: Collection,
-  values: Record<string, unknown>,
-  issues: Issues,
+  drafts: readonly DraftWrite[],
 ): Promise<void> {
-  for (const field of collection.fields) {
-    if (field.type !== "relation" || !Object.hasOwn(values, field.name))
-      continue;
-    const value = values[field.name];
-    const ids = Array.isArray(value)
-      ? (value as string[])
-      : value === null
-        ? []
-        : [value as string];
-    if (ids.length === 0) continue;
-    const target = schema.find(field.collectionId);
-    if (!target) continue;
-    const found = await q
+  const references: {
+    draft: DraftWrite;
+    field: Field;
+    target: Collection;
+    ids: string[];
+  }[] = [];
+  const wanted = new Map<Collection, Set<string>>();
+  for (const draft of drafts) {
+    const { values } = draft.prepared;
+    for (const field of collection.fields) {
+      if (field.type !== "relation" || !Object.hasOwn(values, field.name))
+        continue;
+      const value = values[field.name];
+      const ids = Array.isArray(value)
+        ? (value as string[])
+        : value === null
+          ? []
+          : [value as string];
+      const target = schema.find(field.collectionId);
+      if (ids.length === 0 || !target) continue;
+      references.push({ draft, field, target, ids });
+      const set = wanted.get(target) ?? new Set();
+      for (const id of ids) set.add(id);
+      wanted.set(target, set);
+    }
+  }
+  const found = new Map<Collection, Set<string>>();
+  for (const [target, ids] of wanted) {
+    // Locked in id order, so concurrent writes lock rows in the same order.
+    const rows = await q
       .newQuery(
-        `SELECT id FROM {{${table(target.name)}}} WHERE id = ANY({:ids}) FOR KEY SHARE`,
+        `SELECT id FROM {{${table(target.name)}}} WHERE id = ANY({:ids}) ORDER BY id FOR KEY SHARE`,
       )
-      .bind({ ids })
+      .bind({ ids: [...ids] })
       .column<string>();
-    const missing = ids.filter((id) => !found.includes(id));
+    found.set(target, new Set(rows));
+  }
+  for (const { draft, field, target, ids } of references) {
+    const missing = ids.filter((id) => !found.get(target)?.has(id));
     if (missing.length > 0) {
-      issues.add(
+      draft.issues.add(
         [field.name],
         "validation_missing_relation",
         `No ${target.name} record with id ${missing.join(", ")}.`,

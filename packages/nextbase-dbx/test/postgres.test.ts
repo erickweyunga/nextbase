@@ -171,6 +171,25 @@ describe("data manipulation", () => {
     ).resolves.toEqual({ rowsAffected: 2 });
   });
 
+  it("inserts several rows in one statement", async () => {
+    await db
+      .insertMany("customer", [
+        { email: "d@x.io", name: "Dan" },
+        { email: "e@x.io", name: null },
+      ])
+      .execute();
+    const rows = await db
+      .select("email", "name")
+      .from("customer")
+      .where(isIn("email", "d@x.io", "e@x.io"))
+      .orderBy("email")
+      .all();
+    expect(rows).toEqual([
+      { email: "d@x.io", name: "Dan" },
+      { email: "e@x.io", name: null },
+    ]);
+  });
+
   it("upserts on a conflict", async () => {
     await db
       .upsert("customer", { email: "a@x.io", name: "Annie" }, "email")
