@@ -1,5 +1,13 @@
 # @nextbasejs/next
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [7476f6f]
+  - @nextbasejs/core@0.1.5
+  - @nextbasejs/client@0.1.5
+
 ## 0.1.4
 
 ### Patch Changes
