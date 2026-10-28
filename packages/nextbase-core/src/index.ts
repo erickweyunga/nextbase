@@ -176,6 +176,7 @@ export class NextBase {
   readonly #rejectBreachedPasswords: boolean;
   readonly #storage: Storage;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #appUrl: URL | undefined;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -195,14 +196,12 @@ export class NextBase {
     this.#sms = new Sms(options.sms, options.waitUntil);
     this.#storage = newStorage(options.storage);
     this.#waitUntil = options.waitUntil ?? vercelWaitUntil;
-    this.#oauth2 = new OAuth2(
-      options.oauth2,
+    this.#appUrl =
       appUrl ??
-        (options.mail?.appUrl === undefined
-          ? undefined
-          : checkAppUrl(options.mail.appUrl, "mail.appUrl")),
-      this.#basePath,
-    );
+      (options.mail?.appUrl === undefined
+        ? undefined
+        : checkAppUrl(options.mail.appUrl, "mail.appUrl"));
+    this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -264,8 +263,10 @@ export class NextBase {
   }
 
   // The setup token goes to server logs, which only the owner can read, so a
-  // stranger who finds a fresh deployment first cannot claim it.
-  async #announceSetup(db: DB, url: URL): Promise<void> {
+  // stranger who finds a fresh deployment first cannot claim it. The URL in
+  // the log comes from the options, never from the request: its Host header
+  // is the sender's to choose, and could send the token to their server.
+  async #announceSetup(db: DB): Promise<void> {
     if (this.#superuserExists) return;
     if (await hasSuperuser(db)) {
       this.#superuserExists = true;
@@ -274,9 +275,10 @@ export class NextBase {
     if (Date.now() - this.#setupLoggedAt < SETUP_LOG_INTERVAL_MS) return;
     this.#setupLoggedAt = Date.now();
     const token = await setupToken(db);
+    const origin = this.#appUrl?.origin ?? "https://<your app>";
     console.info(
       `[nextbase] No superuser exists yet. Within the next hour, create one with:\n` +
-        `  curl -X POST ${url.origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
+        `  curl -X POST ${origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
         `    -d '{"token":"${token}","email":"you@example.com","password":"a long password"}'`,
     );
   }
@@ -415,8 +417,9 @@ export class NextBase {
             caller = resolved.principal;
             if (http) setCookie = resolved.setCookie;
           }
-          // The log shows a URL to call, which in-process requests do not have.
-          if (http) await this.#announceSetup(db, new URL(request.url));
+          // In-process requests come from the app itself, not from someone
+          // setting it up.
+          if (http) await this.#announceSetup(db);
           const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.

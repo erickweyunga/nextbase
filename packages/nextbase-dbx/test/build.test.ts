@@ -260,7 +260,7 @@ describe("data manipulation", () => {
     expect(db.insert("t", {}).sql).toBe('INSERT INTO "t" DEFAULT VALUES');
   });
 
-  it("builds one INSERT of several rows with the same columns", () => {
+  it("builds one INSERT of several rows", () => {
     const query = db.insertMany("nextbase.users", [
       { name: "a", skipped: undefined, created: exp("now()") },
       { name: "b", created: exp("now()") },
@@ -271,12 +271,12 @@ describe("data manipulation", () => {
     expect(query.params).toEqual({ p0: "a", p1: "b" });
     expect(() => db.insertMany("t", [])).toThrow(/no rows/);
     expect(() => db.insertMany("t", [{}])).toThrow(/no columns/);
-    expect(() =>
-      db.insertMany("t", [
-        { a: 1, b: 2 },
-        { b: 2, a: 1 },
-      ]),
-    ).toThrow(/row 2 .* sets other columns/);
+    // A column one row leaves out gets its default there.
+    expect(
+      db.insertMany("t", [{ a: 1 }, { b: 2, a: 3 }, { c: undefined }]).sql,
+    ).toBe(
+      'INSERT INTO "t" ("a", "b") VALUES ({:p0}, DEFAULT), ({:p1}, {:p2}), (DEFAULT, DEFAULT)',
+    );
   });
 
   it("builds UPSERT", () => {

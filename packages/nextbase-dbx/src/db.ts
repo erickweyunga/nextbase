@@ -56,6 +56,19 @@ export class TxDoneError extends Error {
 }
 
 /**
+ * Thrown by `commit()` when Postgres rolled the transaction back instead,
+ * because a statement in it failed and the error was caught.
+ */
+export class TxAbortedError extends Error {
+  constructor() {
+    super(
+      "dbx: the transaction was rolled back because a statement in it failed.",
+    );
+    this.name = "TxAbortedError";
+  }
+}
+
+/**
  * Query methods on a pool. Statements may run on different connections; use
  * `transaction()` to share one. The caller owns and ends the pool.
  */
@@ -208,14 +221,20 @@ export class Tx extends Builder {
   async #finish(command: "COMMIT" | "ROLLBACK"): Promise<void> {
     if (this.#state.done) throw new TxDoneError();
     this.#state.done = true;
+    let result: QueryResult;
     try {
-      await this.#client.query({ text: command, values: [] });
+      result = await this.#client.query({ text: command, values: [] });
     } catch (error) {
       // Transaction state is unknown, so discard the connection.
       this.#client.release(asError(error));
       throw error;
     }
     this.#client.release();
+    // COMMIT of a failed transaction rolls it back without an error, and
+    // says so only in its command tag.
+    if (command === "COMMIT" && result.command === "ROLLBACK") {
+      throw new TxAbortedError();
+    }
   }
 }
 
