@@ -6,9 +6,9 @@ import { ApiError } from "../errors.ts";
 import {
   type FileChanges,
   fileNames,
+  type NewFiles,
   prepareFileField,
 } from "../files/files.ts";
-import type { Storage } from "../files/storage.ts";
 import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
@@ -17,6 +17,10 @@ import { Issues, type Path } from "../schema/input.ts";
 import { hasNul, isStorableTime, parseDate } from "../storable.ts";
 
 const ID_PATTERN = /^[a-z0-9]{15}$/;
+
+export function isRecordId(id: unknown): id is string {
+  return typeof id === "string" && ID_PATTERN.test(id);
+}
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
@@ -35,7 +39,11 @@ export interface WriteOptions {
   privileged: boolean;
   /** Protected auth fields NextBase itself sets, such as a phone a code just proved. */
   vouched?: ReadonlySet<string>;
-  storage?: Storage | undefined;
+  /**
+   * The new files the write brings, read before its transaction started.
+   * Without them, the write cannot set files.
+   */
+  newFiles?: NewFiles | undefined;
   /**
    * The new password, already hashed before the write's transaction started,
    * so the slow hash holds no lock. Without it the password is hashed here.
@@ -134,7 +142,7 @@ export async function prepareWrite(
         (k) => input[k] !== undefined,
       );
       if (!touched) continue;
-      if (!options.storage) {
+      if (!options.newFiles) {
         issues.add(
           [name],
           "validation_unsupported",
@@ -142,13 +150,11 @@ export async function prepareWrite(
         );
         continue;
       }
-      const prepared = await prepareFileField(
-        q,
-        options.storage,
-        collection,
+      const prepared = prepareFileField(
         field,
         input,
         fileNames(field, existing?.[name]),
+        options.newFiles,
         ({ code, message }) => issues.add([name], code, message),
       );
       if (!prepared) continue;

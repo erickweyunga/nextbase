@@ -19,21 +19,25 @@ import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
 import { ApiError } from "../errors.ts";
 import {
+  claimFiles,
   type FileChanges,
   fileKey,
   fileNames,
-  storeFiles,
+  type NewFiles,
+  readNewFiles,
+  storeNewFiles,
 } from "../files/files.ts";
 import type { Storage } from "../files/storage.ts";
 import { compileFilter, type RequestInfo } from "../filter/compiler.ts";
 import { FilterError } from "../filter/parser.ts";
+import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
 import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { hasNul, timestampParam } from "../storable.ts";
 import { serializeRecord } from "./serialize.ts";
-import { newPassword, prepareWrite } from "./values.ts";
+import { isRecordId, newPassword, prepareWrite } from "./values.ts";
 
 export interface RecordsContext {
   db: DB | Tx;
@@ -178,16 +182,22 @@ export async function planNewRecord(
 ): Promise<Apply<Output | undefined>> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
-  await checkNewPassword(ctx, collection, input);
-  const passwordHash = await hashNewPassword(collection, input);
+  // Chosen now, so new files can be stored under the record beforehand.
+  const write =
+    input.id === undefined || input.id === ""
+      ? { ...input, id: randomString(15, LOWER_ALPHANUMERIC) }
+      : input;
+  await checkNewPassword(ctx, collection, write);
+  const passwordHash = await hashNewPassword(collection, write);
+  const newFiles = await prepareNewFiles(ctx, collection, write, write.id);
   return (tx) =>
     writing(collection, async () => {
-      const prepared = await prepareWrite(tx, input, {
+      const prepared = await prepareWrite(tx, write, {
         collection,
         schema: ctx.schema,
         privileged: ctx.principal.superuser,
         ...(ctx.vouched && { vouched: ctx.vouched }),
-        storage: ctx.storage,
+        newFiles,
         passwordHash,
       });
       // Checked before inserting, so a denied caller learns nothing from a
@@ -245,8 +255,14 @@ export async function planUpdateRecord(
   denyNullRule(ctx, collection.updateRule);
   await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
-  const old = await checkOldPasswordFirst(ctx, collection, id, input, notFound);
+  const slow = input.password !== undefined || touchesFiles(collection, input);
+  const ruleChecked =
+    slow && (await checkUpdateRuleFirst(ctx, collection, id, notFound));
+  const old = ruleChecked
+    ? await checkOldPasswordFirst(ctx, collection, id, input)
+    : undefined;
   const passwordHash = await hashNewPassword(collection, input);
+  const newFiles = await prepareNewFiles(ctx, collection, input, id);
   return (tx) =>
     writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
@@ -267,7 +283,7 @@ export async function planUpdateRecord(
           schema: ctx.schema,
           existing,
           privileged: await canManage(tx, ctx, collection, id),
-          storage: ctx.storage,
+          newFiles,
           passwordHash,
         });
       } catch (error) {
@@ -372,10 +388,54 @@ async function keepFiles(
   { files }: { files: FileChanges },
 ): Promise<void> {
   if (files.added.length === 0 && files.removed.length === 0) return;
-  if (!ctx.storage || !ctx.effects) {
+  if (!ctx.effects) {
     throw new Error("Writes that change files need storage and effects.");
   }
-  await storeFiles(tx, ctx.storage, ctx.effects, collection, id, files);
+  await claimFiles(tx, ctx.effects, collection, id, files);
+}
+
+/**
+ * Reads a write's new files and stores them under the record, before its
+ * transaction starts, so neither holds a lock or a connection. Undefined
+ * when the write cannot set files. Files the write turns out not to keep,
+ * because it fails, are deleted again.
+ */
+async function prepareNewFiles(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+  recordId: unknown,
+): Promise<NewFiles | undefined> {
+  if (!ctx.storage) return undefined;
+  const newFiles = await readNewFiles(ctx.pool, ctx.storage, collection, input);
+  if (newFiles.files.size === 0) return newFiles;
+  if (!ctx.effects) {
+    throw new Error("Writes that change files need storage and effects.");
+  }
+  // A write with bad files or a bad id fails, so its files are not stored.
+  if (newFiles.problems.size === 0 && isRecordId(recordId)) {
+    await storeNewFiles(
+      ctx.storage,
+      ctx.effects,
+      collection,
+      recordId,
+      newFiles,
+    );
+  }
+  return newFiles;
+}
+
+function touchesFiles(
+  collection: Collection,
+  input: Record<string, unknown>,
+): boolean {
+  return collection.fields.some(
+    (f) =>
+      f.type === "file" &&
+      [f.name, `+${f.name}`, `${f.name}+`, `${f.name}-`].some(
+        (key) => input[key] !== undefined,
+      ),
+  );
 }
 
 // Runs before the write's transaction, so no row stays locked during the lookup.
@@ -428,37 +488,21 @@ async function oldPasswordMatches(
 }
 
 /**
- * Checks the old password before the update's transaction starts, so the slow
- * check holds no lock and no connection.
- *
- * Returns the stored hash the old password matched, which the transaction
- * then confirms is still stored, or `matched: undefined` when it did not
- * match. Returns undefined when the check has to wait for the transaction.
- *
- * Only callers the update rule allows may try a password, so someone it
- * refuses can neither guess the password nor lock the account. The rule is
- * checked here with a plain read. A rule that reads `@request.body` needs the
- * checked body, which only the transaction has, so those updates check the
- * old password in the transaction.
+ * Checks the update rule with a plain read before the transaction starts, so
+ * a caller it refuses causes no slow work, such as checking a password or
+ * storing files. Throws `notFound` when it refuses. Returns false when the
+ * rule reads `@request.body`, which needs the checked body only the
+ * transaction has. The transaction checks the rule again either way.
  */
-async function checkOldPasswordFirst(
+async function checkUpdateRuleFirst(
   ctx: RecordsContext,
   collection: Collection,
   id: string,
-  input: Record<string, unknown>,
   notFound: ApiError,
-): Promise<{ matched: string | undefined } | undefined> {
-  const { oldPassword } = input;
+): Promise<boolean> {
+  if (ctx.principal.superuser) return true;
   const rule = collection.updateRule ?? "";
-  if (
-    typeof oldPassword !== "string" ||
-    input.password === undefined ||
-    ctx.principal.superuser ||
-    collection.type !== "auth" ||
-    rule.includes("@request.body")
-  ) {
-    return undefined;
-  }
+  if (rule.includes("@request.body")) return false;
   if (
     rule !== "" &&
     !(await matchesStoredRow(
@@ -469,6 +513,34 @@ async function checkOldPasswordFirst(
     ))
   ) {
     throw notFound;
+  }
+  return true;
+}
+
+/**
+ * Checks the old password before the update's transaction starts, so the slow
+ * check holds no lock and no connection. Call it only once
+ * `checkUpdateRuleFirst` has allowed the caller, so someone the rule refuses
+ * can neither guess the password nor lock the account.
+ *
+ * Returns the stored hash the old password matched, which the transaction
+ * then confirms is still stored, or `matched: undefined` when it did not
+ * match. Returns undefined when there is no old password to check.
+ */
+async function checkOldPasswordFirst(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  input: Record<string, unknown>,
+): Promise<{ matched: string | undefined } | undefined> {
+  const { oldPassword } = input;
+  if (
+    typeof oldPassword !== "string" ||
+    input.password === undefined ||
+    ctx.principal.superuser ||
+    collection.type !== "auth"
+  ) {
+    return undefined;
   }
   const [stored] = await ctx.pool
     .select("password")
