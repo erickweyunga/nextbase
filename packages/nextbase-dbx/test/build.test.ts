@@ -260,6 +260,25 @@ describe("data manipulation", () => {
     expect(db.insert("t", {}).sql).toBe('INSERT INTO "t" DEFAULT VALUES');
   });
 
+  it("builds one INSERT of several rows with the same columns", () => {
+    const query = db.insertMany("nextbase.users", [
+      { name: "a", skipped: undefined, created: exp("now()") },
+      { name: "b", created: exp("now()") },
+    ]);
+    expect(query.sql).toBe(
+      'INSERT INTO "nextbase"."users" ("name", "created") VALUES ({:p0}, now()), ({:p1}, now())',
+    );
+    expect(query.params).toEqual({ p0: "a", p1: "b" });
+    expect(() => db.insertMany("t", [])).toThrow(/no rows/);
+    expect(() => db.insertMany("t", [{}])).toThrow(/no columns/);
+    expect(() =>
+      db.insertMany("t", [
+        { a: 1, b: 2 },
+        { b: 2, a: 1 },
+      ]),
+    ).toThrow(/row 2 .* sets other columns/);
+  });
+
   it("builds UPSERT", () => {
     expect(
       db.upsert("t", { id: 1, name: "a", n: exp("t.n+1") }, "id").sql,

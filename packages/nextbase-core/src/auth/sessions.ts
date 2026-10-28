@@ -65,13 +65,14 @@ export async function createSession(
   record: Row,
   userAgent: string,
 ): Promise<{ token: string; session: Session }> {
-  await q
-    .newQuery(`DELETE FROM {{${table("_sessions")}}} WHERE expires <= now()`)
-    .execute();
   const token = randomBytes(32).toString("base64url");
+  // Expired sessions are removed in the same statement.
   const [session] = await q
     .newQuery(
-      `INSERT INTO {{${table("_sessions")}}}
+      `WITH expired AS (
+         DELETE FROM {{${table("_sessions")}}} WHERE expires <= now()
+       )
+       INSERT INTO {{${table("_sessions")}}}
          (id, token_hash, collection_id, record_id, key_hash, user_agent, expires)
        VALUES ({:id}, {:tokenHash}, {:collectionId}, {:recordId}, {:keyHash}, {:userAgent},
                now() + make_interval(secs => least({:duration}, ${MAX_AGE})))

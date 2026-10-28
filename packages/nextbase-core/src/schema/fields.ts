@@ -5,6 +5,7 @@ import type {
   PasswordField,
 } from "@nextbasejs/client";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { parseDate } from "../storable.ts";
 import { type Issues, isRecord, type Path, Reader } from "./input.ts";
 
 /** Collection, field and index names: safe to quote, within Postgres's 63-byte limit. */
@@ -339,7 +340,7 @@ function parseDomains(
 function parseTimestamp(r: Reader, key: "min" | "max"): string {
   const value = r.string(key, "");
   if (value === "") return "";
-  const time = Date.parse(value);
+  const time = parseDate(value);
   if (Number.isNaN(time)) {
     r.fail(
       key,

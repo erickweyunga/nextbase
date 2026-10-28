@@ -2,11 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   hasNul,
   isStorableTime,
+  parseDate,
   parseTimestamptz,
   timestampParam,
 } from "../src/storable.ts";
 
 describe("storable values", () => {
+  it("reads a date and time with no zone as UTC, whatever the server's zone", () => {
+    const cases: [string, string][] = [
+      ["2020-01-01 00:00:00", "2020-01-01T00:00:00.000Z"],
+      ["2020-01-01T10:30", "2020-01-01T10:30:00.000Z"],
+      ["2020-01-01 10:30:00.25", "2020-01-01T10:30:00.250Z"],
+      ["2020-01-01", "2020-01-01T00:00:00.000Z"],
+      ["2020-01-01T00:00:00+03:00", "2019-12-31T21:00:00.000Z"],
+      ["2020-01-01 00:00:00Z", "2020-01-01T00:00:00.000Z"],
+    ];
+    for (const [text, iso] of cases)
+      expect(new Date(parseDate(text)).toISOString()).toBe(iso);
+    expect(parseDate("not a date")).toBeNaN();
+  });
+
   it("parses timestamptz output exactly, including offsets with seconds, BC and far-future years", () => {
     const cases: [string, string][] = [
       ["4713-01-01 02:27:16+02:27:16 BC", "-004712-01-01T00:00:00.000Z"],

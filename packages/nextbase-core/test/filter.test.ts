@@ -211,8 +211,12 @@ describe("compileFilter", () => {
   });
 
   it("compiles values of multi-valued fields: ?op is any, op is all of a non-empty set", () => {
+    // Containment, so the GIN index on the field can serve it.
     expect(compile('tags ?= "a"').sql).toBe(
-      'EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE "f1"."v" = {:f0}::text)',
+      '"t0"."tags" @> ARRAY[{:f0}::text]',
+    );
+    expect(compile('tags ?!= "a"').sql).toBe(
+      'EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE "f1"."v" <> {:f0}::text)',
     );
     expect(compile('tags = "a"').sql).toBe(
       '(EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE TRUE) AND NOT EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE NOT COALESCE("f1"."v" = {:f0}::text, false)))',
@@ -236,6 +240,17 @@ describe("compileFilter", () => {
     );
     expect(compile('editors.name ?= "x"').sql).toContain(
       '"f1"."id" = ANY("t0"."editors")',
+    );
+  });
+
+  it("compiles a path with at most one value as one lookup", () => {
+    // `author` is a single relation: at most one name to compare.
+    const single = compile('author.name != "x"', { collection: posts }).sql;
+    expect(single).toMatch(/^EXISTS \(SELECT 1 FROM /);
+    expect(single).not.toContain("NOT EXISTS");
+    // `editors` is a multi relation: every editor's name must differ.
+    expect(compile('editors.name != "x"', { collection: posts }).sql).toContain(
+      "NOT EXISTS",
     );
   });
 

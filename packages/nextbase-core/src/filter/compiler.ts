@@ -4,7 +4,12 @@ import type { Principal } from "../auth/principal.ts";
 import { table } from "../db/system.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
-import { hasNul, isStorableTime, timestampParam } from "../storable.ts";
+import {
+  hasNul,
+  isStorableTime,
+  parseDate,
+  timestampParam,
+} from "../storable.ts";
 import {
   FilterError,
   type Literal,
@@ -515,6 +520,23 @@ class Compiler {
       return `cardinality(${this.#column(left, left.root, leftType)}) ${op === "=" ? "=" : ">"} 0`;
     }
 
+    // A field compared with a value: `tags ?= "news"` means "has this value".
+    // It is written as array containment, which the field's GIN index can
+    // serve. Multi-value columns are never NULL, so neither is the result.
+    if (
+      any &&
+      op === "=" &&
+      isPlural(left) &&
+      left.steps.length === 0 &&
+      leftType === "text" &&
+      right.kind === "constant" &&
+      right.value !== BLANK &&
+      right.value !== null
+    ) {
+      const value = this.#bind(coerce(right.value, "text", false), "text");
+      return `${this.#column(left, left.root, leftType)} @> ARRAY[${value}]`;
+    }
+
     const leftValues = needsSubquery(left)
       ? this.#values(left, leftType)
       : undefined;
@@ -548,7 +570,14 @@ class Compiler {
       `EXISTS (SELECT 1 FROM ${from.join(", ")} WHERE ${conditions.join(" AND ") || "TRUE"})`;
     const from = sides.flatMap((side) => side.from);
     const joins = sides.flatMap((side) => side.joins);
-    if (any) return exists(from, [...joins, condition]);
+    // With at most one value on each side, such as `author.name`, there is at
+    // most one pair, so "every pair matches" is the same as "a pair matches".
+    // That form is a plain lookup Postgres can serve with indexes, where the
+    // every-pair form checks every row.
+    const paths = right.kind === "path" && rightValues ? [left, right] : [left];
+    if (any || paths.every(isSingleValued)) {
+      return exists(from, [...joins, condition]);
+    }
     const nonEmpty = sides.map((side) => exists(side.from, side.joins));
     return `(${[
       ...nonEmpty,
@@ -746,6 +775,14 @@ function isPlural(path: Path): boolean {
   return !path.count && isMultiple(path.field) && path.modifier !== "length";
 }
 
+/** True when `path` has at most one value: no plural field or step on the way. */
+function isSingleValued(path: Path): boolean {
+  return (
+    !isPlural(path) &&
+    path.steps.every((step) => !step.back && !isMultiple(step.field))
+  );
+}
+
 function needsSubquery(path: Path): boolean {
   return !path.count && (path.steps.length > 0 || isPlural(path));
 }
@@ -815,7 +852,7 @@ function coerce(value: unknown, type: SqlType, nullable: boolean): unknown {
         value instanceof Date
           ? value.getTime()
           : typeof value === "string"
-            ? Date.parse(value)
+            ? parseDate(value)
             : Number.NaN;
       if (isStorableTime(time)) return timestampParam(new Date(time));
       break;

@@ -6,17 +6,21 @@ import { ApiError } from "../errors.ts";
 import {
   type FileChanges,
   fileNames,
+  type NewFiles,
   prepareFileField,
 } from "../files/files.ts";
-import type { Storage } from "../files/storage.ts";
 import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
-import { Issues } from "../schema/input.ts";
-import { hasNul, isStorableTime } from "../storable.ts";
+import { Issues, type Path } from "../schema/input.ts";
+import { hasNul, isStorableTime, parseDate } from "../storable.ts";
 
 const ID_PATTERN = /^[a-z0-9]{15}$/;
+
+export function isRecordId(id: unknown): id is string {
+  return typeof id === "string" && ID_PATTERN.test(id);
+}
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
@@ -35,7 +39,16 @@ export interface WriteOptions {
   privileged: boolean;
   /** Protected auth fields NextBase itself sets, such as a phone a code just proved. */
   vouched?: ReadonlySet<string>;
-  storage?: Storage | undefined;
+  /**
+   * The new files the write brings, read before its transaction started.
+   * Without them, the write cannot set files.
+   */
+  newFiles?: NewFiles | undefined;
+  /**
+   * The new password, already hashed before the write's transaction started,
+   * so the slow hash holds no lock. Without it the password is hashed here.
+   */
+  passwordHash?: string | undefined;
 }
 
 export interface PreparedWrite {
@@ -54,6 +67,14 @@ export interface PreparedWrite {
   files: FileChanges;
 }
 
+/** A write checked as far as it can be without the database. */
+export interface DraftWrite {
+  prepared: PreparedWrite;
+  /** The problems found so far, thrown by `finishWrite`. */
+  issues: Issues;
+  options: WriteOptions;
+}
+
 /**
  * Applies `field+`, `+field` and `field-` modifiers and ignores unknown keys.
  * Throws a 400 listing every problem.
@@ -63,6 +84,19 @@ export async function prepareWrite(
   input: Record<string, unknown>,
   options: WriteOptions,
 ): Promise<PreparedWrite> {
+  const draft = draftWrite(input, options);
+  await checkRelations(q, options.schema, options.collection, [draft]);
+  return finishWrite(draft);
+}
+
+/**
+ * Everything `prepareWrite` checks except relations, which need the
+ * database. Problems are collected in the draft, not thrown.
+ */
+export function draftWrite(
+  input: Record<string, unknown>,
+  options: WriteOptions,
+): DraftWrite {
   const { collection, existing, privileged } = options;
   const creating = existing === undefined;
   const issues = new Issues();
@@ -129,7 +163,7 @@ export async function prepareWrite(
         (k) => input[k] !== undefined,
       );
       if (!touched) continue;
-      if (!options.storage) {
+      if (!options.newFiles) {
         issues.add(
           [name],
           "validation_unsupported",
@@ -137,13 +171,11 @@ export async function prepareWrite(
         );
         continue;
       }
-      const prepared = await prepareFileField(
-        q,
-        options.storage,
-        collection,
+      const prepared = prepareFileField(
         field,
         input,
         fileNames(field, existing?.[name]),
+        options.newFiles,
         ({ code, message }) => issues.add([name], code, message),
       );
       if (!prepared) continue;
@@ -233,7 +265,31 @@ export async function prepareWrite(
   // Rules see what was submitted, never secrets derived from it.
   delete body.password;
   delete body.tokenKey;
-  await checkRelations(q, options.schema, collection, values, issues);
+  return {
+    prepared: {
+      values,
+      row,
+      body,
+      ...(oldPassword !== undefined && { oldPassword }),
+      files,
+    },
+    issues,
+    options,
+  };
+}
+
+/**
+ * Throws a 400 listing the draft's problems. Otherwise hashes its password,
+ * unless that was done before, and returns the write.
+ */
+export async function finishWrite({
+  prepared,
+  issues,
+  options,
+}: DraftWrite): Promise<PreparedWrite> {
+  const { collection, existing } = options;
+  const creating = existing === undefined;
+  const { values, row } = prepared;
   if (!issues.empty) {
     throw new ApiError(
       400,
@@ -246,17 +302,11 @@ export async function prepareWrite(
   // Hashed once the write is known to be valid.
   const password = collection.fields.find((f) => f.type === "password");
   if (password && typeof values[password.name] === "string") {
-    row[password.name] = values[password.name] = await hashPassword(
-      values[password.name] as string,
-    );
+    row[password.name] = values[password.name] =
+      options.passwordHash ??
+      (await hashPassword(values[password.name] as string));
   }
-  return {
-    values,
-    row,
-    body,
-    ...(oldPassword !== undefined && { oldPassword }),
-    files,
-  };
+  return prepared;
 }
 
 function blankValue(field: Field): unknown {
@@ -412,7 +462,7 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
       return fail("Must be a boolean.");
     case "date": {
       if (raw === null || raw === "") return null;
-      const time = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+      const time = typeof raw === "string" ? parseDate(raw) : Number.NaN;
       return isStorableTime(time)
         ? new Date(time)
         : fail("Must be an ISO 8601 date from 4713 BC to 275760 AD.");
@@ -597,28 +647,11 @@ function preparePassword(
   issues: Issues,
   set: (field: Field, value: unknown) => void,
 ): string | undefined {
-  const { password, passwordConfirm, oldPassword } = input;
+  const { password, oldPassword } = input;
   if (password === undefined) return undefined;
-  // Counts characters as people see them, unlike `length` (emoji, accents).
-  const length = typeof password === "string" ? [...password].length : 0;
-  if (
-    typeof password !== "string" ||
-    length < field.min ||
-    length > field.max
-  ) {
-    issues.add(
-      ["password"],
-      "validation_length_out_of_range",
-      `Must be ${field.min} to ${field.max} characters.`,
-    );
-    return undefined;
-  }
-  if (passwordConfirm !== password) {
-    issues.add(
-      ["passwordConfirm"],
-      "validation_values_mismatch",
-      "Does not match the password.",
-    );
+  const problem = passwordProblem(field, input);
+  if (problem) {
+    issues.add(...problem);
     return undefined;
   }
   let check: string | undefined;
@@ -640,35 +673,98 @@ function preparePassword(
   return check;
 }
 
-// Locks referenced records until commit so a concurrent delete cannot leave a dangling reference.
-async function checkRelations(
+/**
+ * The new password in `input`, if it passes the field's own checks. A write
+ * with a valid password can then have it hashed before its transaction.
+ */
+export function newPassword(
+  field: Field & { type: "password" },
+  input: Record<string, unknown>,
+): string | undefined {
+  return typeof input.password === "string" && !passwordProblem(field, input)
+    ? input.password
+    : undefined;
+}
+
+function passwordProblem(
+  field: Field & { type: "password" },
+  { password, passwordConfirm }: Record<string, unknown>,
+): [Path, string, string] | undefined {
+  // Counts characters as people see them, unlike `length` (emoji, accents).
+  const length = typeof password === "string" ? [...password].length : 0;
+  if (
+    typeof password !== "string" ||
+    length < field.min ||
+    length > field.max
+  ) {
+    return [
+      ["password"],
+      "validation_length_out_of_range",
+      `Must be ${field.min} to ${field.max} characters.`,
+    ];
+  }
+  if (passwordConfirm !== password) {
+    return [
+      ["passwordConfirm"],
+      "validation_values_mismatch",
+      "Does not match the password.",
+    ];
+  }
+  return undefined;
+}
+
+/**
+ * Checks that the records the drafts' relation fields point at exist, and
+ * locks them until commit, so a concurrent delete cannot leave a dangling
+ * reference. Takes one query per target collection, however many drafts.
+ */
+export async function checkRelations(
   q: Builder,
   schema: Schema,
   collection: Collection,
-  values: Record<string, unknown>,
-  issues: Issues,
+  drafts: readonly DraftWrite[],
 ): Promise<void> {
-  for (const field of collection.fields) {
-    if (field.type !== "relation" || !Object.hasOwn(values, field.name))
-      continue;
-    const value = values[field.name];
-    const ids = Array.isArray(value)
-      ? (value as string[])
-      : value === null
-        ? []
-        : [value as string];
-    if (ids.length === 0) continue;
-    const target = schema.find(field.collectionId);
-    if (!target) continue;
-    const found = await q
+  const references: {
+    draft: DraftWrite;
+    field: Field;
+    target: Collection;
+    ids: string[];
+  }[] = [];
+  const wanted = new Map<Collection, Set<string>>();
+  for (const draft of drafts) {
+    const { values } = draft.prepared;
+    for (const field of collection.fields) {
+      if (field.type !== "relation" || !Object.hasOwn(values, field.name))
+        continue;
+      const value = values[field.name];
+      const ids = Array.isArray(value)
+        ? (value as string[])
+        : value === null
+          ? []
+          : [value as string];
+      const target = schema.find(field.collectionId);
+      if (ids.length === 0 || !target) continue;
+      references.push({ draft, field, target, ids });
+      const set = wanted.get(target) ?? new Set();
+      for (const id of ids) set.add(id);
+      wanted.set(target, set);
+    }
+  }
+  const found = new Map<Collection, Set<string>>();
+  for (const [target, ids] of wanted) {
+    // Locked in id order, so concurrent writes lock rows in the same order.
+    const rows = await q
       .newQuery(
-        `SELECT id FROM {{${table(target.name)}}} WHERE id = ANY({:ids}) FOR KEY SHARE`,
+        `SELECT id FROM {{${table(target.name)}}} WHERE id = ANY({:ids}) ORDER BY id FOR KEY SHARE`,
       )
-      .bind({ ids })
+      .bind({ ids: [...ids] })
       .column<string>();
-    const missing = ids.filter((id) => !found.includes(id));
+    found.set(target, new Set(rows));
+  }
+  for (const { draft, field, target, ids } of references) {
+    const missing = ids.filter((id) => !found.get(target)?.has(id));
     if (missing.length > 0) {
-      issues.add(
+      draft.issues.add(
         [field.name],
         "validation_missing_relation",
         `No ${target.name} record with id ${missing.join(", ")}.`,

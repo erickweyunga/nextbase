@@ -21,8 +21,11 @@ export interface Principal {
 
 export interface Resolved {
   principal: Principal;
-  /** The current schema, checked during the session lookup. */
-  schema: Schema;
+  /**
+   * The current schema, read in the same query as the session. Not set when
+   * the request has no token.
+   */
+  schema?: Schema;
   /** A renewed or removed session cookie the response must carry. */
   setCookie?: string;
 }
@@ -45,10 +48,8 @@ export async function resolvePrincipal(
   const bearer = bearerToken(request);
   const cookie = bearer === undefined ? sessionCookie(request) : undefined;
   const token = bearer ?? cookie;
-  const { schema, active } = token
-    ? await findSession(db, schemas, token, { extend })
-    : { schema: await schemas.get(db), active: undefined };
-  if (token === undefined) return { principal: ANONYMOUS, schema };
+  if (token === undefined) return { principal: ANONYMOUS };
+  const { schema, active } = await findSession(db, schemas, token, { extend });
   if (!active) {
     if (cookie === undefined) {
       throw new ApiError(

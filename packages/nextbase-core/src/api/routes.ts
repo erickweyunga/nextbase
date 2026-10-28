@@ -3,7 +3,7 @@ import type {
   AuthMethods,
   Collection,
 } from "@nextbasejs/client";
-import { type DB, hash, type Tx } from "@nextbasejs/dbx";
+import { type DB, hash, type Tx, type TxOptions } from "@nextbasejs/dbx";
 import {
   confirmEmailChange,
   confirmEmailVerification,
@@ -67,14 +67,20 @@ import { readJsonObject, readRecordBody } from "../http.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
-  deleteRecord,
+  type Apply,
+  applyCreate,
+  applyCreates,
+  CreateFailed,
+  createRuns,
   listRecords,
-  newRecord,
+  type PlannedCreate,
+  planDeleteRecord,
+  planNewRecord,
+  planUpdateRecord,
   type RecordsContext,
-  updateRecord,
   viewRecord,
 } from "../records/service.ts";
-import type { Schema } from "../schema/cache.ts";
+import { SCHEMA_VERSION_SQL, type Schema } from "../schema/cache.ts";
 import {
   deleteCollection,
   newCollection,
@@ -91,6 +97,8 @@ interface Context {
   inProcess: boolean;
   /** 0 means no limit. */
   statementTimeout: number;
+  /** The route's transaction, if the route is marked `transaction`. */
+  tx?: Tx;
   origins: OriginPolicy;
   mailer: Mailer;
   sms: Sms;
@@ -104,6 +112,13 @@ interface Route {
   method: string;
   /** Matched against the path below `basePath`; groups become `params`. */
   pattern: RegExp;
+  /**
+   * The route runs in a transaction opened before the handler, which also
+   * reads the schema version. Use it only for routes that hold the
+   * transaction briefly: a route that reads a request body would keep the
+   * connection busy while the body arrives.
+   */
+  transaction?: true;
   handler(context: Context): Promise<Response>;
 }
 
@@ -120,6 +135,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: "GET",
     pattern: records,
+    transaction: true,
     async handler(context) {
       const { url } = parse(context);
       const collection = context.schema.get(context.params[0] as string);
@@ -140,20 +156,19 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const body = await readRecordBody(context.request);
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "POST",
-            collection: context.params[0] as string,
-            body,
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "POST",
+          collection: context.params[0] as string,
+          body,
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
   {
     method: "GET",
     pattern: record,
+    transaction: true,
     async handler(context) {
       const { url } = parse(context);
       const [collection, id] = context.params as [string, string];
@@ -177,15 +192,13 @@ export const ROUTES: readonly Route[] = [
       const [collection, id] = context.params as [string, string];
       const body = await readRecordBody(context.request);
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "PATCH",
-            collection,
-            id,
-            body,
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "PATCH",
+          collection,
+          id,
+          body,
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
@@ -195,15 +208,13 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       return replyOf(
-        await bounded(context, (db) =>
-          writeRecord(context, db, {
-            method: "DELETE",
-            collection,
-            id,
-            body: {},
-            query: parse(context).url.searchParams,
-          }),
-        ),
+        await writeRecord(context, {
+          method: "DELETE",
+          collection,
+          id,
+          body: {},
+          query: parse(context).url.searchParams,
+        }),
       );
     },
   },
@@ -212,21 +223,48 @@ export const ROUTES: readonly Route[] = [
     pattern: /^\/batch$/,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
-      // All or nothing.
+      // Writes are planned before the transaction starts, then all run in it:
+      // all or nothing. Planning stops at the first write that fails. The
+      // writes before it still run, so the batch reports the first failing
+      // write in order, as when each is checked and run in turn.
+      const planned: PlannedWrite[] = [];
+      let failed: unknown;
+      for (const [i, write] of writes.entries()) {
+        try {
+          planned.push(await inBatch(i, () => planRecordWrite(context, write)));
+        } catch (error) {
+          failed = error;
+          break;
+        }
+      }
+      if (planned.length === 0) throw failed;
       const results = await bounded(context, async (tx) => {
         const replies: Reply[] = [];
-        for (const [i, write] of writes.entries()) {
-          try {
-            replies.push(await writeRecord(context, tx, write));
-          } catch (error) {
-            if (!(error instanceof ApiError)) throw error;
-            throw new ApiError(
-              400,
-              `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
-              { requests: { [i]: error.data } },
-            );
+        while (replies.length < planned.length) {
+          const i = replies.length;
+          const write = planned[i] as PlannedWrite;
+          if ("apply" in write) {
+            replies.push(await inBatch(i, () => write.apply(tx)));
+            continue;
+          }
+          // Consecutive creates are done together, a run at a time.
+          const creates: PlannedCreate[] = [];
+          for (const next of planned.slice(i)) {
+            if (!("create" in next)) break;
+            creates.push(next.create);
+          }
+          for (const run of createRuns(creates)) {
+            const start = replies.length;
+            try {
+              const records = await applyCreates(tx, run);
+              replies.push(...records.map(replyWith));
+            } catch (error) {
+              if (!(error instanceof CreateFailed)) throw error;
+              throw batchError(start + error.index, error.error);
+            }
           }
         }
+        if (failed !== undefined) throw failed;
         return replies;
       });
       return Response.json(results);
@@ -680,14 +718,12 @@ export const ROUTES: readonly Route[] = [
         typeof input.id === "string" && input.id !== ""
           ? input.id
           : randomString(15, LOWER_ALPHANUMERIC);
-      await bounded(context, (tx) =>
-        writeRecord(context, tx, {
-          method: "POST",
-          collection: collection.id,
-          body: { ...input, id },
-          query: new URLSearchParams(),
-        }),
-      );
+      await writeRecord(context, {
+        method: "POST",
+        collection: collection.id,
+        body: { ...input, id },
+        query: new URLSearchParams(),
+      });
       try {
         await checkAuthRule(db, schema, collection, id);
       } catch (error) {
@@ -805,19 +841,30 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /**
- * Runs records API work in a transaction bounded by `statementTimeout`. The
- * timeout is transaction-local (SET LOCAL) so it works through transaction poolers.
+ * Opens a route's transaction. Starting it, setting the timeout and reading
+ * the schema version take one round trip together.
+ */
+export function beginRoute(db: DB, statementTimeout: number): Promise<Tx> {
+  return db.begin(txOptions(statementTimeout, SCHEMA_VERSION_SQL));
+}
+
+/**
+ * Runs records API work in a transaction limited by `statementTimeout`. It
+ * uses the route's transaction if there is one, or opens a new one. The
+ * timeout lasts only until the transaction ends, so it works through
+ * transaction poolers.
  */
 function bounded<T>(context: Context, run: (tx: Tx) => Promise<T>): Promise<T> {
-  return context.db.transaction(async (tx) => {
-    if (context.statementTimeout > 0) {
-      await tx
-        .newQuery("SELECT set_config('statement_timeout', {:ms}, true)")
-        .bind({ ms: String(context.statementTimeout) })
-        .execute();
-    }
-    return run(tx);
-  });
+  if (context.tx) return run(context.tx);
+  return context.db.transaction(run, txOptions(context.statementTimeout));
+}
+
+function txOptions(statementTimeout: number, startQuery?: string): TxOptions {
+  return {
+    // With 0, the database's own timeout applies.
+    ...(statementTimeout > 0 && { statementTimeout }),
+    ...(startQuery !== undefined && { startQuery }),
+  };
 }
 
 function parse({ request }: Context): { url: URL } {
@@ -875,33 +922,79 @@ interface RecordWrite {
   query: URLSearchParams;
 }
 
-// 204 when the caller may not view the result.
+/** Plans the write, then runs it in its own transaction. */
 async function writeRecord(
   context: Context,
-  db: DB | Tx,
   write: RecordWrite,
 ): Promise<Reply> {
+  const planned = await planRecordWrite(context, write);
+  if ("apply" in planned) return bounded(context, planned.apply);
+  const apply = applyCreate(planned.create);
+  return bounded(context, async (tx) => replyWith(await apply(tx)));
+}
+
+/**
+ * A write checked as far as it can be before its transaction starts. A batch
+ * does consecutive creates together, so they stay planned creates; other
+ * writes come with the rest of their work.
+ */
+type PlannedWrite = { create: PlannedCreate } | { apply: Apply<Reply> };
+
+/** Plans a write; see `PlannedWrite`. */
+async function planRecordWrite(
+  context: Context,
+  write: RecordWrite,
+): Promise<PlannedWrite> {
   const collection = context.schema.get(write.collection);
   const ctx = recordsContext(context, write.body, {
-    db,
     method: write.method,
     query: write.query,
   });
-  let result: Record<string, unknown> | undefined;
   if (write.method === "POST") {
-    result = await newRecord(ctx, collection, write.body, write.query);
-  } else if (write.method === "PATCH") {
-    result = await updateRecord(
-      ctx,
-      collection,
-      write.id as string,
-      write.body,
-      write.query,
-    );
-  } else {
-    await deleteRecord(ctx, collection, write.id as string);
+    return {
+      create: await planNewRecord(ctx, collection, write.body, write.query),
+    };
   }
-  return result ? { status: 200, body: result } : { status: 204 };
+  if (write.method === "DELETE") {
+    const apply = await planDeleteRecord(ctx, collection, write.id as string);
+    return {
+      apply: async (tx) => {
+        await apply(tx);
+        return { status: 204 };
+      },
+    };
+  }
+  const apply = await planUpdateRecord(
+    ctx,
+    collection,
+    write.id as string,
+    write.body,
+    write.query,
+  );
+  return { apply: async (tx) => replyWith(await apply(tx)) };
+}
+
+/** 204 when the caller may not view the record. */
+function replyWith(record: Record<string, unknown> | undefined): Reply {
+  return record ? { status: 200, body: record } : { status: 204 };
+}
+
+/** Reports which write of a batch failed, and that nothing was saved. */
+async function inBatch<T>(i: number, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw batchError(i, error);
+  }
+}
+
+function batchError(i: number, error: unknown): unknown {
+  if (!(error instanceof ApiError)) return error;
+  return new ApiError(
+    400,
+    `Request ${i + 1} of the batch failed with ${error.status}: ${error.message} Nothing was saved.`,
+    { requests: { [i]: error.data } },
+  );
 }
 
 const MAX_BATCH = 50;

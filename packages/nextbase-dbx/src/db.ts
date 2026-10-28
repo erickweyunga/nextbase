@@ -1,4 +1,10 @@
-import { Builder, type DBOptions, type Queryable } from "./builder.ts";
+import {
+  Builder,
+  type DBOptions,
+  type Queryable,
+  type QueryResult,
+} from "./builder.ts";
+import type { Row } from "./query.ts";
 
 /** The part of a `pg` PoolClient that dbx calls. */
 export interface PoolClient extends Queryable {
@@ -21,6 +27,17 @@ export interface TxOptions {
   readOnly?: boolean;
   /** Only affects serializable read-only transactions. */
   deferrable?: boolean;
+  /**
+   * How long each statement in the transaction may run, in milliseconds.
+   * It is set with `SET LOCAL`, so it ends with the transaction. 0 means no
+   * limit.
+   */
+  statementTimeout?: number;
+  /**
+   * SQL without parameters to run right after `BEGIN`, in the same round
+   * trip. Its rows are in `tx.startRows`.
+   */
+  startQuery?: string;
 }
 
 const ISOLATION_LEVELS: ReadonlySet<string> = new Set([
@@ -55,15 +72,36 @@ export class DB extends Builder {
    * be called. Prefer `transaction()`.
    */
   async begin(options: TxOptions = {}): Promise<Tx> {
-    const text = beginSQL(options);
+    const statements = [beginSQL(options)];
+    const { statementTimeout, startQuery } = options;
+    if (statementTimeout !== undefined) {
+      if (!Number.isSafeInteger(statementTimeout) || statementTimeout < 0) {
+        throw new RangeError(
+          "dbx: statementTimeout must be a whole number of milliseconds.",
+        );
+      }
+      statements.push(`SET LOCAL statement_timeout = ${statementTimeout}`);
+    }
+    if (startQuery !== undefined) statements.push(startQuery);
     const client = await this.pool.connect();
+    let result: QueryResult | QueryResult[];
     try {
-      await client.query({ text, values: [] });
+      // Statements without parameters are sent to Postgres together, in one
+      // round trip. Postgres returns one result for each.
+      result = (await client.query({
+        text: statements.join("; "),
+        values: [],
+        ...(this.options.types && { types: this.options.types }),
+      })) as QueryResult | QueryResult[];
     } catch (error) {
       client.release(asError(error));
       throw error;
     }
-    return new Tx(client, this.options);
+    const startRows =
+      startQuery === undefined
+        ? []
+        : ((asArray(result).at(-1)?.rows ?? []) as Row[]);
+    return new Tx(client, this.options, startRows);
   }
 
   /**
@@ -101,9 +139,15 @@ export class Tx extends Builder {
   readonly #client: PoolClient;
   readonly #state: { done: boolean };
   #savepoints = 0;
+  /** The rows of `startQuery`, or none if there was no `startQuery`. */
+  readonly startRows: readonly Row[];
 
   /** Wraps a connection on which `BEGIN` has already run. */
-  constructor(client: PoolClient, options: DBOptions = {}) {
+  constructor(
+    client: PoolClient,
+    options: DBOptions = {},
+    startRows: readonly Row[] = [],
+  ) {
     const state = { done: false };
     super(
       {
@@ -116,6 +160,7 @@ export class Tx extends Builder {
     );
     this.#client = client;
     this.#state = state;
+    this.startRows = startRows;
   }
 
   get done(): boolean {
@@ -188,6 +233,10 @@ function beginSQL({ isolation, readOnly, deferrable }: TxOptions): string {
     modes.push(deferrable ? "DEFERRABLE" : "NOT DEFERRABLE");
   }
   return modes.length === 0 ? "BEGIN" : `BEGIN ${modes.join(", ")}`;
+}
+
+function asArray(result: QueryResult | QueryResult[]): QueryResult[] {
+  return Array.isArray(result) ? result : [result];
 }
 
 function asError(error: unknown): Error {
