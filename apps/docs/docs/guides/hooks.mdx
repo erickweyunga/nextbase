@@ -1,0 +1,180 @@
+---
+title: Record hooks
+description: Run your own code when records are created, updated or deleted.
+---
+
+# Record hooks
+
+Hooks run your code when records are created, updated or deleted: to fill in
+a field, refuse a write, keep an audit log, or call a webhook. They run for
+every write, whether it comes over HTTP, from `nextbase.client()`, from a
+batch, from NextBase itself (such as a sign-up through OAuth2) or from a
+cascading delete.
+
+Pass them to `new NextBase()`, by collection name. Hooks under `"*"` run for
+every collection, after the collection's own:
+
+```ts title="lib/nextbase.ts"
+import "server-only";
+import { ApiError, NextBase } from "@nextbasejs/core";
+import type { Collections } from "./nextbase-types";
+
+const slugify = (text: string) => text.toLowerCase().replace(/\W+/g, "-");
+
+export const nextbase = new NextBase<Collections>({
+  hooks: {
+    posts: {
+      beforeCreate(e) {
+        if (!e.principal.record && !e.principal.superuser) {
+          throw new ApiError(401, "Sign in to post.");
+        }
+        e.input.slug ??= slugify(String(e.input.title ?? ""));
+      },
+      async onUpdate(e) {
+        await e.nextbase.collection("audit").create({
+          post: e.record.id,
+          by: e.principal.record?.id ?? "",
+        });
+      },
+      async afterDelete(e) {
+        await fetch("https://hooks.example.com/post-deleted", {
+          method: "POST",
+          body: JSON.stringify(e.record),
+        });
+      },
+    },
+    "*": {
+      afterCreate(e) {
+        console.log(`created ${e.collection.name} ${e.record.id}`);
+      },
+    },
+  },
+});
+```
+
+`Collections` comes from `npx nextbase typegen`, which writes
+`nextbase-types.ts`. With it, `e.input`, `e.record` and `e.nextbase` are
+typed, and a hook for a collection that does not exist is a type error.
+Without it, any collection name is allowed and records are `RecordModel`.
+
+## Three kinds
+
+Each collection can have one function per hook, sync or async:
+
+| Hook | Runs | Use it to |
+| ---- | ---- | --------- |
+| `beforeCreate`, `beforeUpdate`, `beforeDelete` | while the write is planned, before it is checked; usually outside any transaction | change the input, or refuse the write |
+| `onCreate`, `onUpdate`, `onDelete` | in the write's transaction, once the record is written | write other records that are kept or undone with it |
+| `afterCreate`, `afterUpdate`, `afterDelete` | in the background, once the write is committed | send emails, call webhooks, update caches |
+
+### Before hooks
+
+A before hook runs before validation, password hashing and file storage, so
+what it does is checked as if the caller had sent it. Change `e.input` to
+change what is written.
+
+Rules are checked as far as they can be without the hook's changes:
+
+- A `null` rule refuses everyone but superusers before the hook runs.
+- An update or delete runs the hook only once the caller passes the update
+  or delete rule, so a caller the rule refuses gets the usual 404 and never
+  reaches the hook. An update rule that reads `@request.body` is checked
+  only after the hook, with the body it leaves.
+- A create rule is checked after the hook, with the input it leaves. So
+  `beforeCreate` may run for callers the create rule then refuses: do not
+  write anything there, nor tell the caller about other records.
+
+All rules are checked again, in the write's transaction.
+
+- `e.input` is the body of a create or update. Files in it are `Blob`s and a
+  new password is still plain text.
+- `e.record` is the record as stored, for an update or delete. It is a plain
+  read, so another write may still change the record before this one locks
+  it. In a batch, it is the record as stored before the batch.
+- `e.request` has the request's `method`, `query` and `headers`, without
+  `authorization` and `cookie`, which carry the caller's session.
+
+Throw an `ApiError` to refuse the write: its status, message and `data` are
+the response. Any other error is a 500.
+
+Before hooks usually hold no transaction or lock, so they may be slow: the
+write has not started yet. There are two exceptions. A write made through
+`e.nextbase` in an on hook is planned in that hook's transaction, so its
+before hooks run while the outer write's locks are held. And a sign-up through
+OAuth2 is planned in the transaction that links the provider account, which
+holds a connection but no record locks until the record is inserted.
+
+### On hooks
+
+An on hook runs in the write's transaction, right after the row is written,
+so the write's locks are held while it runs: keep it short.
+
+- `e.record` is the record as stored; `e.original`, on update, is the record
+  before it.
+- `e.nextbase` is a superuser client whose requests join the transaction.
+  What they write is committed or rolled back with the write, they see the
+  write's own changes, and they fire their own hooks. They run one at a
+  time, in the order they were sent, so `Promise.all` works. Await every
+  request: the write fails if one is still running when the hook returns.
+
+Throwing undoes the whole write, or the whole [batch](/docs/guides/records)
+it is part of. An `ApiError` gives its status and message, as in a before
+hook; any other error is a 500. A request through `e.nextbase` that fails
+undoes only its own writes, so a hook may catch its error and go on.
+
+`e.nextbase` reaches the records API only: list, view, create, update,
+delete and batch. Writes through it can nest eight deep; past that they
+fail, so a hook that updates the records that fire it cannot loop forever.
+
+In a batch, the creates of a collection with on or after hooks are each
+inserted and given their hooks before the next one, as if sent in turn.
+
+### After hooks
+
+An after hook runs in the background once the request's changes are
+committed, through the `waitUntil` option, as auth emails are. It never runs
+when the write fails or is rolled back, including writes made in on hooks.
+A write that is committed runs its after hooks even if the request fails
+later, as a sign-up does when its session cannot start. After hooks of one
+request run one at a time, in the order of the writes.
+
+`e.record` is the record as the write left it, and `e.nextbase` is a
+superuser client whose requests run in their own transactions. Its writes
+fire their hooks too, and nest at most eight deep, as in on hooks. An error
+is logged as `[nextbase] afterCreate hook for posts failed:` and changes
+nothing: the response was already sent.
+
+## Events
+
+| Field | Hooks | |
+| ----- | ----- | - |
+| `collection` | all | the collection definition, frozen, without token secrets |
+| `principal` | all | `superuser`, and the signed-in `collection` and `record`, if any |
+| `source` | all | what made the write, see below |
+| `input` | before create and update | the body, which the hook may change |
+| `request` | before | `method`, `query` and `headers`, without `authorization` and `cookie` |
+| `record` | all but before create | the record |
+| `original` | on and after update | the record before the update |
+| `nextbase` | on and after | a superuser client |
+
+Records are as a superuser sees them, hidden fields included. A password
+hash and the token key are never included.
+
+`source` is one of:
+
+| Source | Writes |
+| ------ | ------ |
+| `"request"` | the records API: over HTTP, from `nextbase.client()`, in a batch, or through `e.nextbase` |
+| `"system"` | NextBase's own writes: a sign-up through OAuth2 or a phone code, a verified email or phone, a password reset, an email change |
+| `"cascade"` | a record deleted by a cascading relation, or updated because a deleted record was taken out of one of its relations |
+
+Before hooks do not run for cascades, which have no input to change; on and
+after hooks do, once for each record.
+
+## What hooks do not see
+
+- `_superusers`: setup and `createSuperuser()` write superusers outside the
+  records API, so hooks on it are refused when NextBase starts, and `"*"`
+  hooks do not run for it.
+- The password rehash NextBase may do when a superuser or user signs in.
+- Deleting a collection, or a field: its records or values go without hooks.

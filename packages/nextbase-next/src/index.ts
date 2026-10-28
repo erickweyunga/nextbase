@@ -1,4 +1,4 @@
-import type { NextBaseClient } from "@nextbasejs/client";
+import type { NextBaseClient, RecordModel } from "@nextbasejs/client";
 import type {
   NextBase,
   RouteHandler,
@@ -22,7 +22,9 @@ export interface NextRouteHandlers {
  * export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
  * ```
  */
-export function newNextHandler(nextbase: NextBase): NextRouteHandlers {
+export function newNextHandler<C extends Record<string, RecordModel>>(
+  nextbase: NextBase<C>,
+): NextRouteHandlers {
   const { handle } = nextbase;
   return {
     GET: handle,
@@ -37,11 +39,12 @@ export function newNextHandler(nextbase: NextBase): NextRouteHandlers {
  * A client acting as the session cookie's user. Call it per request; in server
  * actions and route handlers, sign-in with `{ cookie: true }`, sign-out and
  * session renewal update the cookie. Server components cannot set cookies.
+ * It is typed like `nextbase`, as by `new NextBase<Collections>()`.
  */
-export async function serverClient(
-  nextbase: NextBase,
+export async function serverClient<C extends Record<string, RecordModel>>(
+  nextbase: NextBase<C>,
   options: Omit<ServerClientOptions, "cookies"> = {},
-): Promise<NextBaseClient> {
+): Promise<NextBaseClient<C>> {
   // Next.js sets it from the connection when no proxy did.
   const proto = (await headers()).get("x-forwarded-proto");
   return nextbase.client({

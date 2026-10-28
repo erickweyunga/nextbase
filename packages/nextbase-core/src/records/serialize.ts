@@ -1,15 +1,16 @@
-import type { Collection } from "@nextbasejs/client";
+import type { Collection, Field } from "@nextbasejs/client";
 import type { Row } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 
 /**
- * Drops hidden fields, turns NULL into `""` and timestamps into ISO strings.
+ * Drops hidden fields, unless `hidden`, turns NULL into `""` and timestamps into ISO strings.
  * Email shows if visible, to the record itself or superusers; phone only to the latter two.
  */
 export function serializeRecord(
   collection: Collection,
   row: Row,
   viewer: Principal,
+  hidden = false,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
     collectionId: collection.id,
@@ -32,7 +33,7 @@ export function serializeRecord(
       viewer.record.id === row.id);
 
   for (const field of collection.fields) {
-    if (field.hidden) continue;
+    if (field.hidden && (!hidden || secret(field))) continue;
     const value = row[field.name];
     if (field.type === "date" || field.type === "autodate") {
       out[field.name] = value instanceof Date ? value.toISOString() : "";
@@ -47,4 +48,21 @@ export function serializeRecord(
     }
   }
   return out;
+}
+
+/**
+ * A record as hooks see it: as a superuser does, with hidden fields too, but
+ * never a password hash or token key.
+ */
+export function serverRecord(
+  collection: Collection,
+  row: Row,
+): Record<string, unknown> {
+  return serializeRecord(collection, row, { superuser: true }, true);
+}
+
+function secret(field: Field): boolean {
+  return (
+    field.type === "password" || (field.system && field.name === "tokenKey")
+  );
 }

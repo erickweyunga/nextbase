@@ -36,6 +36,8 @@ describe("OAuth2 sign-in", () => {
   const sent: MailMessage[] = [];
   const pending: Promise<unknown>[] = [];
   const grants = new Map<string, Grant>();
+  /** The record hooks that ran for `users`, with their source. */
+  const hooked: string[] = [];
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -280,6 +282,19 @@ describe("OAuth2 sign-in", () => {
         },
       },
       waitUntil: (promise) => pending.push(promise),
+      hooks: {
+        users: {
+          onCreate: (e) => void hooked.push(`onCreate ${e.source}`),
+          onUpdate: (e) => {
+            hooked.push(`onUpdate ${e.source}`);
+            if (e.record.email === "refused@example.com") {
+              throw new Error("Refused by a hook.");
+            }
+          },
+          afterCreate: (e) => void hooked.push(`afterCreate ${e.source}`),
+          afterUpdate: (e) => void hooked.push(`afterUpdate ${e.source}`),
+        },
+      },
     });
     admin = nextbase.client({ superuser: true });
     await admin.collections.create({
@@ -325,6 +340,35 @@ describe("OAuth2 sign-in", () => {
       email: "ada@example.com",
       emailVerified: true,
     });
+  });
+
+  it("runs record hooks for a sign-up as NextBase's own writes", async () => {
+    hooked.length = 0;
+    sessionOf(
+      await signIn("idp", { sub: "u-hooks", email: "hook@example.com" }),
+    );
+    await Promise.all(pending.splice(0));
+    expect(hooked).toEqual([
+      "onCreate system",
+      "onUpdate system",
+      "afterCreate system",
+      "afterUpdate system",
+    ]);
+
+    // A sign-up that fails after its first write keeps nothing: the record
+    // is gone, and the after hook of its create never runs.
+    hooked.length = 0;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failed = await signIn("idp", {
+      sub: "u-hooks-2",
+      email: "refused@example.com",
+    });
+    expect(errorOf(failed)).toBe("oauth2_failed");
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+    await Promise.all(pending.splice(0));
+    expect(hooked).toEqual(["onCreate system", "onUpdate system"]);
+    expect(await findUser("refused@example.com")).toBeUndefined();
   });
 
   it("signs the same provider account in to the same record, even after an email change there", async () => {
