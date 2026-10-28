@@ -11,7 +11,7 @@ import {
   Tx,
 } from "@nextbasejs/dbx";
 import { checkBreached } from "../auth/breached.ts";
-import { verifyPassword } from "../auth/password.ts";
+import { hashPassword, verifyPassword } from "../auth/password.ts";
 import type { Principal } from "../auth/principal.ts";
 import { rekeySessions } from "../auth/sessions.ts";
 import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
@@ -33,7 +33,7 @@ import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { hasNul, timestampParam } from "../storable.ts";
 import { serializeRecord } from "./serialize.ts";
-import { prepareWrite } from "./values.ts";
+import { newPassword, prepareWrite } from "./values.ts";
 
 export interface RecordsContext {
   db: DB | Tx;
@@ -179,6 +179,7 @@ export async function planNewRecord(
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
   await checkNewPassword(ctx, collection, input);
+  const passwordHash = await hashNewPassword(collection, input);
   return (tx) =>
     writing(collection, async () => {
       const prepared = await prepareWrite(tx, input, {
@@ -187,6 +188,7 @@ export async function planNewRecord(
         privileged: ctx.principal.superuser,
         ...(ctx.vouched && { vouched: ctx.vouched }),
         storage: ctx.storage,
+        passwordHash,
       });
       // Checked before inserting, so a denied caller learns nothing from a
       // constraint error.
@@ -243,6 +245,8 @@ export async function planUpdateRecord(
   denyNullRule(ctx, collection.updateRule);
   await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
+  const old = await checkOldPasswordFirst(ctx, collection, id, input, notFound);
+  const passwordHash = await hashNewPassword(collection, input);
   return (tx) =>
     writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
@@ -264,6 +268,7 @@ export async function planUpdateRecord(
           existing,
           privileged: await canManage(tx, ctx, collection, id),
           storage: ctx.storage,
+          passwordHash,
         });
       } catch (error) {
         invalid = error;
@@ -282,7 +287,17 @@ export async function planUpdateRecord(
       }
       if (invalid !== undefined || !prepared) throw invalid;
       if (prepared.oldPassword !== undefined) {
-        await checkOldPassword(ctx, collection, existing, prepared.oldPassword);
+        const matches = old
+          ? // Checked before the transaction: confirm it is still the same.
+            old.matched === existing.password
+          : await oldPasswordMatches(
+              ctx,
+              collection,
+              id,
+              existing.password as string,
+              prepared.oldPassword,
+            );
+        if (!matches) throw wrongOldPassword();
       }
       await keepFiles(tx, ctx, collection, id, prepared);
       if (Object.keys(prepared.values).length > 0) {
@@ -398,23 +413,96 @@ function reading<T>(
 
 // Throttled like login, counted outside the update's transaction so a rejected
 // attempt still counts.
-async function checkOldPassword(
+async function oldPasswordMatches(
   ctx: RecordsContext,
   collection: Collection,
-  existing: Row,
+  id: string,
+  stored: string,
   oldPassword: string,
-): Promise<void> {
-  const keys = [accountKey(collection.id, existing.id as string)];
+): Promise<boolean> {
+  const keys = [accountKey(collection.id, id)];
   await countAttempt(ctx.pool, keys);
-  if (!(await verifyPassword(oldPassword, existing.password as string))) {
-    throw new ApiError(400, "Failed to update the record.", {
-      oldPassword: {
-        code: "validation_invalid_old_password",
-        message: "Does not match the current password.",
-      },
-    });
-  }
+  if (!(await verifyPassword(oldPassword, stored))) return false;
   await clearAttempts(ctx.pool, keys);
+  return true;
+}
+
+/**
+ * Checks the old password before the update's transaction starts, so the slow
+ * check holds no lock and no connection.
+ *
+ * Returns the stored hash the old password matched, which the transaction
+ * then confirms is still stored, or `matched: undefined` when it did not
+ * match. Returns undefined when the check has to wait for the transaction.
+ *
+ * Only callers the update rule allows may try a password, so someone it
+ * refuses can neither guess the password nor lock the account. The rule is
+ * checked here with a plain read. A rule that reads `@request.body` needs the
+ * checked body, which only the transaction has, so those updates check the
+ * old password in the transaction.
+ */
+async function checkOldPasswordFirst(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  input: Record<string, unknown>,
+  notFound: ApiError,
+): Promise<{ matched: string | undefined } | undefined> {
+  const { oldPassword } = input;
+  const rule = collection.updateRule ?? "";
+  if (
+    typeof oldPassword !== "string" ||
+    input.password === undefined ||
+    ctx.principal.superuser ||
+    collection.type !== "auth" ||
+    rule.includes("@request.body")
+  ) {
+    return undefined;
+  }
+  if (
+    rule !== "" &&
+    !(await matchesStoredRow(
+      ctx.pool,
+      collection,
+      id,
+      compile(ctx, collection, rule, "rule"),
+    ))
+  ) {
+    throw notFound;
+  }
+  const [stored] = await ctx.pool
+    .select("password")
+    .from(table(collection.name))
+    .where(hash({ id }))
+    .column<string>();
+  if (stored === undefined) return { matched: undefined };
+  const matches = await oldPasswordMatches(
+    ctx,
+    collection,
+    id,
+    stored,
+    oldPassword,
+  );
+  return { matched: matches ? stored : undefined };
+}
+
+function wrongOldPassword(): ApiError {
+  return new ApiError(400, "Failed to update the record.", {
+    oldPassword: {
+      code: "validation_invalid_old_password",
+      message: "Does not match the current password.",
+    },
+  });
+}
+
+/** Hashed before the write's transaction starts, so the slow hash holds no lock. */
+async function hashNewPassword(
+  collection: Collection,
+  input: Record<string, unknown>,
+): Promise<string | undefined> {
+  const field = collection.fields.find((f) => f.type === "password");
+  const password = field && newPassword(field, input);
+  return password === undefined ? undefined : hashPassword(password);
 }
 
 function checkWritable(collection: Collection): void {

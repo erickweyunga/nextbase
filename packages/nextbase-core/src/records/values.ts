@@ -13,7 +13,7 @@ import { normalizePhone } from "../phone.ts";
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
-import { Issues } from "../schema/input.ts";
+import { Issues, type Path } from "../schema/input.ts";
 import { hasNul, isStorableTime, parseDate } from "../storable.ts";
 
 const ID_PATTERN = /^[a-z0-9]{15}$/;
@@ -36,6 +36,11 @@ export interface WriteOptions {
   /** Protected auth fields NextBase itself sets, such as a phone a code just proved. */
   vouched?: ReadonlySet<string>;
   storage?: Storage | undefined;
+  /**
+   * The new password, already hashed before the write's transaction started,
+   * so the slow hash holds no lock. Without it the password is hashed here.
+   */
+  passwordHash?: string | undefined;
 }
 
 export interface PreparedWrite {
@@ -246,9 +251,9 @@ export async function prepareWrite(
   // Hashed once the write is known to be valid.
   const password = collection.fields.find((f) => f.type === "password");
   if (password && typeof values[password.name] === "string") {
-    row[password.name] = values[password.name] = await hashPassword(
-      values[password.name] as string,
-    );
+    row[password.name] = values[password.name] =
+      options.passwordHash ??
+      (await hashPassword(values[password.name] as string));
   }
   return {
     values,
@@ -597,28 +602,11 @@ function preparePassword(
   issues: Issues,
   set: (field: Field, value: unknown) => void,
 ): string | undefined {
-  const { password, passwordConfirm, oldPassword } = input;
+  const { password, oldPassword } = input;
   if (password === undefined) return undefined;
-  // Counts characters as people see them, unlike `length` (emoji, accents).
-  const length = typeof password === "string" ? [...password].length : 0;
-  if (
-    typeof password !== "string" ||
-    length < field.min ||
-    length > field.max
-  ) {
-    issues.add(
-      ["password"],
-      "validation_length_out_of_range",
-      `Must be ${field.min} to ${field.max} characters.`,
-    );
-    return undefined;
-  }
-  if (passwordConfirm !== password) {
-    issues.add(
-      ["passwordConfirm"],
-      "validation_values_mismatch",
-      "Does not match the password.",
-    );
+  const problem = passwordProblem(field, input);
+  if (problem) {
+    issues.add(...problem);
     return undefined;
   }
   let check: string | undefined;
@@ -638,6 +626,46 @@ function preparePassword(
   if (existing)
     set({ ...field, name: "tokenKey" }, randomString(50, ALPHANUMERIC));
   return check;
+}
+
+/**
+ * The new password in `input`, if it passes the field's own checks. A write
+ * with a valid password can then have it hashed before its transaction.
+ */
+export function newPassword(
+  field: Field & { type: "password" },
+  input: Record<string, unknown>,
+): string | undefined {
+  return typeof input.password === "string" && !passwordProblem(field, input)
+    ? input.password
+    : undefined;
+}
+
+function passwordProblem(
+  field: Field & { type: "password" },
+  { password, passwordConfirm }: Record<string, unknown>,
+): [Path, string, string] | undefined {
+  // Counts characters as people see them, unlike `length` (emoji, accents).
+  const length = typeof password === "string" ? [...password].length : 0;
+  if (
+    typeof password !== "string" ||
+    length < field.min ||
+    length > field.max
+  ) {
+    return [
+      ["password"],
+      "validation_length_out_of_range",
+      `Must be ${field.min} to ${field.max} characters.`,
+    ];
+  }
+  if (passwordConfirm !== password) {
+    return [
+      ["passwordConfirm"],
+      "validation_values_mismatch",
+      "Does not match the password.",
+    ];
+  }
+  return undefined;
 }
 
 // Locks referenced records until commit so a concurrent delete cannot leave a dangling reference.
