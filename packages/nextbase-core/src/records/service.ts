@@ -7,6 +7,7 @@ import {
   exp,
   hash,
   type Params,
+  type Query,
   type Row,
   Tx,
 } from "@nextbasejs/dbx";
@@ -36,6 +37,7 @@ import { isMultiple, passwordField } from "../schema/fields.ts";
 import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { timestampParam, unstorableText } from "../storable.ts";
+import type { HookScope, HookSource, Hooks } from "./hooks.ts";
 import { serializeRecord } from "./serialize.ts";
 import {
   checkRelations,
@@ -65,6 +67,12 @@ export interface RecordsContext {
    * that read them are left to the transaction.
    */
   written?: ReadonlySet<string>;
+  /** The app's record hooks; writes that run some need `effects`. */
+  hooks?: Hooks;
+  /** What made the write. Defaults to `request`. */
+  source?: HookSource;
+  /** For a write made through `e.nextbase`: the on hooks that led to it. */
+  hookChain?: readonly string[];
 }
 
 /**
@@ -78,6 +86,8 @@ export function systemContext(
     pool?: DB;
     schema: Schema;
     rejectBreachedPasswords?: boolean;
+    effects?: Effects;
+    hooks?: Hooks;
   },
   body: Record<string, unknown>,
   principal: Principal = { superuser: true },
@@ -93,7 +103,43 @@ export function systemContext(
     ...(ctx.rejectBreachedPasswords !== undefined && {
       rejectBreachedPasswords: ctx.rejectBreachedPasswords,
     }),
+    ...(ctx.effects && { effects: ctx.effects }),
+    ...(ctx.hooks && { hooks: ctx.hooks }),
+    source: "system",
   };
+}
+
+/** The write a hook runs for, as `ctx` makes it. */
+function hookScope(
+  ctx: RecordsContext,
+  source: HookSource = ctx.source ?? "request",
+): HookScope {
+  return {
+    schema: ctx.schema,
+    principal: ctx.principal,
+    source,
+    chain: ctx.hookChain ?? [],
+    effects: ctx.effects,
+  };
+}
+
+/**
+ * The record as stored, for a before hook: a plain read, which locks
+ * nothing. Throws `notFound` when there is none.
+ */
+async function storedRecord(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  notFound: ApiError,
+): Promise<Row> {
+  const [row] = await ctx.db
+    .select()
+    .from(table(collection.name))
+    .where(hash({ id }))
+    .all();
+  if (!row) throw notFound;
+  return row;
 }
 
 /** Rules compile against this alias for the collection's rows. */
@@ -251,6 +297,13 @@ export async function planNewRecord(
 ): Promise<PlannedCreate> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
+  if (ctx.hooks?.hasBefore(collection, "create")) {
+    input = { ...input };
+    await ctx.hooks.before(hookScope(ctx), collection, "create", {
+      input,
+      request: ctx.request,
+    });
+  }
   // Chosen now, so new files can be stored under the record beforehand.
   const write =
     input.id === undefined || input.id === ""
@@ -485,9 +538,23 @@ export async function applyCreates(
       throw new CreateFailed(i, error);
     }
   }
-  if (allowed.length > 0) await insertRows(tx, collection, allowed);
+  const returning = ctx.hooks?.observes(collection, "create") ?? false;
+  const inserted =
+    allowed.length > 0
+      ? await insertRows(tx, collection, allowed, returning)
+      : [];
   if (failed !== undefined)
     throw new CreateFailed(failed, failures.get(failed));
+  if (returning) {
+    const scope = hookScope(ctx);
+    for (const [i, row] of inserted.entries()) {
+      try {
+        await ctx.hooks?.wrote(tx, scope, collection, "create", row);
+      } catch (error) {
+        throw new CreateFailed(i, error);
+      }
+    }
+  }
   return afterWrites(
     tx,
     ctx,
@@ -501,18 +568,24 @@ export async function applyCreates(
  * One INSERT for all rows, in chunks under Postgres's 65535 parameters per
  * statement. When an index refuses a row, because it duplicates a unique
  * value or is too long to index, Postgres does not say which row, so the
- * rows are then inserted one at a time to find the first that fails.
+ * rows are then inserted one at a time to find the first that fails. With
+ * `returning`, returns the stored rows in order; otherwise none.
  */
 async function insertRows(
   tx: Tx,
   collection: Collection,
   prepared: readonly PreparedWrite[],
-): Promise<void> {
+  returning: boolean,
+): Promise<Row[]> {
   const rows = prepared.map((write) => columnValues(collection, write.values));
+  const run = (query: Query): Promise<Row[]> =>
+    returning
+      ? tx.newQuery(`${query.sql} RETURNING *`).bind(query.params).all()
+      : query.execute().then(() => []);
   const insertOne = async (row: Record<string, unknown>, i: number) => {
     try {
-      await writing(collection, () =>
-        tx.insert(table(collection.name), row).execute(),
+      return await writing(collection, () =>
+        run(tx.insert(table(collection.name), row)),
       );
     } catch (error) {
       throw new CreateFailed(i, error);
@@ -526,20 +599,32 @@ async function insertRows(
     1,
     Math.floor(MAX_PARAMETERS / collection.fields.length),
   );
+  const stored: Row[] = [];
   try {
     // In a savepoint, so a duplicate can be undone and traced to its row.
     await tx.transaction(async (savepoint) => {
       for (let i = 0; i < rows.length; i += perChunk) {
-        await savepoint
-          .insertMany(table(collection.name), rows.slice(i, i + perChunk))
-          .execute();
+        stored.push(
+          ...(await run(
+            savepoint.insertMany(
+              table(collection.name),
+              rows.slice(i, i + perChunk),
+            ),
+          )),
+        );
       }
     });
   } catch (error) {
     const { code } = error as { code?: unknown };
     if (code !== "23505" && code !== "54000") throw error;
-    for (const [i, row] of rows.entries()) await insertOne(row, i);
+    stored.length = 0;
+    for (const [i, row] of rows.entries()) {
+      stored.push(...(await insertOne(row, i)));
+    }
   }
+  // RETURNING gives no order, so the rows are put back in theirs.
+  const byId = new Map(stored.map((row) => [row.id, row]));
+  return returning ? rows.map((row) => byId.get(row.id) as Row) : [];
 }
 
 /** Returns the record, or undefined when the caller may not view it. */
@@ -569,6 +654,14 @@ export async function planUpdateRecord(
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
   const notFound = new ApiError(404, "Record not found.");
+  if (ctx.hooks?.hasBefore(collection, "update")) {
+    input = { ...input };
+    await ctx.hooks.before(hookScope(ctx), collection, "update", {
+      input,
+      record: await storedRecord(ctx, collection, id, notFound),
+      request: ctx.request,
+    });
+  }
   const newFiles = await readFiles(ctx, collection, input);
   const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
   const ruleChecked =
@@ -587,8 +680,9 @@ export async function planUpdateRecord(
   await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
   await storeFiles(ctx, collection, id, newFiles);
-  return (tx) =>
-    writing(collection, async () => {
+  const observed = ctx.hooks?.observes(collection, "update") ?? false;
+  return async (tx) => {
+    const { existing, stored } = await writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
       // still be created or changed while it is locked.
       const [existing] = await tx
@@ -640,14 +734,21 @@ export async function planUpdateRecord(
         if (!matches) throw wrongOldPassword();
       }
       await keepFiles(tx, ctx, collection, id, prepared, false);
+      let stored = existing;
       if (Object.keys(prepared.values).length > 0) {
-        await tx
-          .update(
-            table(collection.name),
-            columnValues(collection, prepared.values),
-            hash({ id }),
-          )
-          .execute();
+        const update = tx.update(
+          table(collection.name),
+          columnValues(collection, prepared.values),
+          hash({ id }),
+        );
+        if (observed) {
+          [stored = existing] = await tx
+            .newQuery(`${update.sql} RETURNING *`)
+            .bind(update.params)
+            .all();
+        } else {
+          await update.execute();
+        }
       }
       // The owner learns of a password change they may not have made.
       const password = passwordField(collection);
@@ -677,8 +778,22 @@ export async function planUpdateRecord(
           own ? principal.session?.id : undefined,
         );
       }
-      return afterWrite(tx, ctx, collection, id, query);
+      return { existing, stored };
     });
+    // Outside `writing`, so what the hooks' own writes refuse is not taken
+    // for this write's error.
+    if (observed) {
+      await ctx.hooks?.wrote(
+        tx,
+        hookScope(ctx),
+        collection,
+        "update",
+        stored,
+        existing,
+      );
+    }
+    return afterWrite(tx, ctx, collection, id, query);
+  };
 }
 
 /**
@@ -692,19 +807,32 @@ export async function planDeleteRecord(
 ): Promise<Apply<void>> {
   checkWritable(collection);
   checkId(collection, id);
+  denyNullRule(ctx, collection.deleteRule);
+  const notFound = new ApiError(404, "Record not found.");
+  if (ctx.hooks?.hasBefore(collection, "delete")) {
+    await ctx.hooks.before(hookScope(ctx), collection, "delete", {
+      record: await storedRecord(ctx, collection, id, notFound),
+      request: ctx.request,
+    });
+  }
   const rule = ruleCondition(ctx, collection, collection.deleteRule);
   return async (tx) => {
     if (collection.id === SUPERUSERS) await keepOneSuperuser(tx, id);
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
-      throw new ApiError(404, "Record not found.");
+      throw notFound;
     }
-    await deleteWithReferences(
-      tx,
-      ctx.schema,
-      collection,
-      [id],
-      ctx.effects?.obsoleteFiles ?? [],
-    );
+    const written = await deleteWithReferences(tx, ctx, collection, [id]);
+    // Once every record is written, so hooks never see a delete half done.
+    for (const { collection, action, record, original, source } of written) {
+      await ctx.hooks?.wrote(
+        tx,
+        hookScope(ctx, source),
+        collection,
+        action,
+        record,
+        original,
+      );
+    }
   };
 }
 
@@ -1194,13 +1322,19 @@ async function viewable(
 // block the delete: the result depends neither on cycles nor on the order
 // fields are declared in. Works on every record of one level at once, so a
 // delete takes a few queries per level and collection, not per record.
+// Returns the records it wrote whose collections have on or after hooks, in
+// the order it wrote them, and each record once.
 async function deleteWithReferences(
   tx: Builder,
-  schema: Schema,
+  ctx: RecordsContext,
   collection: Collection,
   ids: readonly string[],
-  obsoleteFiles: string[],
-): Promise<void> {
+): Promise<Written[]> {
+  const { schema, hooks } = ctx;
+  const obsoleteFiles = ctx.effects?.obsoleteFiles ?? [];
+  // A record that loses several references is one update.
+  const updated = new Map<string, Written>();
+  const deleted: Written[] = [];
   const deleting = await cascade(tx, schema, collection, ids);
   // Collections reached later go first: a cascade reaches the records that
   // point at those it deletes, so few references are left to clear.
@@ -1238,32 +1372,78 @@ async function deleteWithReferences(
       // Each cascade already put all the records it reaches in `deleting`.
       if (field.cascadeDelete) continue;
       const stays = `${refers} AND id <> ALL({:gone}::text[])`;
+      // Hooks get each record as it was and as it is left, so then the rows
+      // are read whole and the update returns them.
+      const observed = hooks?.observes(source, "update") ?? false;
       // Locked in id order, so concurrent deletes lock rows in the same order.
+      // Field names start with a letter, so `_kept` cannot clash with one.
       const remaining = await tx
         .newQuery(
-          `SELECT id, ${multiple ? `cardinality(${cleared})` : "0"} AS kept FROM ${t} WHERE ${stays} ORDER BY id FOR UPDATE`,
+          `SELECT ${observed ? "*" : "id"}, ${multiple ? `cardinality(${cleared})` : "0"} AS "_kept" FROM ${t} WHERE ${stays} ORDER BY id FOR UPDATE`,
         )
         .bind({ ...params, gone })
-        .all<{ id: string; kept: number }>();
+        .all<Row & { id: string; _kept: number }>();
       if (remaining.length === 0) continue;
-      if (field.required && remaining.some((row) => row.kept === 0)) {
+      if (field.required && remaining.some((row) => row._kept === 0)) {
         throw new ApiError(
           400,
           `The record is required by ${source.name}.${field.name}. Delete or change those records first.`,
         );
       }
-      await tx
+      const update = tx
         .newQuery(
-          `UPDATE ${t} SET ${col} = ${cleared} WHERE id = ANY({:remaining}::text[])`,
+          `UPDATE ${t} SET ${col} = ${cleared} WHERE id = ANY({:remaining}::text[])${observed ? " RETURNING *" : ""}`,
         )
-        .bind({ ...params, remaining: remaining.map((row) => row.id) })
-        .execute();
+        .bind({ ...params, remaining: remaining.map((row) => row.id) });
+      if (!observed) {
+        await update.execute();
+        continue;
+      }
+      const originals = new Map(remaining.map((row) => [row.id, row]));
+      for (const record of await update.all()) {
+        const key = `${source.id}/${record.id}`;
+        const original = updated.get(key)?.original;
+        const { _kept, ...before } = originals.get(record.id as string) as Row;
+        updated.set(key, {
+          collection: source,
+          action: "update",
+          record,
+          original: original ?? before,
+          source: "cascade",
+        });
+      }
     }
   }
   for (const id of order) {
     const { collection: target, ids: targetIds } = deleting.get(id) as Deleting;
-    await deleteRows(tx, target, [...targetIds], obsoleteFiles);
+    const rows = await deleteRows(
+      tx,
+      target,
+      [...targetIds],
+      obsoleteFiles,
+      hooks?.observes(target, "delete") ?? false,
+    );
+    for (const record of rows) {
+      const requested =
+        target.id === collection.id && ids.includes(record.id as string);
+      deleted.push({
+        collection: target,
+        action: "delete",
+        record,
+        source: requested ? (ctx.source ?? "request") : "cascade",
+      });
+    }
   }
+  return [...updated.values(), ...deleted];
+}
+
+/** A record a write changed, for its hooks. */
+interface Written {
+  collection: Collection;
+  action: "create" | "update" | "delete";
+  record: Row;
+  original?: Row;
+  source: HookSource;
 }
 
 interface Deleting {
@@ -1333,20 +1513,18 @@ function* relationsTo(
 }
 
 // Deletes the rows, notes their files for deletion and ends their sessions.
+// With `returning`, returns the deleted rows in the order of `ids`, whose
+// files are then noted from them.
 async function deleteRows(
   tx: Builder,
   collection: Collection,
   ids: string[],
   obsoleteFiles: string[],
-): Promise<void> {
+  returning: boolean,
+): Promise<Row[]> {
   const params = { ids };
   const fileFields = collection.fields.filter((f) => f.type === "file");
-  if (fileFields.length > 0) {
-    const rows = await tx
-      .select("id", ...fileFields.map((f) => f.name))
-      .from(table(collection.name))
-      .where(exp("id = ANY({:ids}::text[])", params))
-      .all();
+  const noteFiles = (rows: readonly Row[]): void => {
     for (const row of rows) {
       for (const field of fileFields) {
         for (const name of fileNames(field, row[field.name])) {
@@ -1354,13 +1532,32 @@ async function deleteRows(
         }
       }
     }
+  };
+  if (fileFields.length > 0 && !returning) {
+    noteFiles(
+      await tx
+        .select("id", ...fileFields.map((f) => f.name))
+        .from(table(collection.name))
+        .where(exp("id = ANY({:ids}::text[])", params))
+        .all(),
+    );
   }
-  await tx
+  const query = tx
     .newQuery(
-      `DELETE FROM {{${table(collection.name)}}} WHERE id = ANY({:ids}::text[])`,
+      `DELETE FROM {{${table(collection.name)}}} WHERE id = ANY({:ids}::text[])${returning ? " RETURNING *" : ""}`,
     )
-    .bind(params)
-    .execute();
+    .bind(params);
+  let deleted: Row[] = [];
+  if (returning) {
+    const byId = new Map((await query.all()).map((row) => [row.id, row]));
+    deleted = ids.flatMap((id): Row[] => {
+      const row = byId.get(id);
+      return row ? [row] : [];
+    });
+    noteFiles(deleted);
+  } else {
+    await query.execute();
+  }
   // Their sessions end, and their linked provider accounts may sign up again.
   if (collection.type === "auth") {
     for (const name of ["_sessions", "_linked_accounts"]) {
@@ -1372,6 +1569,7 @@ async function deleteRows(
         .execute();
     }
   }
+  return deleted;
 }
 
 // --- output ----------------------------------------------------------------

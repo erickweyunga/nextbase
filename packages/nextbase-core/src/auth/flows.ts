@@ -1,7 +1,9 @@
 import type { AuthCollection, TokenType } from "@nextbasejs/client";
 import { type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
+import type { Effects } from "../effects.ts";
 import { ApiError } from "../errors.ts";
+import type { Hooks } from "../records/hooks.ts";
 import { planUpdateRecord, systemContext } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
@@ -31,6 +33,8 @@ export interface FlowContext {
   schema: Schema;
   mailer: Mailer;
   rejectBreachedPasswords: boolean;
+  effects: Effects;
+  hooks: Hooks;
 }
 
 const invalidToken = (): ApiError =>
@@ -92,7 +96,10 @@ export async function requestPasswordReset(
   });
 }
 
-/** Rotates tokenKey (single-use token, ends sessions), verifies the email, ends any lockout. */
+/**
+ * Rotates tokenKey (single-use token, ends sessions), verifies the email, ends
+ * any lockout. The update tells the owner their password changed.
+ */
 export async function confirmPasswordReset(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -118,7 +125,6 @@ export async function confirmPasswordReset(
         : [],
     ),
   ]);
-  ctx.mailer.send("passwordChanged", collection.name, record.email as string);
 }
 
 export async function requestEmailChange(

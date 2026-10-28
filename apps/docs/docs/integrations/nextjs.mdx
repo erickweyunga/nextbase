@@ -32,7 +32,9 @@ export const nb = () => serverClient(nextbase);
 ```
 
 `server-only` makes the build fail if a client component imports this file,
-which would put server code in the browser.
+which would put server code in the browser. With `new NextBase<Collections>()`,
+using the types from `nextbase typegen`, `serverClient` returns a client typed
+the same way.
 
 ## Create the API route
 

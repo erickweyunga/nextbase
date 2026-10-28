@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
         "guides/records",
         "guides/filters",
         "guides/rules",
+        "guides/hooks",
         "guides/files",
         "guides/auth/sessions",
         "guides/auth/email",

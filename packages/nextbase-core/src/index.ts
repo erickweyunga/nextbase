@@ -1,5 +1,5 @@
 import adminHtml from "@nextbasejs/admin/index.html?raw";
-import type { AuthCollection } from "@nextbasejs/client";
+import type { AuthCollection, RecordModel } from "@nextbasejs/client";
 import {
   AuthStore,
   ClientError,
@@ -10,7 +10,7 @@ import {
 } from "@nextbasejs/client";
 import { DB, type Pool, type Tx } from "@nextbasejs/dbx";
 import { waitUntil as vercelWaitUntil } from "@vercel/functions";
-import { beginRoute, ROUTES } from "./api/routes.ts";
+import { beginRoute, ROUTES, type Route } from "./api/routes.ts";
 import { checkAppUrl } from "./app-url.ts";
 import { Mailer, type MailOptions } from "./auth/mail.ts";
 import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
@@ -39,6 +39,12 @@ import {
   type StorageOptions,
 } from "./files/storage.ts";
 import {
+  Hooks,
+  type Join,
+  type JoinedClient,
+  type RecordHooks,
+} from "./records/hooks.ts";
+import {
   readSchemaVersion,
   SCHEMA_RACE,
   type Schema,
@@ -58,6 +64,12 @@ const IN_PROCESS_HOST = "nextbase.internal";
 
 // While no superuser exists, the setup token is logged at most this often.
 const SETUP_LOG_INTERVAL_MS = 60_000;
+
+// How deep writes through `e.nextbase` in on hooks may nest, so a hook that
+// writes the records that fire it fails instead of looping forever.
+const MAX_HOOK_DEPTH = 8;
+
+const SUPERUSER: Principal = { superuser: true };
 
 export type {
   ApiErrorBody,
@@ -85,7 +97,20 @@ export type {
   SmsOptions,
   SmsTemplate,
 } from "./auth/sms.ts";
+export { ApiError } from "./errors.ts";
 export type { S3StorageOptions, StorageOptions } from "./files/storage.ts";
+export type {
+  BeforeCreateEvent,
+  BeforeDeleteEvent,
+  BeforeUpdateEvent,
+  CollectionHooks,
+  HookPrincipal,
+  HookRequest,
+  HookSource,
+  RecordEvent,
+  RecordHooks,
+  UpdateEvent,
+} from "./records/hooks.ts";
 
 /**
  * Whether a request has a session cookie, unverified: for optimistic redirects
@@ -95,7 +120,10 @@ export function hasSessionCookie(request: Request): boolean {
   return sessionCookie(request) !== undefined;
 }
 
-export interface NextBaseOptions {
+/** Record types by collection name, such as `Collections` from `nextbase typegen`. */
+type Collections = Record<string, RecordModel>;
+
+export interface NextBaseOptions<C extends Collections = Collections> {
   /** Path the route handler is mounted at. Defaults to `/api/nextbase`. */
   basePath?: string;
   /**
@@ -141,6 +169,12 @@ export interface NextBaseOptions {
    * (a no-op elsewhere); on Next.js you can pass `after` from `next/server`.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Code to run when records are created, updated or deleted, by collection
+   * name, or `"*"` for every collection: before the write is checked, in its
+   * transaction, or in the background after it is committed.
+   */
+  hooks?: RecordHooks<NoInfer<C>>;
 }
 
 /**
@@ -176,7 +210,12 @@ export interface ServerClientOptions {
 
 export type RouteHandler = (request: Request) => Promise<Response>;
 
-export class NextBase {
+/**
+ * NextBase in your app. `C` maps collection names to record types (e.g. the
+ * `Collections` type from `nextbase typegen`), which types its hooks and
+ * clients.
+ */
+export class NextBase<C extends Collections = Collections> {
   readonly #basePath: string;
   readonly #database: string | Pool | undefined;
   readonly #statementTimeout: number;
@@ -188,13 +227,14 @@ export class NextBase {
   readonly #storage: Storage;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
   readonly #appUrl: URL | undefined;
+  readonly #hooks: Hooks;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
   #superuserExists = false;
   #setupLoggedAt = Number.NEGATIVE_INFINITY;
 
-  constructor(options: NextBaseOptions = {}) {
+  constructor(options: NextBaseOptions<C> = {}) {
     const basePath = options.basePath ?? DEFAULT_BASE_PATH;
     // Requests are matched on their URL's pathname, so any other form, such
     // as one without the leading slash, would match nothing.
@@ -235,6 +275,11 @@ export class NextBase {
         "statementTimeout must be a whole number of milliseconds, or 0.",
       );
     }
+    this.#hooks = new Hooks(options.hooks as RecordHooks | undefined, {
+      plain: () =>
+        this.client({ superuser: true }) as NextBaseClient<Collections>,
+      joined: (join) => this.#joined(join),
+    });
   }
 
   /**
@@ -327,10 +372,8 @@ export class NextBase {
    * components. Create one per request; never share a signed-in client
    * between users.
    */
-  client(options: ServerClientOptions = {}): NextBaseClient {
-    const principal: Principal | undefined = options.superuser
-      ? { superuser: true }
-      : undefined;
+  client(options: ServerClientOptions = {}): NextBaseClient<C> {
+    const principal = options.superuser ? SUPERUSER : undefined;
     // In-process requests take the page's scheme, so they read and set the
     // cookie the browser sends. As for HTTP requests, production always uses
     // the secure one.
@@ -351,7 +394,7 @@ export class NextBase {
           return false;
         }
       });
-    return new NextBaseClient({
+    return new NextBaseClient<C>({
       baseUrl: `${secure ? "https" : "http"}://${IN_PROCESS_HOST}${this.#basePath}`,
       fetch: async (input, init) => {
         const request = new Request(input, init);
@@ -372,6 +415,63 @@ export class NextBase {
       },
       authStore: new AuthStore({ storage: null }),
     });
+  }
+
+  /**
+   * The superuser client of an on hook, whose requests join its transaction.
+   * Once the hook returns it is closed, so no request outlasts the hook and
+   * writes after the transaction ended, or into the rest of the write.
+   */
+  #joined(join: Join): JoinedClient {
+    const pending = new Set<Promise<Response>>();
+    let open = true;
+    const hook = join.chain.at(-1);
+    const client = new NextBaseClient<C>({
+      baseUrl: `http://${IN_PROCESS_HOST}${this.#basePath}`,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        request.signal.throwIfAborted();
+        if (!open) {
+          throw new Error(
+            `e.nextbase was used after the ${hook} hook returned. Await its requests in the hook.`,
+          );
+        }
+        if (join.chain.length > MAX_HOOK_DEPTH) {
+          throw new Error(
+            `Writes through e.nextbase in on hooks nest more than ${MAX_HOOK_DEPTH} deep: ${join.chain.join(" > ")}. A hook may be writing the records that fire it.`,
+          );
+        }
+        const response = this.#dispatch(request, { http: false, join });
+        pending.add(response);
+        const done = (): void => {
+          pending.delete(response);
+        };
+        response.then(done, done);
+        return abortable(response, request.signal);
+      },
+      authStore: new AuthStore({ storage: null }),
+    });
+    return {
+      client: client as NextBaseClient<Collections>,
+      close: async () => {
+        open = false;
+        if (pending.size === 0) return false;
+        await Promise.allSettled([...pending]);
+        return true;
+      },
+    };
+  }
+
+  /** Runs after hooks in the background, in the order their writes happened. */
+  #runAfterHooks(hooks: readonly (() => Promise<void>)[]): void {
+    if (hooks.length === 0) return;
+    this.#waitUntil(
+      (async () => {
+        for (const run of hooks) await run();
+      })().catch((error: unknown) => {
+        console.error("[nextbase] running after hooks failed:", error);
+      }),
+    );
   }
 
   // A failure only leaves an unused file, so it is just logged.
@@ -407,19 +507,79 @@ export class NextBase {
     }
   }
 
+  /** What every route gets from this instance. */
+  #services() {
+    return {
+      statementTimeout: this.#statementTimeout,
+      origins: this.#origins,
+      mailer: this.#mailer,
+      sms: this.#sms,
+      oauth2: this.#oauth2,
+      rejectBreachedPasswords: this.#rejectBreachedPasswords,
+      storage: this.#storage,
+      hooks: this.#hooks,
+    };
+  }
+
+  /**
+   * Runs a request from an on hook's `e.nextbase` in a savepoint of the
+   * hook's transaction, as a superuser. A request that fails undoes only its
+   * own writes, so the hook may go on; one that succeeds leaves what follows
+   * its writes, such as after hooks, to the outer write's commit.
+   */
+  async #joinRoute(
+    route: Route,
+    match: RegExpExecArray,
+    request: Request,
+    join: Join,
+  ): Promise<Response> {
+    if (!route.joinsTransaction) {
+      return new ApiError(
+        400,
+        "In an on hook, e.nextbase can only list, view, create, update and delete records, or send a batch.",
+      ).toResponse();
+    }
+    const effects = new Effects();
+    try {
+      const params = match.slice(1).map((p) => decodeURIComponent(p));
+      const response = await join.tx.transaction((tx) =>
+        route.handler({
+          ...this.#services(),
+          request,
+          params,
+          db: this.#connection(),
+          schema: join.schema,
+          principal: SUPERUSER,
+          inProcess: true,
+          tx,
+          effects,
+          hookChain: join.chain,
+        }),
+      );
+      join.effects.absorb(effects);
+      return response;
+    } catch (error) {
+      this.#deleteFiles(effects.newFiles);
+      return errorResponse(error, false);
+    }
+  }
+
   // Only `client()` passes a `principal`; HTTP requests always use their own
   // credentials. In-process requests write the session cookie through
-  // `writeCookie`, when the page can set cookies.
+  // `writeCookie`, when the page can set cookies. Requests from an on hook's
+  // `e.nextbase` pass the hook's `join`.
   async #dispatch(
     request: Request,
     {
       principal,
       http,
       writeCookie,
+      join,
     }: {
       principal?: Principal | undefined;
       http: boolean;
       writeCookie?: ((header: string) => boolean) | undefined;
+      join?: Join;
     },
   ): Promise<Response> {
     const { pathname } = new URL(request.url);
@@ -446,9 +606,12 @@ export class NextBase {
       });
     }
 
-    for (const { method, pattern, transaction, handler } of ROUTES) {
+    for (const matched of ROUTES) {
+      const { method, pattern, transaction, handler } = matched;
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
+      if (join)
+        return api(await this.#joinRoute(matched, match, request, join));
       let setCookie: string | undefined;
       let signedOut = false;
       const effects = new Effects();
@@ -488,27 +651,23 @@ export class NextBase {
             schema ??= await this.#schema.get(db);
           }
           const response = await handler({
+            ...this.#services(),
             request,
             params,
             db,
             schema,
             principal: caller,
             inProcess: !http,
-            statementTimeout: this.#statementTimeout,
             ...(tx && { tx }),
-            origins: this.#origins,
-            mailer: this.#mailer,
-            sms: this.#sms,
-            oauth2: this.#oauth2,
-            rejectBreachedPasswords: this.#rejectBreachedPasswords,
             effects,
-            storage: this.#storage,
+            hookChain: [],
           });
           await tx?.commit();
           for (const mail of effects.mail) {
             this.#mailer.send(mail.kind, mail.collection, mail.to);
           }
           this.#deleteFiles(effects.obsoleteFiles);
+          this.#runAfterHooks(effects.hooks);
           return response;
         } catch (error) {
           // If the rollback fails, the connection is closed. The error to
