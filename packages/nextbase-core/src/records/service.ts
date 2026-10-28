@@ -62,6 +62,9 @@ const TOTAL = "_total";
 type Rule = string | null;
 type Output = Record<string, unknown>;
 
+/** The part of a write that runs in its transaction. */
+export type Apply<T> = (tx: Tx) => Promise<T>;
+
 export function listRecords(
   ctx: RecordsContext,
   collection: Collection,
@@ -159,11 +162,25 @@ export async function newRecord(
   input: Record<string, unknown>,
   query: URLSearchParams,
 ): Promise<Output | undefined> {
+  const apply = await planNewRecord(ctx, collection, input, query);
+  return inTransaction(ctx.db, apply);
+}
+
+/**
+ * Checks a create as far as it can before its transaction starts, and returns
+ * the rest of the work to run in that transaction.
+ */
+export async function planNewRecord(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+  query: URLSearchParams,
+): Promise<Apply<Output | undefined>> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
   await checkNewPassword(ctx, collection, input);
-  return writing(collection, () =>
-    inTransaction(ctx.db, async (tx) => {
+  return (tx) =>
+    writing(collection, async () => {
       const prepared = await prepareWrite(tx, input, {
         collection,
         schema: ctx.schema,
@@ -195,8 +212,7 @@ export async function newRecord(
         )
         .execute();
       return afterWrite(tx, ctx, collection, prepared.row.id as string, query);
-    }),
-  );
+    });
 }
 
 /** Returns the record, or undefined when the caller may not view it. */
@@ -207,13 +223,28 @@ export async function updateRecord(
   input: Record<string, unknown>,
   query: URLSearchParams,
 ): Promise<Output | undefined> {
+  const apply = await planUpdateRecord(ctx, collection, id, input, query);
+  return inTransaction(ctx.db, apply);
+}
+
+/**
+ * Checks an update as far as it can before its transaction starts, and
+ * returns the rest of the work to run in that transaction.
+ */
+export async function planUpdateRecord(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  input: Record<string, unknown>,
+  query: URLSearchParams,
+): Promise<Apply<Output | undefined>> {
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
   await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
-  return writing(collection, () =>
-    inTransaction(ctx.db, async (tx) => {
+  return (tx) =>
+    writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
       // still be created or changed while it is locked.
       const [existing] = await tx
@@ -287,19 +318,22 @@ export async function updateRecord(
         );
       }
       return afterWrite(tx, ctx, collection, id, query);
-    }),
-  );
+    });
 }
 
-export async function deleteRecord(
+/**
+ * Checks a delete as far as it can before its transaction starts, and returns
+ * the rest of the work to run in that transaction.
+ */
+export async function planDeleteRecord(
   ctx: RecordsContext,
   collection: Collection,
   id: string,
-): Promise<void> {
+): Promise<Apply<void>> {
   checkWritable(collection);
   checkId(collection, id);
   const rule = ruleCondition(ctx, collection, collection.deleteRule);
-  await inTransaction(ctx.db, async (tx) => {
+  return async (tx) => {
     if (collection.id === SUPERUSERS) await keepOneSuperuser(tx, id);
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
       throw new ApiError(404, "Record not found.");
@@ -312,7 +346,7 @@ export async function deleteRecord(
       new Set(),
       ctx.effects?.obsoleteFiles ?? [],
     );
-  });
+  };
 }
 
 async function keepFiles(
@@ -950,10 +984,7 @@ function columnValues(
  * It makes no savepoint: when a write fails the request fails too, so the
  * whole transaction is rolled back anyway.
  */
-function inTransaction<T>(
-  db: DB | Tx,
-  write: (tx: Tx) => Promise<T>,
-): Promise<T> {
+function inTransaction<T>(db: DB | Tx, write: Apply<T>): Promise<T> {
   return db instanceof Tx ? write(db) : db.transaction(write);
 }
 
