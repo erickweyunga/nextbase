@@ -5,7 +5,7 @@ import { ApiError } from "../errors.ts";
 import { compileFilter } from "../filter/compiler.ts";
 import { normalizePhone } from "../phone.ts";
 import type { Schema } from "../schema/cache.ts";
-import { hasNul } from "../storable.ts";
+import { unstorableText } from "../storable.ts";
 import { emailIs, phoneIs } from "./identity.ts";
 import {
   hashPassword,
@@ -62,8 +62,8 @@ export async function authWithPassword(
   password: string,
 ): Promise<Row> {
   const failed = new ApiError(400, "Failed to authenticate.");
-  // No stored identity can contain NUL, and Postgres would reject it.
-  if (hasNul(identity)) throw failed;
+  // No stored identity can contain text Postgres cannot store.
+  if (unstorableText(identity) !== undefined) throw failed;
   // Counted per typed identity, which may match no account, and per account.
   const keys = [identityKey(collection.id, identity)];
   await countAttempt(db, keys);

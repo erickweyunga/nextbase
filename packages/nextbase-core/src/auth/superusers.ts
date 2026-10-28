@@ -11,7 +11,7 @@ import {
   passwordField,
 } from "../schema/fields.ts";
 import { Issues } from "../schema/input.ts";
-import { hasNul } from "../storable.ts";
+import { unstorableText } from "../storable.ts";
 import { hashPassword } from "./password.ts";
 import { signToken, verifyToken } from "./tokens.ts";
 
@@ -75,7 +75,7 @@ export async function insertSuperuser(
   const max = field?.max ?? DEFAULT_PASSWORD_MAX;
   if (
     typeof email !== "string" ||
-    hasNul(email) ||
+    unstorableText(email) !== undefined ||
     email.length > 254 ||
     !EMAIL_PATTERN.test(email)
   ) {

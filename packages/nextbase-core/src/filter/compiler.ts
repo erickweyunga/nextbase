@@ -5,10 +5,10 @@ import { table } from "../db/system.ts";
 import type { Schema } from "../schema/cache.ts";
 import { isMultiple } from "../schema/fields.ts";
 import {
-  hasNul,
   isStorableTime,
   parseDate,
   timestampParam,
+  unstorableText,
 } from "../storable.ts";
 import {
   FilterError,
@@ -523,8 +523,10 @@ class Compiler {
       if (type !== "text")
         throw new FilterError(`${op} applies to text fields.`);
       const value = right.value === BLANK ? "" : String(right.value);
-      if (hasNul(value))
-        throw new FilterError("Values cannot contain NUL characters.");
+      if (unstorableText(value) !== undefined)
+        throw new FilterError(
+          "Values cannot contain NUL characters or unpaired surrogates.",
+        );
       // A value without % matches anywhere; with %, it is the pattern itself,
       // in which a backslash escapes the next character.
       const pattern = value.includes("%")
@@ -928,8 +930,10 @@ function coerce(value: unknown, type: SqlType, nullable: boolean): unknown {
   switch (type) {
     case "text":
       if (typeof value === "string") {
-        if (hasNul(value))
-          throw new FilterError("Values cannot contain NUL characters.");
+        if (unstorableText(value) !== undefined)
+          throw new FilterError(
+            "Values cannot contain NUL characters or unpaired surrogates.",
+          );
         return value;
       }
       if (typeof value === "number" || typeof value === "boolean")

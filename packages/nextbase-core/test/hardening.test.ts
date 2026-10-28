@@ -317,6 +317,29 @@ describe("records hardening", () => {
       });
     });
 
+    it("refuses unstorable text in emails rather than changing it", async () => {
+      // Postgres would store a lone surrogate as U+FFFD, a different email.
+      const email = "a\ud800@example.com";
+      const reset = await as(
+        undefined,
+        "POST",
+        "/collections/users/request-password-reset",
+        { email },
+      );
+      expect(reset.status).toBe(400);
+      expect(reset.body.data).toMatchObject({
+        email: { code: "validation_invalid_email" },
+      });
+      await expect(
+        nextbase.createSuperuser(email, "admin password 123"),
+      ).rejects.toThrow();
+      expect(
+        await sql(
+          "SELECT 1 FROM nextbase._superusers WHERE email LIKE 'a_@example.com'",
+        ),
+      ).toEqual([]);
+    });
+
     it("rejects NUL characters wherever Postgres would", async () => {
       const nul = "a\u0000";
       expect(

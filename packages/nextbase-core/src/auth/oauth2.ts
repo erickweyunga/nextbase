@@ -4,7 +4,7 @@ import type { Builder } from "@nextbasejs/dbx";
 import * as oauth from "oauth4webapi";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { hasNul } from "../storable.ts";
+import { unstorableText } from "../storable.ts";
 import { isSecure, readCookie } from "./sessions.ts";
 
 // OAuth2 / OpenID Connect sign-in (protocol details via oauth4webapi):
@@ -270,7 +270,7 @@ export function checkRedirect(
     value.startsWith("//") ||
     value.startsWith("/\\") ||
     value.length > MAX_REDIRECT ||
-    hasNul(value)
+    unstorableText(value) !== undefined
   ) {
     throw new ApiError(400, `${param} must be a path on the app.`, {
       [param]: {
