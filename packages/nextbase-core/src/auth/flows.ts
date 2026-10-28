@@ -5,7 +5,7 @@ import { ApiError } from "../errors.ts";
 import { planUpdateRecord, systemContext } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
-import { hasNul } from "../storable.ts";
+import { unstorableText } from "../storable.ts";
 import { findByEmail } from "./identity.ts";
 import { unlinkUnproven } from "./linked-accounts.ts";
 import type { Mailer } from "./mail.ts";
@@ -188,7 +188,7 @@ function checkEmail(value: unknown, field = "email"): string {
   if (
     typeof value !== "string" ||
     value.length > 254 ||
-    hasNul(value) ||
+    unstorableText(value) !== undefined ||
     !EMAIL_PATTERN.test(value)
   ) {
     throw new ApiError(400, "Failed to send the email.", {
