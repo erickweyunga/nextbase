@@ -214,9 +214,11 @@ export async function updateRecord(
   const notFound = new ApiError(404, "Record not found.");
   return writing(collection, () =>
     inTransaction(ctx.db, async (tx) => {
+      // NO KEY: ids never change, so records that reference this one can
+      // still be created or changed while it is locked.
       const [existing] = await tx
         .newQuery(
-          `SELECT * FROM {{${table(collection.name)}}} WHERE id = {:id} FOR UPDATE`,
+          `SELECT * FROM {{${table(collection.name)}}} WHERE id = {:id} FOR NO KEY UPDATE`,
         )
         .bind({ id })
         .all();
@@ -306,7 +308,7 @@ export async function deleteRecord(
       tx,
       ctx.schema,
       collection,
-      id,
+      [id],
       new Set(),
       ctx.effects?.obsoleteFiles ?? [],
     );
@@ -564,18 +566,21 @@ async function viewable(
 // --- deletes ---------------------------------------------------------------
 
 // Cascading relations delete, others drop the reference, and a required field
-// that would be left blank blocks the delete.
+// that would be left blank blocks the delete. Works on every record of one
+// level at once, so a delete takes a few queries per level, not per record.
 async function deleteWithReferences(
   tx: Builder,
   schema: Schema,
   collection: Collection,
-  id: string,
+  ids: readonly string[],
   visited: Set<string>,
   obsoleteFiles: string[],
 ): Promise<void> {
-  const key = `${collection.id}/${id}`;
-  if (visited.has(key)) return;
-  visited.add(key);
+  // A cycle of cascades reaches the same record again.
+  const pending = ids.filter((id) => !visited.has(`${collection.id}/${id}`));
+  if (pending.length === 0) return;
+  for (const id of pending) visited.add(`${collection.id}/${id}`);
+  const params = { ids: pending };
   for (const source of schema.collections) {
     for (const field of source.fields) {
       if (field.type !== "relation" || field.collectionId !== collection.id)
@@ -583,26 +588,31 @@ async function deleteWithReferences(
       const multiple = isMultiple(field);
       const col = tx.quoteSimpleColumnName(field.name);
       const t = `{{${table(source.name)}}}`;
+      const refers = multiple
+        ? `${col} && {:ids}::text[]`
+        : `${col} = ANY({:ids}::text[])`;
+      // What is left of the field once the deleted ids are taken out.
+      const kept = `ARRAY(SELECT v FROM unnest(${col}) AS v WHERE v <> ALL({:ids}::text[]))`;
+      // Locked in id order, so concurrent deletes lock rows in the same order.
       const referencing = await tx
         .newQuery(
-          `SELECT id, ${multiple ? `cardinality(${col})` : "1"} AS count FROM ${t} WHERE ${multiple ? `${col} @> ARRAY[{:id}]` : `${col} = {:id}`} FOR UPDATE`,
+          `SELECT id, ${multiple ? `cardinality(${kept})` : "0"} AS kept FROM ${t} WHERE ${refers} ORDER BY id FOR UPDATE`,
         )
-        .bind({ id })
-        .all<{ id: string; count: number }>();
+        .bind(params)
+        .all<{ id: string; kept: number }>();
       if (referencing.length === 0) continue;
       if (field.cascadeDelete) {
-        for (const row of referencing)
-          await deleteWithReferences(
-            tx,
-            schema,
-            source,
-            row.id,
-            visited,
-            obsoleteFiles,
-          );
+        await deleteWithReferences(
+          tx,
+          schema,
+          source,
+          referencing.map((row) => row.id),
+          visited,
+          obsoleteFiles,
+        );
         continue;
       }
-      if (field.required && referencing.some((r) => r.count <= 1)) {
+      if (field.required && referencing.some((row) => row.kept === 0)) {
         throw new ApiError(
           400,
           `The record is required by ${source.name}.${field.name}. Delete or change those records first.`,
@@ -610,34 +620,41 @@ async function deleteWithReferences(
       }
       await tx
         .newQuery(
-          `UPDATE ${t} SET ${col} = ${multiple ? `array_remove(${col}, {:id})` : "NULL"} WHERE ${multiple ? `${col} @> ARRAY[{:id}]` : `${col} = {:id}`}`,
+          `UPDATE ${t} SET ${col} = ${multiple ? kept : "NULL"} WHERE ${refers}`,
         )
-        .bind({ id })
+        .bind(params)
         .execute();
     }
   }
   const fileFields = collection.fields.filter((f) => f.type === "file");
   if (fileFields.length > 0) {
-    const [row] = await tx
-      .select(...fileFields.map((f) => f.name))
+    const rows = await tx
+      .select("id", ...fileFields.map((f) => f.name))
       .from(table(collection.name))
-      .where(hash({ id }))
+      .where(exp("id = ANY({:ids}::text[])", params))
       .all();
-    for (const field of fileFields) {
-      for (const name of fileNames(field, row?.[field.name])) {
-        obsoleteFiles.push(fileKey(collection.id, id, name));
+    for (const row of rows) {
+      for (const field of fileFields) {
+        for (const name of fileNames(field, row[field.name])) {
+          obsoleteFiles.push(fileKey(collection.id, row.id as string, name));
+        }
       }
     }
   }
-  await tx.delete(table(collection.name), hash({ id })).execute();
-  // Its sessions end, and its linked provider accounts may sign up again.
+  await tx
+    .newQuery(
+      `DELETE FROM {{${table(collection.name)}}} WHERE id = ANY({:ids}::text[])`,
+    )
+    .bind(params)
+    .execute();
+  // Their sessions end, and their linked provider accounts may sign up again.
   if (collection.type === "auth") {
     for (const name of ["_sessions", "_linked_accounts"]) {
       await tx
         .newQuery(
-          `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = {:id}`,
+          `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = ANY({:ids}::text[])`,
         )
-        .bind({ collectionId: collection.id, id })
+        .bind({ collectionId: collection.id, ...params })
         .execute();
     }
   }
