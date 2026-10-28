@@ -30,3 +30,10 @@ export class ApiError extends Error {
     return Response.json(body, { status: this.status, headers });
   }
 }
+
+/** The message of a record write that failed. */
+export function writeFailed(creating: boolean): string {
+  return creating
+    ? "Failed to create the record."
+    : "Failed to update the record.";
+}

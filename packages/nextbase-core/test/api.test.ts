@@ -23,7 +23,10 @@ describe("HTTP API", () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    nextbase = new NextBase({
+      database: t.pool,
+      appUrl: "https://app.example",
+    });
   });
   afterAll(() => t.close());
 
@@ -38,7 +41,9 @@ describe("HTTP API", () => {
           body: { required: true },
         });
         const message = String(log.mock.calls[0]?.[0]);
-        expect(message).toContain(`${origin}/api/nextbase/setup`);
+        // From appUrl, never from the request's Host header.
+        expect(message).toContain("https://app.example/api/nextbase/setup");
+        expect(message).not.toContain(origin);
         setupToken = /"token":"([^"]+)"/.exec(message)?.[1] ?? "";
         expect(setupToken).not.toBe("");
         // Rate-limited: not logged again on the next request.
@@ -250,7 +255,7 @@ describe("HTTP API", () => {
         token,
         body: { name: "users", type: "auth" },
       });
-      expect(users.status).toBe(200);
+      expect(users.status, JSON.stringify(users.body)).toBe(200);
       await t.db
         .insert("nextbase.users", {
           id: "user00000000001",
@@ -277,14 +282,15 @@ describe("HTTP API", () => {
           })
         ).status,
       ).toBe(403);
-      // A users token is not a superusers token, even for a record with the same id.
+      // A users token is not a superusers token, even for a record with the
+      // same id. It is still a valid session, so this is a 403, not a 401.
       expect(
         (
           await call("POST", "/collections/_superusers/auth-refresh", {
             token: login.body.token as string,
           })
         ).status,
-      ).toBe(401);
+      ).toBe(403);
     });
   });
 

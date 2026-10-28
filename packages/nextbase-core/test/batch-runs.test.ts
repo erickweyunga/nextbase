@@ -235,6 +235,31 @@ describe("batches of creates", () => {
     expect(refused.body.message).toMatch(/^Request 3 of the batch failed/);
   });
 
+  it("checks a create rule that reads each row's body in one query", async () => {
+    await nextbase.client({ superuser: true }).collections.create({
+      name: "orders",
+      viewRule: "",
+      createRule: "@request.body.qty > 0",
+      fields: [{ name: "qty", type: "number" }],
+    });
+    const orders = (qty: number[]) =>
+      qty.map((n) => ({
+        url: "/collections/orders/records",
+        body: { qty: n },
+      }));
+    // Loads the new collection into the schema.
+    await batch(tokens.user, orders([1]));
+    queries();
+    expect((await batch(tokens.user, orders([1, 2]))).status).toBe(200);
+    const forTwo = queries();
+    expect((await batch(tokens.user, orders([1, 2, 3, 4, 5]))).status).toBe(
+      200,
+    );
+    expect(queries()).toBe(forTwo);
+    const refused = await batch(tokens.user, orders([1, 0, 3]));
+    expect(refused.body.message).toMatch(/^Request 2 of the batch failed/);
+  });
+
   it("creates one at a time when a rule reads the collection itself", async () => {
     for (const collection of ["tickets", "folders"]) {
       const creates = (n: number) =>
@@ -312,6 +337,48 @@ describe("batches of creates", () => {
       data: { requests: { 3: { name: { code: "validation_not_unique" } } } },
     });
     expect(await count("customers")).toBe(before);
+    // A duplicate on the 1st comes before the rule refusing the 2nd.
+    const first = await batch(tokens.user, [
+      customer("warm"),
+      customer("blocked"),
+    ]);
+    expect(first.body).toMatchObject({
+      message: expect.stringMatching(/^Request 1 of the batch failed/),
+      data: { requests: { 0: { name: { code: "validation_not_unique" } } } },
+    });
+    expect(await count("customers")).toBe(before);
+  });
+
+  it("names the create whose value is too long for its index", async () => {
+    // 3000 different three-byte characters, which do not compress, are over
+    // the most an index entry takes.
+    const long = Array.from({ length: 3000 }, (_, i) =>
+      String.fromCharCode(0x4e00 + ((i * 7919) % 20_000)),
+    ).join("");
+    const one = await call(nextbase, "POST", CREATE, {
+      token: tokens.user,
+      body: customer(long).body,
+    });
+    expect(one.status).toBe(400);
+    expect(one.body.message).toBe("A value is too long to index.");
+    const reply = await batch(tokens.user, [customer("f1"), customer(long)]);
+    expect(reply.status).toBe(400);
+    expect(reply.body.message).toMatch(/^Request 2 of the batch failed/);
+  });
+
+  it("creates rows that set different fields", async () => {
+    const reply = await batch(tokens.user, [
+      { body: { name: "e1" } },
+      customer("e2"),
+      { body: { name: "e3", segments: [ids.segment] } },
+    ]);
+    expect(reply.status).toBe(200);
+    const results = reply.body as unknown as Reply[];
+    expect(results.map((r) => [r.body.workspace, r.body.segments])).toEqual([
+      ["", []],
+      [ids.workspace, [ids.segment]],
+      ["", [ids.segment]],
+    ]);
   });
 
   it("creates a record pointing at one created earlier in the batch", async () => {
@@ -360,6 +427,13 @@ describe("splitting creates into runs", () => {
         plan(a, { id: "4" }, "expand=x"),
       ]),
     ).toEqual([1, 1, 2]);
+  });
+
+  it("runs a create alone when its rule does not compile, so it fails as it would in turn", () => {
+    const broken = { id: "a", createRule: "((" };
+    expect(
+      sizes([plan(broken, { id: "1" }), plan(broken, { id: "2" })]),
+    ).toEqual([1, 1]);
   });
 
   it("starts a new run at a create pointing at one earlier in the run", () => {

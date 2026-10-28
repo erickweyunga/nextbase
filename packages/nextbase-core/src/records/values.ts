@@ -1,26 +1,21 @@
 import type { Collection, Field } from "@nextbasejs/client";
 import type { Builder, Row } from "@nextbasejs/dbx";
-import { hashPassword } from "../auth/password.ts";
 import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
+import { ApiError, writeFailed } from "../errors.ts";
 import {
   type FileChanges,
+  fileKeys,
   fileNames,
   type NewFiles,
   prepareFileField,
 } from "../files/files.ts";
 import { normalizePhone } from "../phone.ts";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { ALPHANUMERIC, isId, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
-import { isMultiple } from "../schema/fields.ts";
+import { isMultiple, passwordField } from "../schema/fields.ts";
 import { Issues, type Path } from "../schema/input.ts";
 import { hasNul, isStorableTime, parseDate } from "../storable.ts";
 
-const ID_PATTERN = /^[a-z0-9]{15}$/;
-
-export function isRecordId(id: unknown): id is string {
-  return typeof id === "string" && ID_PATTERN.test(id);
-}
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
@@ -45,14 +40,17 @@ export interface WriteOptions {
    */
   newFiles?: NewFiles | undefined;
   /**
-   * The new password, already hashed before the write's transaction started,
-   * so the slow hash holds no lock. Without it the password is hashed here.
+   * The new password, hashed before the write's transaction started, so the
+   * slow hash holds no lock. Required when the write sets a password.
    */
   passwordHash?: string | undefined;
 }
 
 export interface PreparedWrite {
-  /** Every column on create, changed columns on update. */
+  /**
+   * The columns the write sets. On create, the others get their defaults;
+   * on update, they keep their values.
+   */
   values: Record<string, unknown>;
   /** The full row after the write, for the create rule. */
   row: Record<string, unknown>;
@@ -141,9 +139,8 @@ export function draftWrite(
             "validation_immutable",
             "A record's id cannot change.",
           );
-      } else if (id === undefined || id === "") {
-        row.id = values.id = randomString(15, LOWER_ALPHANUMERIC);
-      } else if (typeof id !== "string" || !ID_PATTERN.test(id)) {
+      } else if (!isId(id)) {
+        // Creates choose their id while planning, before this.
         issues.add(
           ["id"],
           "validation_invalid_value",
@@ -159,7 +156,7 @@ export function draftWrite(
       continue;
     }
     if (field.type === "file") {
-      const touched = [name, `${name}+`, `+${name}`, `${name}-`].some(
+      const touched = Object.values(fileKeys(name)).some(
         (k) => input[k] !== undefined,
       );
       if (!touched) continue;
@@ -209,8 +206,10 @@ export function draftWrite(
     }
     if (!changed || value === INVALID) continue;
     if (validate(field, value, issues)) {
-      // A phone gets onto a record only via a code sent to it, so nobody can
-      // register someone else's number.
+      // Only managers change a record's email, phone and whether they are
+      // verified, or NextBase itself once a link or a code proved them. So
+      // nobody can take someone else's address or number. A new record may
+      // still set its own email, which is then unverified.
       if (
         collection.type === "auth" &&
         field.system &&
@@ -279,32 +278,26 @@ export function draftWrite(
 }
 
 /**
- * Throws a 400 listing the draft's problems. Otherwise hashes its password,
- * unless that was done before, and returns the write.
+ * Throws a 400 listing the draft's problems. Otherwise sets its password to
+ * the hash made before, and returns the write.
  */
-export async function finishWrite({
+export function finishWrite({
   prepared,
   issues,
   options,
-}: DraftWrite): Promise<PreparedWrite> {
+}: DraftWrite): PreparedWrite {
   const { collection, existing } = options;
   const creating = existing === undefined;
   const { values, row } = prepared;
   if (!issues.empty) {
-    throw new ApiError(
-      400,
-      creating
-        ? "Failed to create the record."
-        : "Failed to update the record.",
-      issues.data,
-    );
+    throw new ApiError(400, writeFailed(creating), issues.data);
   }
-  // Hashed once the write is known to be valid.
-  const password = collection.fields.find((f) => f.type === "password");
+  const password = passwordField(collection);
   if (password && typeof values[password.name] === "string") {
-    row[password.name] = values[password.name] =
-      options.passwordHash ??
-      (await hashPassword(values[password.name] as string));
+    if (options.passwordHash === undefined) {
+      throw new Error("A write that sets a password needs its hash.");
+    }
+    row[password.name] = values[password.name] = options.passwordHash;
   }
   return prepared;
 }
@@ -608,7 +601,7 @@ function validate(field: Field, value: unknown, issues: Issues): boolean {
         : value === null
           ? []
           : [value as string];
-      if (items.some((v) => !ID_PATTERN.test(v)))
+      if (items.some((v) => !isId(v)))
         return fail("validation_invalid_value", "Must be record ids.");
       return checkList(field.maxSelect, items, fail);
     }

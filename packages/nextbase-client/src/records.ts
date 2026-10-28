@@ -132,13 +132,25 @@ export class RecordService<T extends RecordModel = RecordModel> {
     body: Record<string, unknown>,
     options?: RecordOptions,
   ): Promise<T | null> {
+    const store = this.#client.authStore;
+    const signedIn = store.record;
     const record = await this.#send<T | undefined>(
       `/records/${encodeURIComponent(id)}`,
       { ...options, method: "PATCH", body: await this.#body(body, options) },
     );
-    const store = this.#client.authStore;
-    if (record && this.#isSignedIn(record)) {
-      store.save(store.token, { ...store.record, ...record });
+    if (
+      record &&
+      signedIn?.id === id &&
+      this.#matches(signedIn) &&
+      store.record === signedIn
+    ) {
+      // `fields` may leave out what changed, so the record is read in full.
+      const full = options?.fields
+        ? await this.getOne(id).catch(() => undefined)
+        : record;
+      if (full && store.record === signedIn) {
+        store.save(store.token, { ...signedIn, ...full });
+      }
     }
     return record ?? null;
   }
@@ -412,14 +424,6 @@ export class RecordService<T extends RecordModel = RecordModel> {
   #saveAuth(response: AuthResponse<T>): AuthResponse<T> {
     this.#client.authStore.save(response.token ?? "", response.record);
     return response;
-  }
-
-  #isSignedIn(record: RecordModel): boolean {
-    const signedIn = this.#client.authStore.record;
-    return (
-      signedIn?.id === record.id &&
-      signedIn.collectionId === record.collectionId
-    );
   }
 
   #matches(record: RecordModel): boolean {

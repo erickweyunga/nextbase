@@ -17,7 +17,7 @@ import { rekeySessions } from "../auth/sessions.ts";
 import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
+import { ApiError, writeFailed } from "../errors.ts";
 import {
   claimFiles,
   type FileChanges,
@@ -30,9 +30,9 @@ import {
 import type { Storage } from "../files/storage.ts";
 import { compileFilter, type RequestInfo } from "../filter/compiler.ts";
 import { FilterError } from "../filter/parser.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { isId, newId } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
-import { isMultiple } from "../schema/fields.ts";
+import { isMultiple, passwordField } from "../schema/fields.ts";
 import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { hasNul, timestampParam } from "../storable.ts";
@@ -41,7 +41,6 @@ import {
   checkRelations,
   draftWrite,
   finishWrite,
-  isRecordId,
   newPassword,
   type PreparedWrite,
   prepareWrite,
@@ -60,6 +59,41 @@ export interface RecordsContext {
   /** Required, with `storage`, for writes that change files. */
   effects?: Effects;
   storage?: Storage;
+  /**
+   * The collections, by name, that a batch wrote before this write. Its
+   * checks before the transaction would not see those writes, so the checks
+   * that read them are left to the transaction.
+   */
+  written?: ReadonlySet<string>;
+}
+
+/**
+ * The context of an update NextBase makes itself, such as marking an email
+ * verified once a link proved it. It has superuser rights. A signed-in
+ * `principal` is kept, so its own session survives a new token key.
+ */
+export function systemContext(
+  ctx: {
+    db: DB | Tx;
+    pool?: DB;
+    schema: Schema;
+    rejectBreachedPasswords?: boolean;
+  },
+  body: Record<string, unknown>,
+  principal: Principal = { superuser: true },
+): RecordsContext {
+  const pool = ctx.pool ?? ctx.db;
+  if (pool instanceof Tx) throw new Error("A system write needs the pool.");
+  return {
+    db: ctx.db,
+    pool,
+    schema: ctx.schema,
+    principal: { ...principal, superuser: true },
+    request: { method: "PATCH", query: {}, headers: {}, body },
+    ...(ctx.rejectBreachedPasswords !== undefined && {
+      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
+    }),
+  };
 }
 
 /** Rules compile against this alias for the collection's rows. */
@@ -206,16 +240,71 @@ export async function planNewRecord(
   // Chosen now, so new files can be stored under the record beforehand.
   const write =
     input.id === undefined || input.id === ""
-      ? { ...input, id: randomString(15, LOWER_ALPHANUMERIC) }
+      ? { ...input, id: newId() }
       : input;
+  const newFiles = await readFiles(ctx, collection, write);
+  await checkCreateRuleFirst(ctx, collection, write, newFiles);
   await checkNewPassword(ctx, collection, write);
-  return {
-    ctx,
+  const passwordHash = await hashNewPassword(collection, write);
+  await storeFiles(ctx, collection, write.id, newFiles);
+  return { ctx, collection, input: write, query, passwordHash, newFiles };
+}
+
+/**
+ * Checks the create rule with a plain read before the slow work of a create,
+ * such as storing its files or hashing its password, so a caller the rule
+ * refuses causes none of it. Only a create that passes its own checks is
+ * checked here; the rest fail on those first. The transaction checks the rule
+ * again either way.
+ */
+async function checkCreateRuleFirst(
+  ctx: RecordsContext,
+  collection: Collection,
+  input: Record<string, unknown>,
+  newFiles: NewFiles | undefined,
+): Promise<void> {
+  const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
+  if (!slow || ctx.principal.superuser || collection.createRule === "") return;
+  const draft = draftWrite(input, writeOptions(ctx, collection, newFiles));
+  if (!draft.issues.empty) return;
+  const rule = createRule(ctx, collection, draft.prepared.body);
+  if (!rule || !seesEveryWrite(ctx, collection, rule)) return;
+  const refused = await refusedNewRows(ctx.pool, collection, [
+    { row: draft.prepared.row, rule },
+  ]);
+  if (refused.length > 0) throw refusedCreate();
+}
+
+/** The create rule for a create whose checked body is `body`. */
+function createRule(
+  ctx: RecordsContext,
+  collection: Collection,
+  body: Record<string, unknown>,
+): Expression | undefined {
+  return compile(
+    { ...ctx, request: { ...ctx.request, body } },
     collection,
-    input: write,
-    query,
-    passwordHash: await hashNewPassword(collection, write),
-    newFiles: await prepareNewFiles(ctx, collection, write, write.id),
+    collection.createRule ?? "",
+    "rule",
+  );
+}
+
+function refusedCreate(): ApiError {
+  return new ApiError(400, writeFailed(true));
+}
+
+/** The options to draft a create in `collection` with. */
+function writeOptions(
+  ctx: RecordsContext,
+  collection: Collection,
+  newFiles: NewFiles | undefined,
+) {
+  return {
+    collection,
+    schema: ctx.schema,
+    privileged: ctx.principal.superuser,
+    ...(ctx.vouched && { vouched: ctx.vouched }),
+    newFiles,
   };
 }
 
@@ -284,7 +373,6 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
   if (ctx.principal.superuser) return true;
-  // Every collection a compiled rule reads appears in it as its table.
   const own = `{{${table(collection.name)}}}`;
   return [collection.createRule, collection.viewRule].every((rule) => {
     if (!rule) return true;
@@ -329,64 +417,63 @@ export async function applyCreates(
   const { ctx, collection, query } = first;
   const drafts = plans.map((plan) =>
     draftWrite(plan.input, {
-      collection,
-      schema: ctx.schema,
-      privileged: ctx.principal.superuser,
-      ...(ctx.vouched && { vouched: ctx.vouched }),
-      newFiles: plan.newFiles,
+      ...writeOptions(ctx, collection, plan.newFiles),
       passwordHash: plan.passwordHash,
     }),
   );
-  await checkRelations(tx, ctx.schema, collection, drafts);
-
-  const failures = new Map<number, unknown>();
-  const prepared: PreparedWrite[] = [];
-  for (const [i, draft] of drafts.entries()) {
-    try {
-      prepared[i] = await finishWrite(draft);
-    } catch (error) {
-      failures.set(i, error);
-    }
-  }
-  // Checked before inserting, so a denied caller learns nothing from a
-  // constraint error.
+  // The create rule is checked before the relations, and before anything is
+  // inserted, so a caller it refuses learns nothing about other records,
+  // either from a missing related record or from a constraint error.
+  const refused = new Set<number>();
   if (!ctx.principal.superuser && collection.createRule !== "") {
-    const source = collection.createRule ?? "";
     // Compiled once when no row's own body can change it.
-    const shared = source.includes("@request.body")
-      ? undefined
-      : compile(ctx, collection, source, "rule");
-    const checked = prepared.flatMap((write, i) => {
-      const rule = source.includes("@request.body")
-        ? compile(
-            { ...ctx, request: { ...ctx.request, body: write.body } },
-            collection,
-            source,
-            "rule",
-          )
-        : shared;
-      return rule ? [{ i, row: write.row, rule }] : [];
+    const reads = (collection.createRule ?? "").includes("@request.body");
+    const shared = reads ? undefined : createRule(ctx, collection, {});
+    const checked = drafts.flatMap(({ prepared }, i) => {
+      const rule = reads ? createRule(ctx, collection, prepared.body) : shared;
+      return rule ? [{ i, row: prepared.row, rule }] : [];
     });
     if (checked.length > 0) {
       for (const k of await refusedNewRows(tx, collection, checked)) {
-        const { i } = checked[k] as { i: number };
-        failures.set(i, new ApiError(400, "Failed to create the record."));
+        refused.add((checked[k] as { i: number }).i);
       }
     }
   }
-  if (failures.size > 0) {
-    const index = Math.min(...failures.keys());
-    throw new CreateFailed(index, failures.get(index));
+  await checkRelations(
+    tx,
+    ctx.schema,
+    collection,
+    drafts.filter((_, i) => !refused.has(i)),
+  );
+  // Each create is checked as it would be alone: its own problems first,
+  // then the create rule.
+  const failures = new Map<number, unknown>();
+  const prepared: PreparedWrite[] = [];
+  for (const [i, draft] of drafts.entries()) {
+    if (!draft.issues.empty || !refused.has(i)) {
+      try {
+        prepared[i] = finishWrite(draft);
+      } catch (error) {
+        failures.set(i, error);
+      }
+    } else {
+      failures.set(i, refusedCreate());
+    }
   }
-
-  for (const [i, write] of prepared.entries()) {
+  // The creates before the first failure are still inserted, so one of them
+  // that duplicates a unique value is reported first, as it would be in turn.
+  const failed = failures.size > 0 ? Math.min(...failures.keys()) : undefined;
+  const allowed = prepared.slice(0, failed);
+  for (const [i, write] of allowed.entries()) {
     try {
-      await keepFiles(tx, ctx, collection, write.row.id as string, write);
+      await keepFiles(tx, ctx, collection, write.row.id as string, write, true);
     } catch (error) {
       throw new CreateFailed(i, error);
     }
   }
-  await insertRows(tx, collection, prepared);
+  if (allowed.length > 0) await insertRows(tx, collection, allowed);
+  if (failed !== undefined)
+    throw new CreateFailed(failed, failures.get(failed));
   return afterWrites(
     tx,
     ctx,
@@ -398,9 +485,9 @@ export async function applyCreates(
 
 /**
  * One INSERT for all rows, in chunks under Postgres's 65535 parameters per
- * statement. A unique value can be duplicated by any row, and Postgres does
- * not say which, so on that error the rows are inserted one at a time to
- * find the first that fails.
+ * statement. When an index refuses a row, because it duplicates a unique
+ * value or is too long to index, Postgres does not say which row, so the
+ * rows are then inserted one at a time to find the first that fails.
  */
 async function insertRows(
   tx: Tx,
@@ -419,6 +506,8 @@ async function insertRows(
   };
   const [only] = rows;
   if (rows.length === 1 && only) return insertOne(only, 0);
+  // A batch's 50 creates fit in one statement unless a collection has over
+  // 1300 fields; the chunks keep any other caller under the limit too.
   const perChunk = Math.max(
     1,
     Math.floor(MAX_PARAMETERS / collection.fields.length),
@@ -433,7 +522,8 @@ async function insertRows(
       }
     });
   } catch (error) {
-    if ((error as { code?: unknown }).code !== "23505") throw error;
+    const { code } = error as { code?: unknown };
+    if (code !== "23505" && code !== "54000") throw error;
     for (const [i, row] of rows.entries()) await insertOne(row, i);
   }
 }
@@ -464,16 +554,25 @@ export async function planUpdateRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
-  await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
-  const slow = input.password !== undefined || touchesFiles(collection, input);
+  const newFiles = await readFiles(ctx, collection, input);
+  const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
   const ruleChecked =
-    slow && (await checkUpdateRuleFirst(ctx, collection, id, notFound));
+    slow &&
+    (await checkUpdateRuleFirst(
+      ctx,
+      collection,
+      id,
+      input,
+      newFiles,
+      notFound,
+    ));
   const old = ruleChecked
     ? await checkOldPasswordFirst(ctx, collection, id, input)
     : undefined;
+  await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
-  const newFiles = await prepareNewFiles(ctx, collection, input, id);
+  await storeFiles(ctx, collection, id, newFiles);
   return (tx) =>
     writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
@@ -486,7 +585,7 @@ export async function planUpdateRecord(
         .all();
       if (!existing) throw notFound;
 
-      let prepared: Awaited<ReturnType<typeof prepareWrite>> | undefined;
+      let prepared: PreparedWrite | undefined;
       let invalid: unknown;
       try {
         prepared = await prepareWrite(tx, input, {
@@ -526,7 +625,7 @@ export async function planUpdateRecord(
             );
         if (!matches) throw wrongOldPassword();
       }
-      await keepFiles(tx, ctx, collection, id, prepared);
+      await keepFiles(tx, ctx, collection, id, prepared, false);
       if (Object.keys(prepared.values).length > 0) {
         await tx
           .update(
@@ -537,7 +636,7 @@ export async function planUpdateRecord(
           .execute();
       }
       // The owner learns of a password change they may not have made.
-      const password = collection.fields.find((f) => f.type === "password");
+      const password = passwordField(collection);
       if (password && prepared.values[password.name] !== undefined) {
         ctx.effects?.mail.push({
           kind: "passwordChanged",
@@ -597,56 +696,50 @@ async function keepFiles(
   collection: Collection,
   id: string,
   { files }: { files: FileChanges },
+  creating: boolean,
 ): Promise<void> {
   if (files.added.length === 0 && files.removed.length === 0) return;
-  if (!ctx.effects) {
-    throw new Error("Writes that change files need storage and effects.");
-  }
-  await claimFiles(tx, ctx.effects, collection, id, files);
+  await claimFiles(tx, effectsOf(ctx), collection, id, files, creating);
 }
 
 /**
- * Reads a write's new files and stores them under the record, before its
- * transaction starts, so neither holds a lock or a connection. Undefined
- * when the write cannot set files. Files the write turns out not to keep,
- * because it fails, are deleted again.
+ * Reads a write's new files before its transaction starts. Undefined when
+ * the write cannot set files.
  */
-async function prepareNewFiles(
+async function readFiles(
   ctx: RecordsContext,
   collection: Collection,
   input: Record<string, unknown>,
-  recordId: unknown,
 ): Promise<NewFiles | undefined> {
   if (!ctx.storage) return undefined;
-  const newFiles = await readNewFiles(ctx.pool, ctx.storage, collection, input);
-  if (newFiles.files.size === 0) return newFiles;
+  return readNewFiles(ctx.pool, ctx.storage, collection, input);
+}
+
+/**
+ * Stores a write's new files under the record, before its transaction
+ * starts, so storing holds neither a lock nor a connection. Files the write
+ * turns out not to keep, because it fails, are deleted again.
+ */
+async function storeFiles(
+  ctx: RecordsContext,
+  collection: Collection,
+  recordId: unknown,
+  newFiles: NewFiles | undefined,
+): Promise<void> {
+  if (!ctx.storage || !newFiles || newFiles.files.size === 0) return;
+  const effects = effectsOf(ctx);
+  // A write with bad files or a bad id fails, so its files are not stored.
+  if (newFiles.problems.size === 0 && isId(recordId)) {
+    await storeNewFiles(ctx.storage, effects, collection, recordId, newFiles);
+  }
+}
+
+/** Where a write that changes files records them, to delete them on failure. */
+function effectsOf(ctx: RecordsContext): Effects {
   if (!ctx.effects) {
     throw new Error("Writes that change files need storage and effects.");
   }
-  // A write with bad files or a bad id fails, so its files are not stored.
-  if (newFiles.problems.size === 0 && isRecordId(recordId)) {
-    await storeNewFiles(
-      ctx.storage,
-      ctx.effects,
-      collection,
-      recordId,
-      newFiles,
-    );
-  }
-  return newFiles;
-}
-
-function touchesFiles(
-  collection: Collection,
-  input: Record<string, unknown>,
-): boolean {
-  return collection.fields.some(
-    (f) =>
-      f.type === "file" &&
-      [f.name, `+${f.name}`, `${f.name}+`, `${f.name}-`].some(
-        (key) => input[key] !== undefined,
-      ),
-  );
+  return ctx.effects;
 }
 
 // Runs before the write's transaction, so no row stays locked during the lookup.
@@ -656,7 +749,7 @@ async function checkNewPassword(
   input: Record<string, unknown>,
 ): Promise<void> {
   if (!ctx.rejectBreachedPasswords || collection.type !== "auth") return;
-  const field = collection.fields.find((f) => f.type === "password");
+  const field = passwordField(collection);
   const password = field && input[field.name];
   if (typeof password === "string") await checkBreached(password);
 }
@@ -666,7 +759,7 @@ function checkId(collection: Collection, id: string): void {
   const valid =
     collection.type === "view"
       ? id !== "" && id.length <= 255 && !hasNul(id)
-      : /^[a-z0-9]{15}$/.test(id);
+      : isId(id);
   if (!valid) throw new ApiError(404, "Record not found.");
 }
 
@@ -699,33 +792,75 @@ async function oldPasswordMatches(
 }
 
 /**
- * Checks the update rule with a plain read before the transaction starts, so
+ * Checks the update rule with plain reads before the transaction starts, so
  * a caller it refuses causes no slow work, such as checking a password or
- * storing files. Throws `notFound` when it refuses. Returns false when the
- * rule reads `@request.body`, which needs the checked body only the
- * transaction has. The transaction checks the rule again either way.
+ * storing files. Throws `notFound` when it refuses. A rule that reads
+ * `@request.body` is checked with the body the transaction would check,
+ * drafted from the stored record. Returns false when the check is left to
+ * the transaction, which checks the rule again either way.
  */
 async function checkUpdateRuleFirst(
   ctx: RecordsContext,
   collection: Collection,
   id: string,
+  input: Record<string, unknown>,
+  newFiles: NewFiles | undefined,
   notFound: ApiError,
 ): Promise<boolean> {
   if (ctx.principal.superuser) return true;
   const rule = collection.updateRule ?? "";
-  if (rule.includes("@request.body")) return false;
-  if (
-    rule !== "" &&
-    !(await matchesStoredRow(
-      ctx.pool,
+  if (rule === "") return true;
+  let body: Record<string, unknown> = {};
+  if (rule.includes("@request.body")) {
+    // The body depends on the stored record and on related records, either
+    // of which earlier writes of the batch may have changed.
+    if ((ctx.written?.size ?? 0) > 0) return false;
+    const [existing] = await ctx.pool
+      .select("*")
+      .from(table(collection.name))
+      .where(hash({ id }))
+      .all();
+    if (!existing) throw notFound;
+    const draft = draftWrite(input, {
       collection,
-      id,
-      compile(ctx, collection, rule, "rule"),
-    ))
-  ) {
+      schema: ctx.schema,
+      existing,
+      privileged: await canManage(ctx.pool, ctx, collection, id),
+      newFiles,
+    });
+    await checkRelations(ctx.pool, ctx.schema, collection, [draft]);
+    // As in the transaction, an invalid write is checked with an empty body.
+    if (draft.issues.empty) body = draft.prepared.body;
+  }
+  const condition = compile(
+    { ...ctx, request: { ...ctx.request, body } },
+    collection,
+    rule,
+    "rule",
+  );
+  if (!seesEveryWrite(ctx, collection, condition)) return false;
+  if (!(await matchesStoredRow(ctx.pool, collection, id, condition))) {
     throw notFound;
   }
   return true;
+}
+
+/**
+ * Whether a read of `collection` with `condition`, made before the
+ * transaction, sees what it would see in it: none of the collections it
+ * reads was written earlier in the batch.
+ */
+function seesEveryWrite(
+  ctx: RecordsContext,
+  collection: Collection,
+  condition: Expression | undefined,
+): boolean {
+  const { written } = ctx;
+  if (!written || written.size === 0) return true;
+  if (written.has(collection.name)) return false;
+  // Every collection a compiled rule reads appears in it as its table.
+  const sql = condition?.build(ctx.pool, {}) ?? "";
+  return [...written].every((name) => !sql.includes(`{{${table(name)}}}`));
 }
 
 /**
@@ -745,11 +880,29 @@ async function checkOldPasswordFirst(
   input: Record<string, unknown>,
 ): Promise<{ matched: string | undefined } | undefined> {
   const { oldPassword } = input;
+  const field = passwordField(collection);
   if (
     typeof oldPassword !== "string" ||
-    input.password === undefined ||
+    !field ||
+    // An invalid new password fails the update before the old one is checked.
+    newPassword(field, input) === undefined ||
     ctx.principal.superuser ||
-    collection.type !== "auth"
+    collection.type !== "auth" ||
+    // The stored password may have changed earlier in the batch.
+    ctx.written?.has(collection.name)
+  ) {
+    return undefined;
+  }
+  // Managers need no old password, so theirs is not checked. Whether the
+  // caller is one is left to the transaction when it may read earlier writes.
+  const manage =
+    collection.manageRule === null
+      ? undefined
+      : compile(ctx, collection, collection.manageRule, "rule");
+  if (
+    collection.manageRule !== null &&
+    (!seesEveryWrite(ctx, collection, manage) ||
+      (await matchesStoredRow(ctx.pool, collection, id, manage)))
   ) {
     return undefined;
   }
@@ -770,7 +923,7 @@ async function checkOldPasswordFirst(
 }
 
 function wrongOldPassword(): ApiError {
-  return new ApiError(400, "Failed to update the record.", {
+  return new ApiError(400, writeFailed(false), {
     oldPassword: {
       code: "validation_invalid_old_password",
       message: "Does not match the current password.",
@@ -783,7 +936,7 @@ async function hashNewPassword(
   collection: Collection,
   input: Record<string, unknown>,
 ): Promise<string | undefined> {
-  const field = collection.fields.find((f) => f.type === "password");
+  const field = passwordField(collection);
   const password = field && newPassword(field, input);
   return password === undefined ? undefined : hashPassword(password);
 }
@@ -893,7 +1046,11 @@ async function refusedNewRows(
   const params: Params = {};
   const tuples = rows.map(({ row }, i) => {
     const values = collection.fields.map((field, j) => {
-      params[`nb_v${i}_${j}`] = columnValue(field, row[field.name]);
+      // Rules cannot read secrets, so they are never sent.
+      const secret = field.type === "password" || field.name === "tokenKey";
+      params[`nb_v${i}_${j}`] = secret
+        ? null
+        : columnValue(field, row[field.name]);
       return `{:nb_v${i}_${j}}::${columnCast(field)}`;
     });
     return `(${i}, ${values.join(", ")})`;
@@ -1050,6 +1207,20 @@ async function deleteWithReferences(
         .all<{ id: string; kept: number }>();
       if (referencing.length === 0) continue;
       if (field.cascadeDelete) {
+        // Around a cycle of cascades, records already being deleted still
+        // point at these until they go, which their foreign key would
+        // refuse. They lose those references first.
+        const deleting = referencing
+          .filter((row) => visited.has(`${source.id}/${row.id}`))
+          .map((row) => row.id);
+        if (deleting.length > 0) {
+          await tx
+            .newQuery(
+              `UPDATE ${t} SET ${col} = ${multiple ? kept : "NULL"} WHERE id = ANY({:deleting}::text[])`,
+            )
+            .bind({ ...params, deleting })
+            .execute();
+        }
         await deleteWithReferences(
           tx,
           schema,
@@ -1392,7 +1563,6 @@ function columnValues(
   return out;
 }
 
-// A unique-index violation becomes a 400 on the indexed fields.
 /**
  * Runs `write` in the caller's transaction if there is one, or in a new one.
  * It makes no savepoint: when a write fails the request fails too, so the
@@ -1402,6 +1572,10 @@ function inTransaction<T>(db: DB | Tx, write: Apply<T>): Promise<T> {
   return db instanceof Tx ? write(db) : db.transaction(write);
 }
 
+/**
+ * Runs a write, turning what the indexes refuse into a 400 on the indexed
+ * fields: a duplicate in a unique index, or a value too long to index.
+ */
 async function writing<T>(
   collection: Collection,
   write: () => Promise<T>,
@@ -1409,30 +1583,71 @@ async function writing<T>(
   try {
     return await write();
   } catch (error) {
-    const { code, constraint } = error as {
+    const { code, constraint, message } = error as {
       code?: unknown;
       constraint?: unknown;
+      message?: unknown;
     };
-    if (code !== "23505") throw error;
-    let names: string[] = [];
-    if (constraint === `_${collection.id}_pkey`) names = ["id"];
-    else if (constraint === `_${collection.id}_email`) names = ["email"];
-    else if (constraint === `_${collection.id}_phone`) names = ["phone"];
-    else {
-      const index = collection.indexes.find((i) => i.name === constraint);
-      names = (index?.fields ?? []).flatMap(
-        (id) => collection.fields.find((f) => f.id === id)?.name ?? [],
+    if (code === "23505") {
+      throw indexError(
+        collection,
+        constraint,
+        "A record with these values already exists.",
+        { code: "validation_not_unique", message: "Must be unique." },
       );
     }
-    throw new ApiError(
-      400,
-      "A record with these values already exists.",
-      Object.fromEntries(
-        names.map((n) => [
-          n,
-          { code: "validation_not_unique", message: "Must be unique." },
-        ]),
-      ),
+    // An index entry must fit in a page. Postgres says so in one of two
+    // messages, and names the index only in the second:
+    // `index row requires 9016 bytes, maximum size is 8191`, or
+    // `index row size 2720 exceeds btree version 4 maximum 2704 for index "x"`.
+    if (
+      code === "54000" &&
+      typeof message === "string" &&
+      message.startsWith("index row ")
+    ) {
+      throw indexError(
+        collection,
+        /for index "(.+)"$/.exec(message)?.[1],
+        "A value is too long to index.",
+        {
+          code: "validation_length_out_of_range",
+          message: "Too long for the field's index.",
+        },
+      );
+    }
+    throw error;
+  }
+}
+
+function indexError(
+  collection: Collection,
+  indexName: unknown,
+  message: string,
+  problem: { code: string; message: string },
+): ApiError {
+  let names: string[];
+  if (indexName === `_${collection.id}_pkey`) names = ["id"];
+  else if (indexName === `_${collection.id}_email`) names = ["email"];
+  else if (indexName === `_${collection.id}_phone`) names = ["phone"];
+  else {
+    const index = collection.indexes.find((i) => i.name === indexName);
+    // System indexes are named `_{collection id}_{field id}`, and a suffix.
+    const ids = index
+      ? index.fields
+      : collection.fields
+          .filter(
+            (f) =>
+              typeof indexName === "string" &&
+              indexName.startsWith(`_${collection.id}_${f.id}`),
+          )
+          .map((f) => f.id);
+    names = ids.flatMap(
+      (id) => collection.fields.find((f) => f.id === id)?.name ?? [],
     );
   }
+  return new ApiError(
+    400,
+    message,
+    Object.fromEntries(names.map((n) => [n, problem])),
+  );
 }

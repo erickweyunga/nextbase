@@ -81,9 +81,11 @@ export interface Storage {
 }
 
 export function newStorage(options: StorageOptions = {}): Storage {
-  return options.s3
-    ? new S3Storage(options.s3)
-    : new LocalStorage(resolve(options.dir ?? join(".nextbase", "storage")));
+  if (options.s3) return new S3Storage(options.s3);
+  // Only known at runtime, so Next.js must not trace the files under it into
+  // the build, which would include the whole project.
+  const dir = options.dir ?? join(".nextbase", "storage");
+  return new LocalStorage(resolve(/* turbopackIgnore: true */ dir));
 }
 
 class LocalStorage implements Storage {

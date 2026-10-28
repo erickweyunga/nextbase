@@ -4,7 +4,7 @@ import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { decodeRecordJson } from "../db/types.ts";
 import { ApiError } from "../errors.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { newId } from "../random.ts";
 import { SCHEMA_RACE, type Schema, type SchemaCache } from "../schema/cache.ts";
 
 /**
@@ -79,7 +79,7 @@ export async function createSession(
        RETURNING ${COLUMNS}`,
     )
     .bind({
-      id: randomString(15, LOWER_ALPHANUMERIC),
+      id: newId(),
       tokenHash: tokenHash(token),
       collectionId: collection.id,
       recordId: record.id,

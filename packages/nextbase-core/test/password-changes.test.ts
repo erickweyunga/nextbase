@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { call, type Reply } from "./http.ts";
 import { createTestDatabase, endPool, type TestDatabase } from "./postgres.ts";
+import { waitFor, waitsForLock } from "./wait.ts";
 
 const PASSWORD = "password 123 456";
 
@@ -181,6 +182,72 @@ describe("changing a password", () => {
     expect(await attempts(id)).toBe(0);
   });
 
+  it("changes a password twice in one batch", async () => {
+    const admin = nextbase.client({ superuser: true });
+    const fay = await admin.collection("members").create({
+      email: "fay@example.com",
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const id = fay?.id ?? "";
+    const token = await signIn(nextbase, "members", "fay@example.com");
+    // The second change must check against the password the first one set.
+    const change = (oldPassword: string, password: string) => ({
+      method: "PATCH",
+      url: `/collections/members/records/${id}`,
+      body: { oldPassword, password, passwordConfirm: password },
+    });
+    const reply = await call(nextbase, "POST", "/batch", {
+      token,
+      body: {
+        requests: [
+          change(PASSWORD, "second password 345 678"),
+          change("second password 345 678", "third password 901 234"),
+        ],
+      },
+    });
+    expect(reply.status).toBe(200);
+    expect(await attempts(id)).toBe(0);
+    expect(
+      await signIn(
+        nextbase,
+        "members",
+        "fay@example.com",
+        "third password 901 234",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("counts no attempt when a manager sends an old password", async () => {
+    const admin = nextbase.client({ superuser: true });
+    await admin.collections.create({
+      name: "staff",
+      type: "auth",
+      updateRule: '@request.auth.id != ""',
+      manageRule: '@request.auth.id != ""',
+    });
+    const [, hal] = await Promise.all(
+      ["gil", "hal"].map((name) =>
+        admin.collection("staff").create({
+          email: `${name}@example.com`,
+          password: PASSWORD,
+          passwordConfirm: PASSWORD,
+        }),
+      ),
+    );
+    const token = await signIn(nextbase, "staff", "gil@example.com");
+    // Managers need no old password, so a wrong one is not a guess at it.
+    const reply = await change(
+      nextbase,
+      "staff",
+      hal?.id ?? "",
+      token,
+      "a wrong guess",
+    );
+    expect(reply.status).toBe(204);
+    expect(await attempts(hal?.id ?? "")).toBe(0);
+  });
+
   it("refuses the change if the password changed after it was checked", async () => {
     const id = ids.ann as string;
     const token = await signIn(
@@ -205,13 +272,7 @@ describe("changing a password", () => {
         "new password 789 012",
         "third password 345 678",
       );
-      for (;;) {
-        const { rows } = await t.pool.query(
-          "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        );
-        if (rows.length > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await waitFor(() => waitsForLock(t.pool), "the update to wait");
       // Another request sets a new password meanwhile.
       await other.query(
         "UPDATE nextbase.members SET password = 'changed elsewhere' WHERE id = $1",

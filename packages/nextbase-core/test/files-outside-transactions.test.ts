@@ -4,6 +4,7 @@ import { NextBase } from "../src/index.ts";
 import { type FakeS3, startFakeS3 } from "./fake-s3.ts";
 import { call } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor } from "./wait.ts";
 
 /** The smallest valid PNG: a 1x1 transparent pixel. */
 const PNG = Buffer.from(
@@ -19,9 +20,6 @@ describe("files are stored before the write's transaction", () => {
   let admin: NextBaseClient;
   const pending: Promise<unknown>[] = [];
   const settle = () => Promise.all(pending.splice(0));
-  const until = async (done: () => boolean | Promise<boolean>) => {
-    while (!(await done())) await new Promise((r) => setTimeout(r, 10));
-  };
   const puts = () => s3.requests.filter((r) => r.startsWith("PUT ")).length;
 
   beforeAll(async () => {
@@ -68,7 +66,7 @@ describe("files are stored before the write's transaction", () => {
       .collection("clips")
       .update(clip?.id ?? "", { video: png() });
     try {
-      await until(() => puts() > before);
+      await waitFor(() => puts() > before, "the file to be stored");
       const other = await t.pool.connect();
       try {
         // Waits for no one: the record is not locked meanwhile.
@@ -104,6 +102,28 @@ describe("files are stored before the write's transaction", () => {
       ),
     );
     expect(response.status).toBe(404);
+    expect(puts()).toBe(before);
+  });
+
+  it("stores no file for a caller the create rule or a body-reading update rule refuses", async () => {
+    await admin.collections.create({
+      name: "photos",
+      createRule: '@request.auth.id != ""',
+      updateRule: '@request.auth.id != "" && @request.body.title:isset = false',
+      fields: [
+        { name: "title", type: "text" },
+        { name: "image", type: "file", mimeTypes: ["image/png"] },
+      ],
+    });
+    const photo = await admin.collection("photos").create({});
+    const before = puts();
+    const anonymous = nextbase.client().collection("photos");
+    await expect(anonymous.create({ image: png() })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      anonymous.update(photo?.id ?? "", { image: png() }),
+    ).rejects.toMatchObject({ status: 404 });
     expect(puts()).toBe(before);
   });
 

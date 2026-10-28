@@ -59,7 +59,12 @@ and `validation_invalid_value` (a name the record does not have).
 With [storage in a bucket](/docs/guides/files#store-files-in-a-bucket), returns
 a URL to PUT a file to directly, and a token to put in the record's field
 once the upload finished. The URL is signed for the exact size and type and
-works for 15 minutes. The SDK does this for files over 4 MB.
+works for 15 minutes. The SDK does this when a write's files add up to more
+than 4 MB, and for every file in a batch.
+
+The record's rules apply when it is written. Before that, a signed-out caller
+may start an upload only if the collection's create or update rule is `""`,
+and each account may start 100 uploads an hour.
 
 ```http
 POST /collections/{collection}/upload-url
@@ -112,6 +117,25 @@ field's `maxSize`.
 ```
 
 The collection's create and update rules are both `null`.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to upload files to this collection.", "data": {} }
+```
+
+The caller is signed out, and neither the create nor the update rule is `""`.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+The account started 100 uploads in the last hour. `Retry-After` says when to
+try again.
 
 </TabItem>
 </Tabs>

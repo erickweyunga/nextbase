@@ -25,6 +25,8 @@ export interface TypeParsers {
 export interface QueryResult {
   rows: unknown[];
   rowCount: number | null;
+  /** The command tag Postgres sent back, such as "INSERT" or "ROLLBACK". */
+  command?: string;
 }
 
 /** The subset of a `pg` Pool or PoolClient that dbx calls. */
@@ -155,31 +157,26 @@ export class Builder {
   }
 
   /**
-   * One INSERT of several rows. Every row must set the same columns; as in
-   * `insert`, Expression values are SQL and `undefined` values are skipped.
-   * Postgres takes at most 65535 parameters per statement, so very many rows
-   * need several calls.
+   * One INSERT of several rows. As in `insert`, Expression values are SQL and
+   * `undefined` values are skipped. The columns are those any row sets, and a
+   * row that leaves one out gets its default. Postgres takes at most 65535
+   * parameters per statement, so very many rows need several calls.
    */
   insertMany(table: string, rows: readonly Params[]): Query {
-    const [first, ...rest] = rows;
-    if (!first)
+    if (rows.length === 0)
       throw new TypeError(`dbx: insertMany into "${table}" has no rows.`);
-    const names = definedEntries(first).map(([name]) => name);
+    const names = [
+      ...new Set(rows.flatMap((row) => definedEntries(row).map(([n]) => n))),
+    ];
     if (names.length === 0) {
       throw new TypeError(`dbx: insertMany into "${table}" has no columns.`);
     }
     const params: Params = {};
-    const tuples = [first, ...rest].map((row, i) => {
-      const entries = definedEntries(row);
-      if (
-        entries.length !== names.length ||
-        entries.some(([name], j) => name !== names[j])
-      ) {
-        throw new TypeError(
-          `dbx: row ${i + 1} of insertMany into "${table}" sets other columns than the first.`,
-        );
-      }
-      return `(${entries.map(([, value]) => this.#valueSQL(value, params)).join(", ")})`;
+    const tuples = rows.map((row) => {
+      const values = names.map((name) =>
+        row[name] === undefined ? "DEFAULT" : this.#valueSQL(row[name], params),
+      );
+      return `(${values.join(", ")})`;
     });
     return this.newQuery(
       `INSERT INTO ${quoteIdentifierPath(table)} (${quoteIdentifiers(names)}) VALUES ${tuples.join(", ")}`,

@@ -28,6 +28,9 @@ browser sends on its own. If both are present, the header wins.
 
 - An invalid or expired Bearer token is a `401`.
 - An invalid cookie is removed and the request continues signed out.
+- A response to a request that had no session carries
+  `NextBase-Session: none`, so a browser that thought it was signed in with a
+  cookie, which scripts cannot read, learns that its session ended.
 - A write (`POST`, `PATCH`, `DELETE`) authenticated by the cookie must send an
   `Origin` header naming the same host, or it gets a `403`. Browsers do this
   on their own.
@@ -57,7 +60,7 @@ is stable and meant for programs; `message` is for people.
 | ------ | ------- |
 | `400` | invalid input, a failed create rule, or a bad filter |
 | `401` | missing or invalid credentials where they are required |
-| `403` | the action needs a superuser, or a cross-site cookie write |
+| `403` | signed in, but the action needs a superuser or another collection's session, or a cross-site cookie write |
 | `404` | not found, or hidden by a rule |
 | `405` | method not allowed |
 | `409` | conflict with a concurrent change; retrying works |

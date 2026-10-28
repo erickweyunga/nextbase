@@ -1,6 +1,19 @@
 /** Alphabet of record, collection and field ids. */
 export const LOWER_ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyz0123456789";
 
+/** The form of ids from `newId`, also checked by the database. */
+export const ID_PATTERN: RegExp = /^[a-z0-9]{15}$/;
+
+/** A new id for a record, a collection or a session. */
+export function newId(): string {
+  return randomString(15, LOWER_ALPHANUMERIC);
+}
+
+/** Whether `value` has the form of an id from `newId`. */
+export function isId(value: unknown): value is string {
+  return typeof value === "string" && ID_PATTERN.test(value);
+}
+
 /** Alphabet of secrets. */
 export const ALPHANUMERIC =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

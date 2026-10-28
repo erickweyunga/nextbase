@@ -167,12 +167,20 @@ describe("records API", () => {
           },
         },
       });
-      const missing = await as("ann", "POST", "/collections/posts/records", {
+      const missing = await as("admin", "POST", "/collections/posts/records", {
         author: "nobody000000000",
       });
       expect(missing.body.data).toMatchObject({
         title: { code: "validation_required" },
         author: { code: "validation_missing_relation" },
+      });
+      // The create rule refuses Ann this author, so she does not learn
+      // whether the record exists.
+      const refused = await as("ann", "POST", "/collections/posts/records", {
+        author: "nobody000000000",
+      });
+      expect(refused.body.data).toEqual({
+        title: { code: "validation_required", message: "Cannot be blank." },
       });
     });
 
@@ -500,6 +508,32 @@ describe("records API", () => {
         (await as("ann", "GET", `/collections/posts/records/${ids.draft}`))
           .status,
       ).toBe(404);
+    });
+
+    it("follows a cycle of cascades once, deleting every record on it", async () => {
+      const admin = nextbase.client({ superuser: true });
+      const nodes = await admin.collections.create({ name: "nodes" });
+      // Each node points at the next, and deleting one deletes those that
+      // point at it, around the cycle.
+      await admin.collections.update("nodes", {
+        fields: [
+          {
+            name: "next",
+            type: "relation",
+            collectionId: nodes.id,
+            cascadeDelete: true,
+          },
+        ],
+      });
+      const ids = ["node00000000001", "node00000000002", "node00000000003"];
+      for (const id of ids) await admin.collection("nodes").create({ id });
+      for (const [i, id] of ids.entries()) {
+        await admin
+          .collection("nodes")
+          .update(id, { next: ids[(i + 1) % ids.length] });
+      }
+      await admin.collection("nodes").delete(ids[0] as string);
+      expect(await admin.collection("nodes").getFullList()).toEqual([]);
     });
 
     it("cascades, clears or blocks on records that reference the deleted one", async () => {

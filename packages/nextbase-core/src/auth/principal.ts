@@ -83,6 +83,23 @@ export async function resolvePrincipal(
   };
 }
 
+/**
+ * The caller's record in `collection`. A 401 when signed out, which clients
+ * read as an ended session, and a 403 when signed in to another collection.
+ */
+export function recordIn(
+  principal: Principal,
+  collection: AuthCollection,
+  action: string,
+): Row {
+  const message = `Sign in to this collection to ${action}.`;
+  if (!principal.record) throw new ApiError(401, message);
+  if (principal.collection?.id !== collection.id) {
+    throw new ApiError(403, message);
+  }
+  return principal.record;
+}
+
 export function requireSuperuser(principal: Principal): void {
   if (principal.superuser) return;
   if (!principal.record)

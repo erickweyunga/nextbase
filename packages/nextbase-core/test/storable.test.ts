@@ -16,10 +16,15 @@ describe("storable values", () => {
       ["2020-01-01", "2020-01-01T00:00:00.000Z"],
       ["2020-01-01T00:00:00+03:00", "2019-12-31T21:00:00.000Z"],
       ["2020-01-01 00:00:00Z", "2020-01-01T00:00:00.000Z"],
+      ["2020-01-01T00:00:00+0300", "2019-12-31T21:00:00.000Z"],
+      ["2020-01-01T00:00:00-03", "2020-01-01T03:00:00.000Z"],
+      ["+012020-01-01T00:00:00z", "+012020-01-01T00:00:00.000Z"],
     ];
     for (const [text, iso] of cases)
       expect(new Date(parseDate(text)).toISOString()).toBe(iso);
-    expect(parseDate("not a date")).toBeNaN();
+    // Formats Date.parse would read in the server's local time.
+    for (const text of ["not a date", "1/2/2024", "Jan 2 2024", "2024-01"])
+      expect(parseDate(text)).toBeNaN();
   });
 
   it("parses timestamptz output exactly, including offsets with seconds, BC and far-future years", () => {

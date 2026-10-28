@@ -27,8 +27,10 @@ which have no browser to keep a cookie.
 await nb.collection("users").signInWithPassword(email, password, { cookie: true });
 ```
 
-The response sets `nextbase_session` as an `HttpOnly`, `SameSite=Lax` cookie,
-`Secure` in production, and returns no token. Restore the signed-in user after
+The response sets the session as an `HttpOnly`, `SameSite=Lax` cookie and
+returns no token. Over HTTPS and in production, the cookie is
+`__Host-nextbase_session` and `Secure`, so no other subdomain can set or
+overwrite it; in development over plain HTTP it is `nextbase_session`. Restore the signed-in user after
 a reload with `nb.getSession()`.
 
 ## Read the user in a server component

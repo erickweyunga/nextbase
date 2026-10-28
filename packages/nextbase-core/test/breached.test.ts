@@ -127,6 +127,44 @@ describe("breached password check", () => {
     warn.mockRestore();
   });
 
+  it("asks nothing for a caller the rules refuse", async () => {
+    answer = range;
+    await admin.collections.create({
+      name: "staff",
+      type: "auth",
+      createRule: '@request.auth.id != ""',
+      // Reads the body, so the check needs the body the update would have.
+      updateRule: "id = @request.auth.id && @request.body.email:isset = false",
+    });
+    const member = await admin.collection("staff").create({
+      email: "fay@example.com",
+      password: FRESH,
+      passwordConfirm: FRESH,
+    });
+    const before = asked.length;
+    const staff = nextbase.client().collection("staff");
+    const signUpError = await failure(
+      staff.signUp({
+        email: "eve@example.com",
+        password: FRESH,
+        passwordConfirm: FRESH,
+      }),
+    );
+    expect(signUpError.status).toBe(400);
+    // Ann is signed in, but may not update another account.
+    const ann = nextbase.client();
+    await ann.collection("users").signInWithPassword("ann@example.com", FRESH);
+    const updateError = await failure(
+      ann.collection("staff").update(member?.id ?? "", {
+        oldPassword: FRESH,
+        password: BREACHED,
+        passwordConfirm: BREACHED,
+      }),
+    );
+    expect(updateError.status).toBe(404);
+    expect(asked.length).toBe(before);
+  });
+
   it("is off by default", async () => {
     const before = asked.length;
     const plain = new NextBase({ database: t.pool });

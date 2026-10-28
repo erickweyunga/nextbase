@@ -7,9 +7,73 @@ import TabItem from "@theme/TabItem";
 
 # Auth
 
-Sign in to an [auth collection](/docs/guides/auth) and manage sessions. To
-sign up, [create a record](/docs/api/records#create-a-record) in the auth
-collection.
+Sign up and sign in to an [auth collection](/docs/guides/auth), and manage
+sessions.
+
+## Sign up
+
+Creates an account, checked by the `createRule` like any
+[create](/docs/api/records#create-a-record), then signs it in when the
+`authRule` lets it.
+
+```ts
+await nb.collection("users").signUp({
+  email: "ann@example.com",
+  password: "a long password",
+  passwordConfirm: "a long password",
+});
+```
+
+```http
+POST /collections/{collection}/sign-up
+```
+
+**Body:** the record's fields, as for a create, and `cookie: true` to keep
+the session in a cookie, as when [signing in with a
+password](#sign-in-with-a-password).
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The session, as when [signing in with a password](#sign-in-with-a-password).
+
+</TabItem>
+<TabItem value="202" label="202">
+
+No body: the account was created, but the `authRule` does not let it sign in
+yet, such as before its email is verified. The SDK returns `null`.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+Field errors, as for a [create](/docs/api/records#create-a-record).
+
+</TabItem>
+</Tabs>
+
+## List auth methods
+
+The ways to sign in to the collection, for a login page.
+
+```ts
+const methods = await nb.collection("users").listAuthMethods();
+```
+
+```http
+GET /collections/{collection}/auth-methods
+```
+
+**Response**
+
+```json
+{
+  "password": { "enabled": true, "identityFields": ["email"] },
+  "oauth2": { "enabled": true, "providers": [{ "name": "google", "displayName": "Google" }] },
+  "phone": { "enabled": false }
+}
+```
 
 ## Sign in with a password
 
@@ -81,8 +145,11 @@ POST /collections/{collection}/auth-with-password
 With `cookie: true`, `token` is left out and the response sets:
 
 ```http
-Set-Cookie: nextbase_session=<token>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax; Secure
+Set-Cookie: __Host-nextbase_session=<token>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax; Secure
 ```
+
+In development over plain HTTP, the cookie is `nextbase_session`, without
+`Secure`.
 
 </TabItem>
 <TabItem value="400" label="400">
@@ -288,6 +355,242 @@ No body.
 </TabItem>
 </Tabs>
 
+## Request an email verification
+
+Emails a verification link if `email` is an unverified account. Answers 204
+either way, so it never reveals which addresses have accounts. Each address
+gets at most 10 emails every 15 minutes.
+
+```ts
+await nb.collection("users").requestEmailVerification("ann@example.com");
+```
+
+```http
+POST /collections/{collection}/request-email-verification
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `email` | string | Required. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to send the email.", "data": { "email": { "code": "validation_invalid_email", "message": "Must be a valid email address." } } }
+```
+
+Also returned in production when the `mail` option is not set.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
+## Confirm an email verification
+
+Marks the account verified with the token from a verification link.
+
+```ts
+await nb.collection("users").confirmEmailVerification(token);
+```
+
+```http
+POST /collections/{collection}/confirm-email-verification
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The link is invalid or has expired.", "data": { "token": { "code": "validation_invalid_token", "message": "Invalid or expired." } } }
+```
+
+</TabItem>
+</Tabs>
+
+## Request a password reset
+
+Emails a password reset link if `email` is an account. Answers 204 either way,
+with the same limit as [email verification](#request-an-email-verification).
+
+```ts
+await nb.collection("users").requestPasswordReset("ann@example.com");
+```
+
+```http
+POST /collections/{collection}/request-password-reset
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `email` | string | Required. |
+
+**Responses:** the same as [requesting an email
+verification](#request-an-email-verification).
+
+## Reset a password
+
+Sets a new password with the token from a password reset link. Every session
+of the account ends, and its email counts as verified.
+
+```ts
+await nb.collection("users").confirmPasswordReset(token, "a new password", "a new password");
+```
+
+```http
+POST /collections/{collection}/confirm-password-reset
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+| `password` | string | Required. The new password. |
+| `passwordConfirm` | string | Required. The same again. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "The link is invalid or has expired.", "data": { "token": { "code": "validation_invalid_token", "message": "Invalid or expired." } } }
+```
+
+Also returned, with field errors, for a password the field does not accept.
+
+</TabItem>
+</Tabs>
+
+## Request an email change
+
+Emails `newEmail` a link that moves the signed-in account to it. Whether the
+address is taken is only checked on confirm, so this never reveals it.
+
+```ts
+await nb.collection("users").requestEmailChange("ann@new.example");
+```
+
+```http
+POST /collections/{collection}/request-email-change
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `newEmail` | string | Required. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to request the email change.", "data": { "newEmail": { "code": "validation_same_email", "message": "Is the current email." } } }
+```
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in to this collection to change its email.", "data": {} }
+```
+
+Signed out. Signed in to another collection, it is a `403` with the same
+message.
+
+</TabItem>
+</Tabs>
+
+## Confirm an email change
+
+Moves the account to the new email with the link's token and the current
+password. Every session of the account ends, and the old address is told.
+
+```ts
+await nb.collection("users").confirmEmailChange(token, "the current password");
+```
+
+```http
+POST /collections/{collection}/confirm-email-change
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+| `password` | string | Required. The account's current password. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="ok" label="204">
+
+No body.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{ "status": 400, "message": "Failed to confirm the email change.", "data": { "password": { "code": "validation_invalid_password", "message": "Does not match the current password." } } }
+```
+
+Also returned for an invalid or expired token, or when the new address is
+taken by then.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+```json
+{ "status": 429, "message": "Too many attempts. Try again later.", "data": {} }
+```
+
+</TabItem>
+</Tabs>
+
 ## Request a phone code
 
 Texts a six-digit sign-in code, to a collection with [phone sign-in](/docs/guides/auth/phone). A new number can then sign up. Answers 204 whether or not the number has an account. At most 5 texts per number per hour.
@@ -472,6 +775,9 @@ No body.
 { "status": 401, "message": "Sign in to this collection to verify a phone.", "data": {} }
 ```
 
+Signed out. Signed in to another collection, it is a `403` with the same
+message, and the session stays valid.
+
 </TabItem>
 </Tabs>
 
@@ -559,6 +865,9 @@ POST /collections/{collection}/auth-refresh
 ```json
 { "status": 401, "message": "Sign in to this collection to refresh.", "data": {} }
 ```
+
+Signed out. Signed in to another collection, it is a `403` with the same
+message, and the session stays valid.
 
 </TabItem>
 </Tabs>

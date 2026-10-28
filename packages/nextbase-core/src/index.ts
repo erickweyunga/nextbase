@@ -50,8 +50,11 @@ const RETRYABLE: ReadonlySet<string> = new Set(["40001", "40P01"]);
 
 const DEFAULT_STATEMENT_TIMEOUT = 8_000;
 
-// Origin of in-process requests from `client()`; never fetched.
-const IN_PROCESS_ORIGIN = "http://nextbase.internal";
+/** Set to `none` on responses to requests that had no session. */
+const SESSION_HEADER = "nextbase-session";
+
+// Host of in-process requests from `client()`; never fetched.
+const IN_PROCESS_HOST = "nextbase.internal";
 
 // While no superuser exists, the setup token is logged at most this often.
 const SETUP_LOG_INTERVAL_MS = 60_000;
@@ -159,6 +162,11 @@ export interface CookieStore {
 export interface ServerClientOptions {
   /** Act as the user signed in through the session cookie: `await cookies()`. */
   cookies?: CookieStore;
+  /**
+   * Whether the page was requested over HTTPS, which names the session
+   * cookie outside production. Defaults to whether the secure cookie is set.
+   */
+  secure?: boolean;
   /** Bypass every rule. Trusted server code only: never let user input steer it. */
   superuser?: boolean;
 }
@@ -176,6 +184,7 @@ export class NextBase {
   readonly #rejectBreachedPasswords: boolean;
   readonly #storage: Storage;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #appUrl: URL | undefined;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -195,14 +204,12 @@ export class NextBase {
     this.#sms = new Sms(options.sms, options.waitUntil);
     this.#storage = newStorage(options.storage);
     this.#waitUntil = options.waitUntil ?? vercelWaitUntil;
-    this.#oauth2 = new OAuth2(
-      options.oauth2,
+    this.#appUrl =
       appUrl ??
-        (options.mail?.appUrl === undefined
-          ? undefined
-          : checkAppUrl(options.mail.appUrl, "mail.appUrl")),
-      this.#basePath,
-    );
+      (options.mail?.appUrl === undefined
+        ? undefined
+        : checkAppUrl(options.mail.appUrl, "mail.appUrl"));
+    this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -264,8 +271,10 @@ export class NextBase {
   }
 
   // The setup token goes to server logs, which only the owner can read, so a
-  // stranger who finds a fresh deployment first cannot claim it.
-  async #announceSetup(db: DB, url: URL): Promise<void> {
+  // stranger who finds a fresh deployment first cannot claim it. The URL in
+  // the log comes from the options, never from the request: its Host header
+  // is the sender's to choose, and could send the token to their server.
+  async #announceSetup(db: DB): Promise<void> {
     if (this.#superuserExists) return;
     if (await hasSuperuser(db)) {
       this.#superuserExists = true;
@@ -274,9 +283,10 @@ export class NextBase {
     if (Date.now() - this.#setupLoggedAt < SETUP_LOG_INTERVAL_MS) return;
     this.#setupLoggedAt = Date.now();
     const token = await setupToken(db);
+    const origin = this.#appUrl?.origin ?? "https://<your app>";
     console.info(
       `[nextbase] No superuser exists yet. Within the next hour, create one with:\n` +
-        `  curl -X POST ${url.origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
+        `  curl -X POST ${origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
         `    -d '{"token":"${token}","email":"you@example.com","password":"a long password"}'`,
     );
   }
@@ -308,16 +318,20 @@ export class NextBase {
     const principal: Principal | undefined = options.superuser
       ? { superuser: true }
       : undefined;
+    // In-process requests take the page's scheme, so they read and set the
+    // cookie the browser sends. As for HTTP requests, production always uses
+    // the secure one.
+    const secure =
+      process.env.NODE_ENV === "production" ||
+      (options.secure ??
+        options.cookies?.get(SESSION_COOKIES.secure) !== undefined);
     return new NextBaseClient({
-      baseUrl: `${IN_PROCESS_ORIGIN}${this.#basePath}`,
+      baseUrl: `${secure ? "https" : "http"}://${IN_PROCESS_HOST}${this.#basePath}`,
       fetch: async (input, init) => {
         const request = new Request(input, init);
-        const cookies = Object.values(SESSION_COOKIES).flatMap((name) => {
-          const value = options.cookies?.get(name)?.value;
-          return value ? [`${name}=${value}`] : [];
-        });
-        if (cookies.length > 0)
-          request.headers.set("cookie", cookies.join("; "));
+        const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
+        const value = options.cookies?.get(name)?.value;
+        if (value) request.headers.set("cookie", `${name}=${value}`);
         const response = await this.#dispatch(request, {
           principal,
           http: false,
@@ -395,6 +409,7 @@ export class NextBase {
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       let setCookie: string | undefined;
+      let signedOut = false;
       const effects = new Effects();
       const response = await (async (): Promise<Response> => {
         let db: DB | undefined;
@@ -414,9 +429,11 @@ export class NextBase {
             schema = resolved.schema;
             caller = resolved.principal;
             if (http) setCookie = resolved.setCookie;
+            signedOut = http && !caller.record;
           }
-          // The log shows a URL to call, which in-process requests do not have.
-          if (http) await this.#announceSetup(db, new URL(request.url));
+          // In-process requests come from the app itself, not from someone
+          // setting it up.
+          if (http) await this.#announceSetup(db);
           const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.
@@ -474,6 +491,12 @@ export class NextBase {
         );
       if (setCookie && !setsSession) {
         response.headers.append("set-cookie", setCookie);
+      }
+      // A browser with a cookie session cannot see when it ends, since the
+      // cookie is HttpOnly and an ended one is just ignored. This tells it
+      // the request had no session.
+      if (signedOut && !setsSession) {
+        response.headers.set(SESSION_HEADER, "none");
       }
       return api(response);
     }

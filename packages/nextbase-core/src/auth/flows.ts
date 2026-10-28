@@ -2,14 +2,14 @@ import type { AuthCollection, TokenType } from "@nextbasejs/client";
 import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { updateRecord } from "../records/service.ts";
+import { systemContext, updateRecord } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
 import { emailIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import { verifyPassword } from "./password.ts";
-import type { Principal } from "./principal.ts";
+import { type Principal, recordIn } from "./principal.ts";
 import {
   accountKey,
   clearAttempts,
@@ -126,10 +126,7 @@ export async function requestEmailChange(
   principal: Principal,
   newEmail: unknown,
 ): Promise<void> {
-  const record = principal.record;
-  if (!record || principal.collection?.id !== collection.id) {
-    throw new ApiError(401, "Sign in to this collection to change its email.");
-  }
+  const record = recordIn(principal, collection, "change its email");
   const address = checkEmail(newEmail, "newEmail");
   if (address.toLowerCase() === String(record.email).toLowerCase()) {
     throw new ApiError(400, "Failed to request the email change.", {
@@ -267,14 +264,7 @@ async function privilegedUpdate(
   input: Record<string, unknown>,
 ): Promise<void> {
   await updateRecord(
-    {
-      db: ctx.db,
-      pool: ctx.db,
-      schema: ctx.schema,
-      principal: { superuser: true },
-      request: { method: "PATCH", query: {}, headers: {}, body: input },
-      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
-    },
+    systemContext(ctx, input),
     collection,
     record.id as string,
     input,

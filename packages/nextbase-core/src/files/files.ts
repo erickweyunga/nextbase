@@ -4,7 +4,7 @@ import type { Builder } from "@nextbasejs/dbx";
 import { FileTypeParser, supportedMimeTypes } from "file-type";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
+import { ApiError, writeFailed } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { isMultiple } from "../schema/fields.ts";
 import type { Presentation, Storage } from "./storage.ts";
@@ -161,8 +161,9 @@ export async function readNewFiles(
       problems.push(problem);
       read.problems.set(field.name, problems);
     };
-    const items = [field.name, `+${field.name}`, `${field.name}+`].flatMap(
-      (key) => toList(input[key]),
+    const { replace, prepend, append } = fileKeys(field.name);
+    const items = [replace, prepend, append].flatMap((key) =>
+      toList(input[key]),
     );
     for (const item of items) {
       let file: NewFile | undefined;
@@ -207,6 +208,21 @@ export async function storeNewFiles(
   }
 }
 
+/** The input keys that change a file field. */
+export function fileKeys(name: string): {
+  replace: string;
+  append: string;
+  prepend: string;
+  remove: string;
+} {
+  return {
+    replace: name,
+    append: `${name}+`,
+    prepend: `+${name}`,
+    remove: `${name}-`,
+  };
+}
+
 /**
  * The field's new value from `field` (replace, listing names to keep),
  * `+field`/`field+` (prepend/append) and `field-` (remove names), with the
@@ -221,10 +237,11 @@ export function prepareFileField(
   fail: (problem: FileProblem) => void,
 ): { value: string[]; changes: FileChanges } | undefined {
   const { name } = field;
-  const replace = input[name];
-  const append = input[`${name}+`];
-  const prepend = input[`+${name}`];
-  const remove = input[`${name}-`];
+  const keys = fileKeys(name);
+  const replace = input[keys.replace];
+  const append = input[keys.append];
+  const prepend = input[keys.prepend];
+  const remove = input[keys.remove];
   if (
     replace === undefined &&
     append === undefined &&
@@ -309,6 +326,7 @@ export async function claimFiles(
   collection: Collection,
   recordId: string,
   { added, removed }: FileChanges,
+  creating: boolean,
 ): Promise<void> {
   for (const file of added) {
     if ("bytes" in file.source) continue;
@@ -320,7 +338,7 @@ export async function claimFiles(
       .column();
     // Another write claimed it after this one read it.
     if (claimed.length === 0) {
-      throw new ApiError(400, "Failed to save the record.", {
+      throw new ApiError(400, writeFailed(creating), {
         [file.field]: {
           code: "validation_invalid_upload",
           message: "The upload is unknown, unfinished or has expired.",

@@ -9,6 +9,7 @@ import { lockSchema, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { fileKey, fileNames } from "../files/files.ts";
 import { ruleProblem } from "../filter/compiler.ts";
+import { ID_PATTERN } from "../random.ts";
 import { Schema } from "./cache.ts";
 import { parseCollection } from "./collection.ts";
 import { isMultiple } from "./fields.ts";
@@ -365,7 +366,7 @@ function columnType(q: Builder, field: Field, collection: Collection): string {
       if (field.primaryKey) {
         // Ids appear in storage paths, so the database enforces their format too.
         // Named by collection id, since a later collection could reuse the table name.
-        return `text CONSTRAINT ${q.quoteSimpleColumnName(`_${collection.id}_pkey`)} PRIMARY KEY CHECK (${q.quoteSimpleColumnName(field.name)} ~ '^[a-z0-9]{15}$')`;
+        return `text CONSTRAINT ${q.quoteSimpleColumnName(`_${collection.id}_pkey`)} PRIMARY KEY CHECK (${q.quoteSimpleColumnName(field.name)} ~ '${ID_PATTERN.source}')`;
       }
       return "text NOT NULL DEFAULT ''";
     case "email":

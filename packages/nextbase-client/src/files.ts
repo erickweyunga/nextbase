@@ -53,14 +53,25 @@ export function hasFiles(body: Record<string, unknown>): boolean {
   );
 }
 
-// Non-file values go in `@jsonPayload` to keep their types. Files over 4 MB go
-// to the bucket when there is one.
+// Non-file values go in `@jsonPayload` to keep their types. When the files
+// add up to more than 4 MB, the largest go to the bucket, when there is one,
+// until the rest fit.
 export async function toFormData(
   client: NextBaseClient,
   collection: string,
   body: Record<string, unknown>,
   options: SendOptions,
 ): Promise<FormData> {
+  const files = Object.values(body).flatMap((value) =>
+    (Array.isArray(value) ? value : [value]).filter(isFile),
+  );
+  const direct = new Set<Blob>();
+  let total = files.reduce((sum, file) => sum + file.size, 0);
+  for (const file of [...files].sort((a, b) => b.size - a.size)) {
+    if (total <= DIRECT_UPLOAD_BYTES) break;
+    direct.add(file);
+    total -= file.size;
+  }
   const form = new FormData();
   const payload: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
@@ -74,16 +85,59 @@ export async function toFormData(
         form.append(key, String(item));
         continue;
       }
-      const token =
-        item.size > DIRECT_UPLOAD_BYTES
-          ? await uploadDirectly(client, collection, key, item, options)
-          : undefined;
+      const token = direct.has(item)
+        ? await uploadDirectly(client, collection, key, item, options)
+        : undefined;
       if (token === undefined) form.append(key, item, fileName(item));
       else form.append(key, token);
     }
   }
   form.append("@jsonPayload", JSON.stringify(payload));
   return form;
+}
+
+/**
+ * `body` with each file uploaded to the bucket and replaced by its upload
+ * token, for requests that are sent as JSON, such as batches.
+ */
+export async function withUploadedFiles(
+  client: NextBaseClient,
+  collection: string,
+  body: Record<string, unknown>,
+  options: SendOptions,
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    const items = Array.isArray(value) ? value : [value];
+    if (!items.some(isFile)) {
+      out[key] = value;
+      continue;
+    }
+    const sent: unknown[] = [];
+    for (const item of items) {
+      if (!isFile(item)) {
+        sent.push(item);
+        continue;
+      }
+      const token = await uploadDirectly(
+        client,
+        collection,
+        key,
+        item,
+        options,
+      );
+      if (token === undefined) {
+        throw new ClientError({
+          status: 400,
+          message: "Files in a batch need storage in a bucket.",
+          data: {},
+        });
+      }
+      sent.push(token);
+    }
+    out[key] = Array.isArray(value) ? sent : sent[0];
+  }
+  return out;
 }
 
 // Returns undefined when the server has no bucket.

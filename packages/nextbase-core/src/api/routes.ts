@@ -35,7 +35,11 @@ import {
   requestPhoneCode,
   requestPhoneVerification,
 } from "../auth/phone.ts";
-import { type Principal, requireSuperuser } from "../auth/principal.ts";
+import {
+  type Principal,
+  recordIn,
+  requireSuperuser,
+} from "../auth/principal.ts";
 import {
   bearerToken,
   checkSameOrigin,
@@ -64,7 +68,7 @@ import {
 } from "../files/serve.ts";
 import type { Storage } from "../files/storage.ts";
 import { readJsonObject, readRecordBody } from "../http.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { newId } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
   type Apply,
@@ -229,13 +233,24 @@ export const ROUTES: readonly Route[] = [
       // write in order, as when each is checked and run in turn.
       const planned: PlannedWrite[] = [];
       let failed: unknown;
+      const written = new Set<string>();
       for (const [i, write] of writes.entries()) {
         try {
-          planned.push(await inBatch(i, () => planRecordWrite(context, write)));
+          planned.push(
+            await inBatch(i, () =>
+              planRecordWrite(context, write, new Set(written)),
+            ),
+          );
         } catch (error) {
           failed = error;
           break;
         }
+        // A delete can cascade into any collection that points at it.
+        const names =
+          write.method === "DELETE"
+            ? context.schema.collections.map((c) => c.name)
+            : [context.schema.get(write.collection).name];
+        for (const name of names) written.add(name);
       }
       if (planned.length === 0) throw failed;
       const results = await bounded(context, async (tx) => {
@@ -715,9 +730,7 @@ export const ROUTES: readonly Route[] = [
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
-        typeof input.id === "string" && input.id !== ""
-          ? input.id
-          : randomString(15, LOWER_ALPHANUMERIC);
+        typeof input.id === "string" && input.id !== "" ? input.id : newId();
       await writeRecord(context, {
         method: "POST",
         collection: collection.id,
@@ -751,8 +764,9 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
     async handler({ request, params, schema, principal, db }) {
       const collection = authCollection(schema, params[0] as string);
-      const { record, session } = principal;
-      if (!record || !session || principal.collection?.id !== collection.id) {
+      const record = recordIn(principal, collection, "refresh");
+      const { session } = principal;
+      if (!session) {
         throw new ApiError(401, "Sign in to this collection to refresh.");
       }
       await checkAuthRule(db, schema, collection, record.id as string);
@@ -944,12 +958,16 @@ type PlannedWrite = { create: PlannedCreate } | { apply: Apply<Reply> };
 async function planRecordWrite(
   context: Context,
   write: RecordWrite,
+  written?: ReadonlySet<string>,
 ): Promise<PlannedWrite> {
   const collection = context.schema.get(write.collection);
-  const ctx = recordsContext(context, write.body, {
-    method: write.method,
-    query: write.query,
-  });
+  const ctx = {
+    ...recordsContext(context, write.body, {
+      method: write.method,
+      query: write.query,
+    }),
+    ...(written && { written }),
+  };
   if (write.method === "POST") {
     return {
       create: await planNewRecord(ctx, collection, write.body, write.query),

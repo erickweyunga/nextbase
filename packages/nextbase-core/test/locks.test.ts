@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor, waitsForLock } from "./wait.ts";
 
 let t: TestDatabase;
 let nextbase: NextBase;
@@ -32,14 +33,22 @@ it("updates a record while another request creates a record that references it",
       "SELECT id FROM nextbase.posts WHERE id = $1 FOR KEY SHARE",
       [post?.id],
     );
+    let done = false;
     const update = admin
       .collection("posts")
-      .update(post?.id ?? "", { title: "final" });
-    const waited = new Promise((resolve) =>
-      setTimeout(() => resolve("blocked"), 2_000),
-    );
-    const updated = await Promise.race([update, waited]);
-    expect(updated).toMatchObject({ title: "final" });
+      .update(post?.id ?? "", { title: "final" })
+      .finally(() => {
+        done = true;
+      });
+    // However long the update takes, it must never wait for the lock.
+    await waitFor(async () => {
+      if (done) return true;
+      if (await waitsForLock(t.pool)) {
+        throw new Error("The update waited for the comment's lock.");
+      }
+      return false;
+    }, "the update");
+    expect(await update).toMatchObject({ title: "final" });
   } finally {
     await client.query("ROLLBACK");
     client.release();
