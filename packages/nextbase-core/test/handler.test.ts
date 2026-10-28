@@ -1,6 +1,6 @@
 import { ClientError, NextBaseClient } from "@nextbasejs/client";
 import { describe, expect, it } from "vitest";
-import { NextBase } from "../src/index.ts";
+import { NextBase, type Pool } from "../src/index.ts";
 
 const origin = "http://localhost:3000";
 
@@ -43,6 +43,24 @@ describe("route handler", () => {
     );
     expect(response.status).toBe(200);
   });
+
+  it("rejects a base path that is not an absolute URL path", () => {
+    for (const basePath of [
+      "api/nextbase",
+      "",
+      "//evil.example",
+      "/api nextbase",
+      "/api/../nextbase",
+      "/api?x=1",
+      "/api#x",
+    ]) {
+      expect(() => new NextBase({ basePath })).toThrow(TypeError);
+    }
+    expect(() => new NextBase({ basePath: "api/nextbase" })).toThrow(
+      'basePath must be an absolute URL path such as "/api/nextbase", not "api/nextbase".',
+    );
+    expect(() => new NextBase({ basePath: "/" })).not.toThrow();
+  });
 });
 
 describe("client", () => {
@@ -55,6 +73,28 @@ describe("client", () => {
 
   it("calls health", async () => {
     await expect(client.health()).resolves.toEqual({ status: "ok" });
+  });
+
+  it("rejects in-process requests once their signal aborts, as fetch does", async () => {
+    // A database that never answers, so requests wait until aborted.
+    const never = new Promise<never>(() => {});
+    const stuck = new NextBase({
+      database: { query: () => never, connect: () => never } as unknown as Pool,
+    }).client();
+    const aborted = await stuck
+      .collection("posts")
+      .getList(1, 30, { signal: AbortSignal.abort() })
+      .catch((e: unknown) => e);
+    expect(aborted).toBeInstanceOf(ClientError);
+    expect(aborted).toMatchObject({ status: 0, isAbort: true });
+
+    const controller = new AbortController();
+    const pending = stuck
+      .collection("posts")
+      .getList(1, 30, { signal: controller.signal })
+      .catch((e: unknown) => e);
+    controller.abort();
+    expect(await pending).toMatchObject({ status: 0, isAbort: true });
   });
 
   it("throws ClientError with the API error body", async () => {

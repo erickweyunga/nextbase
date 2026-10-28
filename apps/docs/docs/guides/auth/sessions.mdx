@@ -72,7 +72,11 @@ export async function signOut() {
 
 ## Lifetime and revocation
 
-- Sessions last 7 days (superusers: 1 day) and are extended while in use.
+- Sessions last 7 days (superusers: 1 day) and are extended while in use, at
+  most once a day: by requests to the API, and by server actions and route
+  handlers. Server components cannot set cookies, so they never extend a
+  session.
+- However active, a session ends 30 days after sign-in.
 - `nb.listSessions()` lists the user's devices, `nb.revokeSession(id)` signs
   one out, and `nb.revokeOtherSessions()` signs out every device but this one.
 - Deleting an account ends all of its sessions.

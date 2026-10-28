@@ -46,9 +46,15 @@ export async function readJsonObject(
 
 /** Larger files use direct uploads to the bucket. */
 const MAX_MULTIPART_BODY = 32 * 1024 * 1024;
+/**
+ * As in Django, PHP (max_input_vars) and formidable. Without a limit, 32 MiB
+ * of tiny parts takes the parser seconds; long lists can go in `@jsonPayload`.
+ */
+const MAX_MULTIPART_PARTS = 1000;
 
 // JSON, or form data where repeated parts become a list and `@jsonPayload`
-// holds typed values. The size limit is enforced while streaming.
+// holds typed values. The size and part limits are enforced while streaming,
+// before anything is parsed.
 export async function readRecordBody(
   request: Request,
 ): Promise<Record<string, unknown>> {
@@ -57,13 +63,23 @@ export async function readRecordBody(
   const tooLarge = new ApiError(413, "The request body is too large.");
   if (Number(request.headers.get("content-length") ?? 0) > MAX_MULTIPART_BODY)
     throw tooLarge;
+  const tooManyParts = new ApiError(
+    400,
+    `The request body has more than ${MAX_MULTIPART_PARTS} parts.`,
+  );
 
   let size = 0;
+  let refused: ApiError | undefined;
+  const countParts = partCounter(type);
   const limited = request.body?.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         size += chunk.byteLength;
-        if (size > MAX_MULTIPART_BODY) controller.error(tooLarge);
+        if (size > MAX_MULTIPART_BODY) refused = tooLarge;
+        // The closing delimiter counts as one more.
+        else if (countParts(chunk) > MAX_MULTIPART_PARTS + 1)
+          refused = tooManyParts;
+        if (refused) controller.error(refused);
         else controller.enqueue(chunk);
       },
     }),
@@ -77,11 +93,12 @@ export async function readRecordBody(
       duplex: "half",
     } as RequestInit).formData();
   } catch {
-    if (size > MAX_MULTIPART_BODY) throw tooLarge;
-    throw new ApiError(400, "The request body is not valid form data.");
+    throw (
+      refused ?? new ApiError(400, "The request body is not valid form data.")
+    );
   }
 
-  const body: Record<string, unknown> = {};
+  const fields = new Map<string, unknown>();
   for (const [key, value] of form) {
     if (key === "@jsonPayload") {
       let payload: unknown;
@@ -92,16 +109,44 @@ export async function readRecordBody(
       }
       if (!isRecord(payload))
         throw new ApiError(400, "@jsonPayload must be a JSON object.");
-      Object.assign(body, payload);
+      for (const [name, typed] of Object.entries(payload))
+        fields.set(name, typed);
       continue;
     }
-    const previous = body[key];
-    body[key] =
-      previous === undefined
-        ? value
-        : Array.isArray(previous)
-          ? [...previous, value]
-          : [previous, value];
+    // Pushed to, not copied, so repeated keys take linear time.
+    const previous = fields.get(key);
+    if (previous === undefined) fields.set(key, value);
+    else if (Array.isArray(previous)) previous.push(value);
+    else fields.set(key, [previous, value]);
   }
-  return body;
+  // As with JSON.parse, a `__proto__` field is an own property, never the prototype.
+  return Object.fromEntries(fields);
+}
+
+/**
+ * Counts a multipart body's delimiters (RFC 2046, section 5.1.1: CRLF, two
+ * hyphens and the boundary) across the chunks it is given, so far. The body
+ * may begin with a delimiter without the CRLF, so one is assumed before it.
+ * Without a boundary, it counts nothing, and parsing fails anyway.
+ */
+function partCounter(type: string): (chunk: Uint8Array) => number {
+  const boundary = /;\s*boundary=(?:"([^"]+)"|([^\s;]+))/i.exec(type);
+  const delimiter = Buffer.from(`\r\n--${boundary?.[1] ?? boundary?.[2]}`);
+  let tail = Buffer.from("\r\n");
+  let count = 0;
+  return (chunk) => {
+    if (!boundary) return 0;
+    const text = Buffer.concat([tail, chunk]);
+    for (
+      let at = text.indexOf(delimiter);
+      at !== -1;
+      at = text.indexOf(delimiter, at + delimiter.length)
+    ) {
+      count++;
+    }
+    // A delimiter split across chunks is found with the next one; the
+    // tail is shorter than a delimiter, so none is counted twice.
+    tail = text.subarray(Math.max(0, text.length - delimiter.length + 1));
+    return count;
+  };
 }

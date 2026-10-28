@@ -130,6 +130,56 @@ describe("file uploads with local storage", () => {
     );
   });
 
+  it("never lets a shared cache keep a session cookie sent with a public file", async () => {
+    await signedIn("cass@example.com");
+    const signIn = await nextbase.handle(
+      new Request(
+        `${origin}/api/nextbase/collections/users/auth-with-password`,
+        {
+          method: "POST",
+          headers: { origin, "content-type": "application/json" },
+          body: JSON.stringify({
+            identity: "cass@example.com",
+            password: PASSWORD,
+            cookie: true,
+          }),
+        },
+      ),
+    );
+    const token = /nextbase_session=([^;]*)/.exec(
+      signIn.headers.get("set-cookie") ?? "",
+    )?.[1];
+    await t.db
+      .newQuery(
+        "UPDATE nextbase._sessions SET expires = now() + interval '1 hour'",
+      )
+      .execute();
+    const nb = nextbase.client();
+    const post = await nb.collection("posts").create({ cover: png() });
+    const path = new URL(
+      nb.files.getUrl(
+        post as { id: string; collectionId: string },
+        post?.cover as string,
+      ),
+      origin,
+    ).pathname;
+
+    // Renewing the session sets its cookie, so no shared cache may store the file.
+    const renewed = await get(path, { cookie: `nextbase_session=${token}` });
+    expect(renewed.headers.get("set-cookie")).toContain(
+      `nextbase_session=${token};`,
+    );
+    expect(renewed.headers.get("cache-control")).toBe("private, no-store");
+    // So does removing a cookie whose session ended.
+    const cleared = await get(path, { cookie: "nextbase_session=ended" });
+    expect(cleared.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(cleared.headers.get("cache-control")).toBe("private, no-store");
+    // Without a cookie to set, the file stays cacheable.
+    const plain = await get(path, { cookie: `nextbase_session=${token}` });
+    expect(plain.headers.get("set-cookie")).toBeNull();
+    expect(plain.headers.get("cache-control")).toBe("public, max-age=604800");
+  });
+
   it("checks the type from the file's bytes, not its label", async () => {
     const nb = await signedIn("ann@example.com");
     const id = nb.authStore.record?.id as string;
@@ -246,6 +296,48 @@ describe("file uploads with local storage", () => {
       }),
     );
     expect(tooMany.data.extras?.code).toBe("validation_too_many");
+  });
+
+  it("limits form data to 1000 parts, counted before it is parsed", async () => {
+    const send = (parts: number) => {
+      const form = new FormData();
+      for (let i = 0; i < parts; i++) form.append("extras", png(`${i}.png`));
+      return nextbase.handle(
+        new Request(`${origin}/api/nextbase/collections/posts/records`, {
+          method: "POST",
+          body: form,
+        }),
+      );
+    };
+    const many = await send(1001);
+    expect(many.status).toBe(400);
+    expect(await many.json()).toMatchObject({
+      message: "The request body has more than 1000 parts.",
+    });
+    // Up to the limit, the record's own checks apply.
+    const allowed = await send(1000);
+    expect(allowed.status).toBe(400);
+    expect(
+      ((await allowed.json()) as { data: { extras?: { code: string } } }).data
+        .extras?.code,
+    ).toBe("validation_too_many");
+
+    // Repeating a key used to copy its list on every part, so 32 MiB of
+    // tiny parts held the event loop for minutes.
+    const boundary = "b0undary";
+    const part = `--${boundary}\r\ncontent-disposition: form-data; name="title"\r\n\r\nx\r\n`;
+    const started = performance.now();
+    const huge = await nextbase.handle(
+      new Request(`${origin}/api/nextbase/collections/posts/records`, {
+        method: "POST",
+        headers: {
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body: `${part.repeat(500_000)}--${boundary}--\r\n`,
+      }),
+    );
+    expect(huge.status).toBe(400);
+    expect(performance.now() - started).toBeLessThan(5_000);
   });
 
   it("adds, keeps and removes files, deleting removed ones", async () => {
