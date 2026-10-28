@@ -9,7 +9,13 @@ import type {
   TokenType,
 } from "@nextbasejs/client";
 import { ApiError } from "../errors.ts";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import {
+  ALPHANUMERIC,
+  isId,
+  LOWER_ALPHANUMERIC,
+  newId,
+  randomString,
+} from "../random.ts";
 import {
   DEFAULT_PASSWORD_MAX,
   DEFAULT_PASSWORD_MIN,
@@ -20,7 +26,6 @@ import {
 } from "./fields.ts";
 import { Issues, isRecord, type Path, Reader } from "./input.ts";
 
-const COLLECTION_ID_PATTERN = /^[a-z0-9]{15}$/;
 const DAY = 86_400;
 const MAX_TOKEN_DURATION = 365 * DAY;
 const SECRET_LENGTH = 50;
@@ -209,8 +214,8 @@ function parseId(r: Reader, { existing, others }: CollectionContext): string {
     return existing.id;
   }
   const id = r.string("id", "");
-  if (id === "") return randomString(15, LOWER_ALPHANUMERIC);
-  if (!COLLECTION_ID_PATTERN.test(id)) {
+  if (id === "") return newId();
+  if (!isId(id)) {
     r.fail(
       "id",
       "validation_invalid_value",

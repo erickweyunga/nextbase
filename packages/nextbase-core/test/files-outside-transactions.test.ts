@@ -4,6 +4,7 @@ import { NextBase } from "../src/index.ts";
 import { type FakeS3, startFakeS3 } from "./fake-s3.ts";
 import { call } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor } from "./wait.ts";
 
 /** The smallest valid PNG: a 1x1 transparent pixel. */
 const PNG = Buffer.from(
@@ -19,9 +20,6 @@ describe("files are stored before the write's transaction", () => {
   let admin: NextBaseClient;
   const pending: Promise<unknown>[] = [];
   const settle = () => Promise.all(pending.splice(0));
-  const until = async (done: () => boolean | Promise<boolean>) => {
-    while (!(await done())) await new Promise((r) => setTimeout(r, 10));
-  };
   const puts = () => s3.requests.filter((r) => r.startsWith("PUT ")).length;
 
   beforeAll(async () => {
@@ -68,7 +66,7 @@ describe("files are stored before the write's transaction", () => {
       .collection("clips")
       .update(clip?.id ?? "", { video: png() });
     try {
-      await until(() => puts() > before);
+      await waitFor(() => puts() > before, "the file to be stored");
       const other = await t.pool.connect();
       try {
         // Waits for no one: the record is not locked meanwhile.

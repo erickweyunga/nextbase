@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NextBase } from "../src/index.ts";
 import { call, type Reply } from "./http.ts";
 import { createTestDatabase, endPool, type TestDatabase } from "./postgres.ts";
+import { waitFor, waitsForLock } from "./wait.ts";
 
 const PASSWORD = "password 123 456";
 
@@ -271,13 +272,7 @@ describe("changing a password", () => {
         "new password 789 012",
         "third password 345 678",
       );
-      for (;;) {
-        const { rows } = await t.pool.query(
-          "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        );
-        if (rows.length > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await waitFor(() => waitsForLock(t.pool), "the update to wait");
       // Another request sets a new password meanwhile.
       await other.query(
         "UPDATE nextbase.members SET password = 'changed elsewhere' WHERE id = $1",

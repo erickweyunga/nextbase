@@ -8,9 +8,10 @@ import {
 } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import { newRecord, updateRecord } from "../records/service.ts";
+import { newId } from "../random.ts";
+import { newRecord, systemContext, updateRecord } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
+import { randomPassword } from "../schema/fields.ts";
 import { findByEmail } from "./flows.ts";
 import { type Identity, OAuth2Error } from "./oauth2.ts";
 
@@ -168,7 +169,7 @@ async function link(
        RETURNING id`,
     )
     .bind({
-      id: randomString(15, LOWER_ALPHANUMERIC),
+      id: newId(),
       collectionId: collection.id,
       recordId,
       provider,
@@ -184,25 +185,23 @@ async function signUp(
   collection: AuthCollection,
   identity: Identity,
 ): Promise<Row> {
-  const id = randomString(15, LOWER_ALPHANUMERIC);
-  const field = collection.fields.find((f) => f.type === "password");
-  const length = field ? Math.min(Math.max(field.min, 64), field.max) : 64;
-  const password = randomString(length, ALPHANUMERIC);
+  const id = newId();
+  const password = randomPassword(collection);
   const input = {
     id,
     email: identity.email,
     password,
     passwordConfirm: password,
   };
-  const records = {
-    db: ctx.db,
-    pool: ctx.pool,
-    schema: ctx.schema,
-    request: { method: "POST", query: {}, headers: {}, body: input },
-  };
   try {
     await newRecord(
-      { ...records, principal: { superuser: false } },
+      {
+        db: ctx.db,
+        pool: ctx.pool,
+        schema: ctx.schema,
+        principal: { superuser: false },
+        request: { method: "POST", query: {}, headers: {}, body: input },
+      },
       collection,
       input,
       new URLSearchParams(),
@@ -210,7 +209,7 @@ async function signUp(
     // Only NextBase itself may mark a record verified.
     if (identity.emailVerified) {
       await updateRecord(
-        { ...records, principal: { superuser: true } },
+        systemContext(ctx, { emailVerified: true }),
         collection,
         id,
         { emailVerified: true },

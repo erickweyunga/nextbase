@@ -388,3 +388,88 @@ Also returned when clearing a reference would leave a required field empty.
 
 </TabItem>
 </Tabs>
+
+## Batch writes
+
+Runs up to 50 creates, updates and deletes in one transaction: all of them
+are saved, or none. Each write is checked as it would be alone, with the
+rules of its collection, and sees the writes before it.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const results = await nb
+  .createBatch()
+  .collection("posts")
+  .create({ title: "First" })
+  .collection("posts")
+  .update("k3j2h1g9xa0b1c2", { title: "Second" })
+  .collection("comments")
+  .delete("q9w8e7r6t5y4u3i")
+  .send();
+```
+
+The SDK uploads files in a batch to the bucket first, so batches with files
+need [storage in a bucket](/docs/guides/files#store-files-in-a-bucket).
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/batch \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"requests":[{"method":"POST","url":"/collections/posts/records","body":{"title":"First"}}]}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /batch
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `requests` | array | Required. 1 to 50 writes, run in order. |
+| `requests[].method` | string | `POST`, `PATCH` or `DELETE`. |
+| `requests[].url` | string | A records path, such as `/collections/posts/records` or `/collections/posts/records/{id}`, with `expand` and `fields` if wanted. |
+| `requests[].body` | object | The fields, as JSON. Files go in as [upload tokens](/docs/api/files#start-a-direct-upload). |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+One result per write, in order: `200` with the record, or `204` with no body
+when the caller may not view it or the write was a delete.
+
+```json
+[
+  { "status": 200, "body": { "id": "k3j2h1g9xa0b1c2", "title": "First" } },
+  { "status": 204 }
+]
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{
+  "status": 400,
+  "message": "Request 2 of the batch failed with 400: Failed to create the record. Nothing was saved.",
+  "data": {
+    "requests": {
+      "1": { "title": { "code": "validation_required", "message": "Cannot be blank." } }
+    }
+  }
+}
+```
+
+The first write that fails, in order, is reported, with its field errors
+under its index.
+
+</TabItem>
+</Tabs>

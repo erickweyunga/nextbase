@@ -4,13 +4,10 @@ import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { normalizePhone } from "../phone.ts";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import {
-  newRecord,
-  type RecordsContext,
-  updateRecord,
-} from "../records/service.ts";
+import { newId } from "../random.ts";
+import { newRecord, systemContext, updateRecord } from "../records/service.ts";
 import type { Schema } from "../schema/cache.ts";
+import { randomPassword } from "../schema/fields.ts";
 import { phoneIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
 import { type Principal, recordIn } from "./principal.ts";
@@ -107,11 +104,8 @@ export async function authWithPhoneCode(
     }
     return (await findRecord(ctx.db, collection, existing.id as string)) as Row;
   }
-  const id = randomString(15, LOWER_ALPHANUMERIC);
-  // Random and never shown; the owner can set one via password reset.
-  const field = collection.fields.find((f) => f.type === "password");
-  const length = field ? Math.min(Math.max(field.min, 64), field.max) : 64;
-  const password = randomString(length, ALPHANUMERIC);
+  const id = newId();
+  const password = randomPassword(collection);
   const input = {
     id,
     phone,
@@ -199,7 +193,7 @@ export async function confirmPhoneVerification(
   const previous = record.phone as string;
   try {
     await updateRecord(
-      recordsContext(ctx, principal, { phone, phoneVerified: true }),
+      systemContext(ctx, { phone, phoneVerified: true }, principal),
       collection,
       record.id as string,
       { phone, phoneVerified: true },
@@ -371,26 +365,10 @@ async function privilegedUpdate(
   input: Record<string, unknown>,
 ): Promise<void> {
   await updateRecord(
-    recordsContext(ctx, { superuser: true }, input),
+    systemContext(ctx, input),
     collection,
     record.id as string,
     input,
     new URLSearchParams(),
   );
-}
-
-/** Keeps the signed-in `principal` (with superuser rights) so its own session survives a rotated tokenKey. */
-function recordsContext(
-  ctx: PhoneContext,
-  principal: Principal,
-  body: Record<string, unknown>,
-): RecordsContext {
-  return {
-    db: ctx.db,
-    pool: ctx.db,
-    schema: ctx.schema,
-    principal: { ...principal, superuser: true },
-    request: { method: "PATCH", query: {}, headers: {}, body },
-    rejectBreachedPasswords: ctx.rejectBreachedPasswords,
-  };
 }

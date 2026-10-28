@@ -2,12 +2,13 @@ import type { AuthCollection } from "@nextbasejs/client";
 import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { lockSchema, table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { ALPHANUMERIC, newId, randomString } from "../random.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
 import {
   DEFAULT_PASSWORD_MAX,
   DEFAULT_PASSWORD_MIN,
+  passwordField,
 } from "../schema/fields.ts";
 import { Issues } from "../schema/input.ts";
 import { hasNul } from "../storable.ts";
@@ -69,15 +70,9 @@ export async function insertSuperuser(
   password: unknown,
 ): Promise<Row> {
   const issues = new Issues();
-  const passwordField = collection.fields.find((f) => f.type === "password");
-  const min =
-    passwordField?.type === "password"
-      ? passwordField.min
-      : DEFAULT_PASSWORD_MIN;
-  const max =
-    passwordField?.type === "password"
-      ? passwordField.max
-      : DEFAULT_PASSWORD_MAX;
+  const field = passwordField(collection);
+  const min = field?.min ?? DEFAULT_PASSWORD_MIN;
+  const max = field?.max ?? DEFAULT_PASSWORD_MAX;
   if (
     typeof email !== "string" ||
     hasNul(email) ||
@@ -106,7 +101,7 @@ export async function insertSuperuser(
     throw new ApiError(400, "Failed to create the superuser.", issues.data);
 
   const row = {
-    id: randomString(15, LOWER_ALPHANUMERIC),
+    id: newId(),
     email: (email as string).trim(),
     emailVisibility: false,
     emailVerified: true,
