@@ -4,6 +4,7 @@ import type { Builder } from "@nextbasejs/dbx";
 import { FileTypeParser, supportedMimeTypes } from "file-type";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
+import { ApiError } from "../errors.ts";
 import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { isMultiple } from "../schema/fields.ts";
 import type { Presentation, Storage } from "./storage.ts";
@@ -116,9 +117,19 @@ export function presentation(name: string, download: boolean): Presentation {
 }
 
 interface NewFile {
+  /** The file field it is for. */
+  field: string;
   name: string;
   type: string;
   source: { bytes: Uint8Array } | { upload: string };
+}
+
+/** The new files of one write, read and checked before its transaction. */
+export interface NewFiles {
+  /** Each file, by the input item it came from: a Blob or an upload token. */
+  files: Map<unknown, NewFile>;
+  /** Problems found while reading them, by field name. */
+  problems: Map<string, FileProblem[]>;
 }
 
 export interface FileChanges {
@@ -132,19 +143,83 @@ export interface FileProblem {
 }
 
 /**
- * The field's new value from `field` (replace, listing names to keep),
- * `+field`/`field+` (prepend/append) and `field-` (remove names). Undefined
- * when the input does not touch the field.
+ * Reads the new files a write brings: form data files, and direct uploads
+ * named by `upload:<id>` tokens. Runs before the write's transaction, so
+ * reading them holds no lock and no connection.
  */
-export async function prepareFileField(
+export async function readNewFiles(
   q: Builder,
   storage: Storage,
   collection: Collection,
+  input: Record<string, unknown>,
+): Promise<NewFiles> {
+  const read: NewFiles = { files: new Map(), problems: new Map() };
+  for (const field of collection.fields) {
+    if (field.type !== "file") continue;
+    const fail = (problem: FileProblem): void => {
+      const problems = read.problems.get(field.name) ?? [];
+      problems.push(problem);
+      read.problems.set(field.name, problems);
+    };
+    const items = [field.name, `+${field.name}`, `${field.name}+`].flatMap(
+      (key) => toList(input[key]),
+    );
+    for (const item of items) {
+      let file: NewFile | undefined;
+      if (item instanceof Blob) {
+        file = await fromBlob(field, item, fail);
+      } else if (typeof item === "string" && item.startsWith(UPLOAD_PREFIX)) {
+        file = await fromUpload(q, storage, collection, field, item, fail);
+      }
+      if (!file) continue;
+      if (field.mimeTypes.length > 0 && !field.mimeTypes.includes(file.type)) {
+        fail({
+          code: "validation_invalid_mime_type",
+          message: `Must be one of: ${field.mimeTypes.join(", ")}.`,
+        });
+      }
+      read.files.set(item, file);
+    }
+  }
+  return read;
+}
+
+/**
+ * Puts a write's new files in storage under the record, before its
+ * transaction starts. Each goes in `effects.newFiles`, so it is deleted
+ * again if the write fails.
+ */
+export async function storeNewFiles(
+  storage: Storage,
+  effects: Effects,
+  collection: Collection,
+  recordId: string,
+  { files }: NewFiles,
+): Promise<void> {
+  for (const file of files.values()) {
+    const key = fileKey(collection.id, recordId, file.name);
+    effects.newFiles.push(key);
+    if ("bytes" in file.source) {
+      await storage.put(key, file.source.bytes, file.type);
+    } else {
+      await storage.copy(uploadKey(file.source.upload), key);
+    }
+  }
+}
+
+/**
+ * The field's new value from `field` (replace, listing names to keep),
+ * `+field`/`field+` (prepend/append) and `field-` (remove names), with the
+ * new files `readNewFiles` read. Undefined when the input does not touch the
+ * field.
+ */
+export function prepareFileField(
   field: FileField,
   input: Record<string, unknown>,
   current: readonly string[],
+  read: NewFiles,
   fail: (problem: FileProblem) => void,
-): Promise<{ value: string[]; changes: FileChanges } | undefined> {
+): { value: string[]; changes: FileChanges } | undefined {
   const { name } = field;
   const replace = input[name];
   const append = input[`${name}+`];
@@ -158,15 +233,18 @@ export async function prepareFileField(
   ) {
     return undefined;
   }
+  for (const problem of read.problems.get(name) ?? []) fail(problem);
 
   const kept: string[] = [];
   const added: NewFile[] = [];
-  const take = async (item: unknown, keeping: boolean): Promise<void> => {
+  const take = (item: unknown, keeping: boolean): void => {
     if (item === null || item === "") return;
-    if (item instanceof Blob) {
-      added.push(await fromBlob(field, item, fail));
-    } else if (typeof item === "string" && item.startsWith(UPLOAD_PREFIX)) {
-      const file = await fromUpload(q, storage, collection, field, item, fail);
+    if (
+      item instanceof Blob ||
+      (typeof item === "string" && item.startsWith(UPLOAD_PREFIX))
+    ) {
+      // A file that could not be read is already among the problems.
+      const file = read.files.get(item);
       if (file) added.push(file);
     } else if (keeping && typeof item === "string" && current.includes(item)) {
       kept.push(item);
@@ -181,7 +259,7 @@ export async function prepareFileField(
   };
 
   if (replace !== undefined) {
-    for (const item of toList(replace)) await take(item, true);
+    for (const item of toList(replace)) take(item, true);
   } else {
     kept.push(...current);
   }
@@ -189,18 +267,10 @@ export async function prepareFileField(
   const remaining = kept.filter((n) => !removing.has(n));
   // New files of a replacing value come after the names it keeps.
   const replacing = added.length;
-  for (const item of toList(prepend)) await take(item, false);
+  for (const item of toList(prepend)) take(item, false);
   const prepended = added.length;
-  for (const item of toList(append)) await take(item, false);
+  for (const item of toList(append)) take(item, false);
 
-  for (const file of added) {
-    if (field.mimeTypes.length > 0 && !field.mimeTypes.includes(file.type)) {
-      fail({
-        code: "validation_invalid_mime_type",
-        message: `Must be one of: ${field.mimeTypes.join(", ")}.`,
-      });
-    }
-  }
   const names = added.map((f) => f.name);
   const value = [
     ...names.slice(replacing, prepended),
@@ -229,30 +299,35 @@ export function fileNames(field: FileField, value: unknown): string[] {
 }
 
 /**
- * Called once the write is allowed. New files are deleted again if the
- * request fails; removed ones only once it succeeds.
+ * Called in the write's transaction once the write is allowed, after
+ * `storeNewFiles` stored the new files. Each direct upload is claimed, so it
+ * makes one file only. Removed files are deleted once the write succeeds.
  */
-export async function storeFiles(
+export async function claimFiles(
   q: Builder,
-  storage: Storage,
   effects: Effects,
   collection: Collection,
   recordId: string,
   { added, removed }: FileChanges,
 ): Promise<void> {
   for (const file of added) {
-    const key = fileKey(collection.id, recordId, file.name);
-    effects.newFiles.push(key);
-    if ("bytes" in file.source) {
-      await storage.put(key, file.source.bytes, file.type);
-    } else {
-      await storage.copy(uploadKey(file.source.upload), key);
-      await q
-        .newQuery(`DELETE FROM {{${table("_uploads")}}} WHERE id = {:id}`)
-        .bind({ id: file.source.upload })
-        .execute();
-      effects.obsoleteFiles.push(uploadKey(file.source.upload));
+    if ("bytes" in file.source) continue;
+    const claimed = await q
+      .newQuery(
+        `DELETE FROM {{${table("_uploads")}}} WHERE id = {:id} RETURNING id`,
+      )
+      .bind({ id: file.source.upload })
+      .column();
+    // Another write claimed it after this one read it.
+    if (claimed.length === 0) {
+      throw new ApiError(400, "Failed to save the record.", {
+        [file.field]: {
+          code: "validation_invalid_upload",
+          message: "The upload is unknown, unfinished or has expired.",
+        },
+      });
     }
+    effects.obsoleteFiles.push(uploadKey(file.source.upload));
   }
   for (const name of removed) {
     effects.obsoleteFiles.push(fileKey(collection.id, recordId, name));
@@ -276,7 +351,12 @@ async function fromBlob(
     blob.type,
   );
   const original = blob instanceof File ? blob.name : "file";
-  return { name: storedName(original, ext), type, source: { bytes } };
+  return {
+    field: field.name,
+    name: storedName(original, ext),
+    type,
+    source: { bytes },
+  };
 }
 
 /** The upload must be for this field, finished, and of its signed size. */
@@ -314,6 +394,7 @@ async function fromUpload(
     upload.contentType,
   );
   return {
+    field: field.name,
     name: storedName(upload.filename, ext),
     type,
     source: { upload: id },

@@ -17,6 +17,8 @@ export interface FakeS3 {
   objects: Map<string, FakeObject>;
   /** Every request, as `METHOD /path?query`, for checking what was sent. */
   requests: string[];
+  /** While set, PUT requests wait for it, to test what happens meanwhile. */
+  hold: Promise<void> | undefined;
   stop(): Promise<void>;
 }
 
@@ -66,6 +68,7 @@ export async function startFakeS3(bucket = "test-bucket"): Promise<FakeS3> {
       return xml(response, 200, "<DeleteResult></DeleteResult>");
     }
     if (request.method === "PUT") {
+      await fake.hold;
       const source = request.headers["x-amz-copy-source"];
       if (typeof source === "string") {
         const from = decodeURIComponent(source).replace(/^\/?[^/]+\//, "");
@@ -133,17 +136,19 @@ export async function startFakeS3(bucket = "test-bucket"): Promise<FakeS3> {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
-  return {
+  const fake: FakeS3 = {
     endpoint: `http://127.0.0.1:${port}`,
     bucket,
     objects,
     requests,
+    hold: undefined,
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
         server.close(() => resolve());
       }),
   };
+  return fake;
 }
 
 function readBody(request: IncomingMessage): Promise<Buffer> {
