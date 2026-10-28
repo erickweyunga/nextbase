@@ -312,6 +312,31 @@ describe("batches of creates", () => {
       data: { requests: { 3: { name: { code: "validation_not_unique" } } } },
     });
     expect(await count("customers")).toBe(before);
+    // A duplicate on the 1st comes before the rule refusing the 2nd.
+    const first = await batch(tokens.user, [
+      customer("warm"),
+      customer("blocked"),
+    ]);
+    expect(first.body).toMatchObject({
+      message: expect.stringMatching(/^Request 1 of the batch failed/),
+      data: { requests: { 0: { name: { code: "validation_not_unique" } } } },
+    });
+    expect(await count("customers")).toBe(before);
+  });
+
+  it("creates rows that set different fields", async () => {
+    const reply = await batch(tokens.user, [
+      { body: { name: "e1" } },
+      customer("e2"),
+      { body: { name: "e3", segments: [ids.segment] } },
+    ]);
+    expect(reply.status).toBe(200);
+    const results = reply.body as unknown as Reply[];
+    expect(results.map((r) => [r.body.workspace, r.body.segments])).toEqual([
+      ["", []],
+      [ids.workspace, [ids.segment]],
+      ["", [ids.segment]],
+    ]);
   });
 
   it("creates a record pointing at one created earlier in the batch", async () => {

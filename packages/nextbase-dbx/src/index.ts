@@ -16,6 +16,7 @@ export {
   type Pool,
   type PoolClient,
   Tx,
+  TxAbortedError,
   TxDoneError,
   type TxOptions,
 } from "./db.ts";

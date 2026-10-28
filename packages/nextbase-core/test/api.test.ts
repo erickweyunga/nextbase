@@ -23,7 +23,10 @@ describe("HTTP API", () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    nextbase = new NextBase({
+      database: t.pool,
+      appUrl: "https://app.example",
+    });
   });
   afterAll(() => t.close());
 
@@ -38,7 +41,9 @@ describe("HTTP API", () => {
           body: { required: true },
         });
         const message = String(log.mock.calls[0]?.[0]);
-        expect(message).toContain(`${origin}/api/nextbase/setup`);
+        // From appUrl, never from the request's Host header.
+        expect(message).toContain("https://app.example/api/nextbase/setup");
+        expect(message).not.toContain(origin);
         setupToken = /"token":"([^"]+)"/.exec(message)?.[1] ?? "";
         expect(setupToken).not.toBe("");
         // Rate-limited: not logged again on the next request.

@@ -878,7 +878,8 @@ When `_superusers` is empty:
 1. The admin UI shows a setup screen.
 2. `POST /setup` requires a setup token: a short-lived JWT signed with `_meta.setup_secret`.
 3. NextBase logs a setup URL containing that token on every request handled while no superuser
-   exists, rate-limited to once per minute per instance.
+   exists, rate-limited to once per minute per instance. The URL's origin comes from `appUrl`,
+   never from the request's Host header, which the sender chooses.
 4. Once a superuser exists, `/setup` returns 404 permanently.
 
 This prevents a stranger from claiming a freshly deployed instance by visiting `/api/nextbase/_`
@@ -1068,7 +1069,7 @@ for every read and write through `client()` or the API, so pages need no auth ch
 
 The superuser principal is passed through an internal `dispatch(request, principal)` that HTTP
 cannot reach. `handle(request)` always derives the principal from the request's own credentials.
-In-process requests never log the setup token, which names a URL to call.
+In-process requests never log the setup token: they come from the app itself.
 
 ## 10.2 CLI
 

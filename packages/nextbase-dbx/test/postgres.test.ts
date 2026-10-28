@@ -11,6 +11,7 @@ import {
   NoRowsError,
   notIn,
   Tx,
+  TxAbortedError,
   TxDoneError,
 } from "../src/index.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
@@ -176,17 +177,20 @@ describe("data manipulation", () => {
       .insertMany("customer", [
         { email: "d@x.io", name: "Dan" },
         { email: "e@x.io", name: null },
+        // name has no default, so it is NULL.
+        { email: "f@x.io" },
       ])
       .execute();
     const rows = await db
       .select("email", "name")
       .from("customer")
-      .where(isIn("email", "d@x.io", "e@x.io"))
+      .where(isIn("email", "d@x.io", "e@x.io", "f@x.io"))
       .orderBy("email")
       .all();
     expect(rows).toEqual([
       { email: "d@x.io", name: "Dan" },
       { email: "e@x.io", name: null },
+      { email: "f@x.io", name: null },
     ]);
   });
 
@@ -510,6 +514,21 @@ describe("transactions", () => {
       }),
     ).rejects.toThrow(/duplicate key/);
     expect(await count()).toBe(3);
+  });
+
+  it("rejects a commit that Postgres turned into a rollback", async () => {
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.insert("customer", { email: "t@x.io" }).execute();
+        // The caught error still aborts the transaction.
+        await tx
+          .insert("customer", { email: "a@x.io" })
+          .execute()
+          .catch(() => {});
+      }),
+    ).rejects.toBeInstanceOf(TxAbortedError);
+    expect(await count()).toBe(3);
+    expect(test.pool.idleCount).toBe(test.pool.totalCount);
   });
 
   it("nests transactions as savepoints", async () => {

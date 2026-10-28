@@ -60,6 +60,12 @@ export interface RecordsContext {
   /** Required, with `storage`, for writes that change files. */
   effects?: Effects;
   storage?: Storage;
+  /**
+   * The collections, by name, that a batch wrote before this write. Its
+   * checks before the transaction would not see those writes, so the checks
+   * that read them are left to the transaction.
+   */
+  written?: ReadonlySet<string>;
 }
 
 /** Rules compile against this alias for the collection's rows. */
@@ -284,7 +290,6 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
   if (ctx.principal.superuser) return true;
-  // Every collection a compiled rule reads appears in it as its table.
   const own = `{{${table(collection.name)}}}`;
   return [collection.createRule, collection.viewRule].every((rule) => {
     if (!rule) return true;
@@ -374,19 +379,20 @@ export async function applyCreates(
       }
     }
   }
-  if (failures.size > 0) {
-    const index = Math.min(...failures.keys());
-    throw new CreateFailed(index, failures.get(index));
-  }
-
-  for (const [i, write] of prepared.entries()) {
+  // The creates before the first failure are still inserted, so one of them
+  // that duplicates a unique value is reported first, as it would be in turn.
+  const failed = failures.size > 0 ? Math.min(...failures.keys()) : undefined;
+  const allowed = prepared.slice(0, failed);
+  for (const [i, write] of allowed.entries()) {
     try {
       await keepFiles(tx, ctx, collection, write.row.id as string, write);
     } catch (error) {
       throw new CreateFailed(i, error);
     }
   }
-  await insertRows(tx, collection, prepared);
+  if (allowed.length > 0) await insertRows(tx, collection, allowed);
+  if (failed !== undefined)
+    throw new CreateFailed(failed, failures.get(failed));
   return afterWrites(
     tx,
     ctx,
@@ -713,19 +719,32 @@ async function checkUpdateRuleFirst(
 ): Promise<boolean> {
   if (ctx.principal.superuser) return true;
   const rule = collection.updateRule ?? "";
+  if (rule === "") return true;
   if (rule.includes("@request.body")) return false;
-  if (
-    rule !== "" &&
-    !(await matchesStoredRow(
-      ctx.pool,
-      collection,
-      id,
-      compile(ctx, collection, rule, "rule"),
-    ))
-  ) {
+  const condition = compile(ctx, collection, rule, "rule");
+  if (!seesEveryWrite(ctx, collection, condition)) return false;
+  if (!(await matchesStoredRow(ctx.pool, collection, id, condition))) {
     throw notFound;
   }
   return true;
+}
+
+/**
+ * Whether a read of `collection` with `condition`, made before the
+ * transaction, sees what it would see in it: none of the collections it
+ * reads was written earlier in the batch.
+ */
+function seesEveryWrite(
+  ctx: RecordsContext,
+  collection: Collection,
+  condition: Expression | undefined,
+): boolean {
+  const { written } = ctx;
+  if (!written || written.size === 0) return true;
+  if (written.has(collection.name)) return false;
+  // Every collection a compiled rule reads appears in it as its table.
+  const sql = condition?.build(ctx.pool, {}) ?? "";
+  return [...written].every((name) => !sql.includes(`{{${table(name)}}}`));
 }
 
 /**
@@ -745,11 +764,29 @@ async function checkOldPasswordFirst(
   input: Record<string, unknown>,
 ): Promise<{ matched: string | undefined } | undefined> {
   const { oldPassword } = input;
+  const field = collection.fields.find((f) => f.type === "password");
   if (
     typeof oldPassword !== "string" ||
-    input.password === undefined ||
+    !field ||
+    // An invalid new password fails the update before the old one is checked.
+    newPassword(field, input) === undefined ||
     ctx.principal.superuser ||
-    collection.type !== "auth"
+    collection.type !== "auth" ||
+    // The stored password may have changed earlier in the batch.
+    ctx.written?.has(collection.name)
+  ) {
+    return undefined;
+  }
+  // Managers need no old password, so theirs is not checked. Whether the
+  // caller is one is left to the transaction when it may read earlier writes.
+  const manage =
+    collection.manageRule === null
+      ? undefined
+      : compile(ctx, collection, collection.manageRule, "rule");
+  if (
+    collection.manageRule !== null &&
+    (!seesEveryWrite(ctx, collection, manage) ||
+      (await matchesStoredRow(ctx.pool, collection, id, manage)))
   ) {
     return undefined;
   }

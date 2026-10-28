@@ -229,13 +229,24 @@ export const ROUTES: readonly Route[] = [
       // write in order, as when each is checked and run in turn.
       const planned: PlannedWrite[] = [];
       let failed: unknown;
+      const written = new Set<string>();
       for (const [i, write] of writes.entries()) {
         try {
-          planned.push(await inBatch(i, () => planRecordWrite(context, write)));
+          planned.push(
+            await inBatch(i, () =>
+              planRecordWrite(context, write, new Set(written)),
+            ),
+          );
         } catch (error) {
           failed = error;
           break;
         }
+        // A delete can cascade into any collection that points at it.
+        const names =
+          write.method === "DELETE"
+            ? context.schema.collections.map((c) => c.name)
+            : [context.schema.get(write.collection).name];
+        for (const name of names) written.add(name);
       }
       if (planned.length === 0) throw failed;
       const results = await bounded(context, async (tx) => {
@@ -944,12 +955,16 @@ type PlannedWrite = { create: PlannedCreate } | { apply: Apply<Reply> };
 async function planRecordWrite(
   context: Context,
   write: RecordWrite,
+  written?: ReadonlySet<string>,
 ): Promise<PlannedWrite> {
   const collection = context.schema.get(write.collection);
-  const ctx = recordsContext(context, write.body, {
-    method: write.method,
-    query: write.query,
-  });
+  const ctx = {
+    ...recordsContext(context, write.body, {
+      method: write.method,
+      query: write.query,
+    }),
+    ...(written && { written }),
+  };
   if (write.method === "POST") {
     return {
       create: await planNewRecord(ctx, collection, write.body, write.query),
