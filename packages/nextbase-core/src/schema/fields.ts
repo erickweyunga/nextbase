@@ -215,7 +215,7 @@ export function parseField(
     case "date": {
       const min = parseTimestamp(r, "min");
       const max = parseTimestamp(r, "max");
-      if (min !== "" && max !== "" && min > max) {
+      if (min !== "" && max !== "" && Date.parse(min) > Date.parse(max)) {
         r.fail("min", "validation_out_of_range", "Must not be after max.");
       }
       return { ...base, type: "date", min, max };
@@ -364,7 +364,8 @@ function parseDomains(
   return { onlyDomains, exceptDomains };
 }
 
-// Normalizes to the ISO form Postgres and the API both use, so bounds compare as strings.
+// Normalizes to the ISO form the API uses. Bounds compare by time, since years
+// past 9999 or before 1 AD do not sort as text.
 function parseTimestamp(r: Reader, key: "min" | "max"): string {
   const value = r.string(key, "");
   if (value === "") return "";

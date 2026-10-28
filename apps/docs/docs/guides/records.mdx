@@ -84,6 +84,8 @@ under concurrent requests:
 await posts.update(id, { "views+": 1, "tags+": ["featured"] });
 ```
 
+A number that would overflow to infinity is a validation error.
+
 ## Delete
 
 ```ts

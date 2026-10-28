@@ -536,6 +536,75 @@ describe("records API", () => {
       expect(await admin.collection("nodes").getFullList()).toEqual([]);
     });
 
+    it("lets a cascade delete records that require the ones it deletes", async () => {
+      const admin = nextbase.client({ superuser: true });
+      const ca = await admin.collections.create({ name: "ca" });
+      const cb = await admin.collections.create({
+        name: "cb",
+        fields: [
+          { name: "a", type: "relation", collectionId: ca.id, required: true },
+        ],
+      });
+      // Deleting a cb deletes the ca pointing at it, and that ca is what the
+      // cb itself requires.
+      await admin.collections.update("ca", {
+        fields: [
+          {
+            name: "b",
+            type: "relation",
+            collectionId: cb.id,
+            cascadeDelete: true,
+          },
+        ],
+      });
+      const [a, b, other] = [
+        "ca0000000000001",
+        "cb0000000000001",
+        "cb0000000000002",
+      ];
+      await admin.collection("ca").create({ id: a });
+      await admin.collection("cb").create({ id: b, a });
+      await admin.collection("ca").update(a, { b });
+      await admin.collection("cb").create({ id: other, a });
+
+      // Another cb still requires the ca, so neither goes.
+      await expect(admin.collection("cb").delete(b)).rejects.toMatchObject({
+        status: 400,
+      });
+      await admin.collection("cb").delete(other);
+      await admin.collection("cb").delete(b);
+      expect(await admin.collection("ca").getFullList()).toEqual([]);
+      expect(await admin.collection("cb").getFullList()).toEqual([]);
+    });
+
+    it("cascades whatever order the fields that reference a record come in", async () => {
+      const admin = nextbase.client({ superuser: true });
+      const targets = await admin.collections.create({ name: "targets" });
+      const req = {
+        name: "req",
+        type: "relation",
+        collectionId: targets.id,
+        required: true,
+      } as const;
+      const casc = {
+        name: "casc",
+        type: "relation",
+        collectionId: targets.id,
+        cascadeDelete: true,
+      } as const;
+      for (const [name, fields] of [
+        ["reqfirst", [req, casc]],
+        ["cascfirst", [casc, req]],
+      ] as const) {
+        await admin.collections.create({ name, fields: [...fields] });
+        const target = `${name}0000000`.slice(0, 15);
+        await admin.collection("targets").create({ id: target });
+        await admin.collection(name).create({ req: target, casc: target });
+        await admin.collection("targets").delete(target);
+        expect(await admin.collection(name).getFullList()).toEqual([]);
+      }
+    });
+
     it("cascades, clears or blocks on records that reference the deleted one", async () => {
       await as("admin", "POST", "/collections", {
         name: "comments",
