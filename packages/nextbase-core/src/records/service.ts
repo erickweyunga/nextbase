@@ -17,7 +17,7 @@ import { rekeySessions } from "../auth/sessions.ts";
 import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
+import { ApiError, writeFailed } from "../errors.ts";
 import {
   claimFiles,
   type FileChanges,
@@ -30,9 +30,9 @@ import {
 import type { Storage } from "../files/storage.ts";
 import { compileFilter, type RequestInfo } from "../filter/compiler.ts";
 import { FilterError } from "../filter/parser.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { isId, newId } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
-import { isMultiple } from "../schema/fields.ts";
+import { isMultiple, passwordField } from "../schema/fields.ts";
 import { isRecord } from "../schema/input.ts";
 import { readAsViewRole } from "../schema/views.ts";
 import { hasNul, timestampParam } from "../storable.ts";
@@ -41,7 +41,6 @@ import {
   checkRelations,
   draftWrite,
   finishWrite,
-  isRecordId,
   newPassword,
   type PreparedWrite,
   prepareWrite,
@@ -66,6 +65,35 @@ export interface RecordsContext {
    * that read them are left to the transaction.
    */
   written?: ReadonlySet<string>;
+}
+
+/**
+ * The context of an update NextBase makes itself, such as marking an email
+ * verified once a link proved it. It has superuser rights. A signed-in
+ * `principal` is kept, so its own session survives a new token key.
+ */
+export function systemContext(
+  ctx: {
+    db: DB | Tx;
+    pool?: DB;
+    schema: Schema;
+    rejectBreachedPasswords?: boolean;
+  },
+  body: Record<string, unknown>,
+  principal: Principal = { superuser: true },
+): RecordsContext {
+  const pool = ctx.pool ?? ctx.db;
+  if (pool instanceof Tx) throw new Error("A system write needs the pool.");
+  return {
+    db: ctx.db,
+    pool,
+    schema: ctx.schema,
+    principal: { ...principal, superuser: true },
+    request: { method: "PATCH", query: {}, headers: {}, body },
+    ...(ctx.rejectBreachedPasswords !== undefined && {
+      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
+    }),
+  };
 }
 
 /** Rules compile against this alias for the collection's rows. */
@@ -212,7 +240,7 @@ export async function planNewRecord(
   // Chosen now, so new files can be stored under the record beforehand.
   const write =
     input.id === undefined || input.id === ""
-      ? { ...input, id: randomString(15, LOWER_ALPHANUMERIC) }
+      ? { ...input, id: newId() }
       : input;
   const newFiles = await readFiles(ctx, collection, write);
   await checkCreateRuleFirst(ctx, collection, write, newFiles);
@@ -262,7 +290,7 @@ function createRule(
 }
 
 function refusedCreate(): ApiError {
-  return new ApiError(400, "Failed to create the record.");
+  return new ApiError(400, writeFailed(true));
 }
 
 /** The options to draft a create in `collection` with. */
@@ -424,7 +452,7 @@ export async function applyCreates(
   for (const [i, draft] of drafts.entries()) {
     if (!draft.issues.empty || !refused.has(i)) {
       try {
-        prepared[i] = await finishWrite(draft);
+        prepared[i] = finishWrite(draft);
       } catch (error) {
         failures.set(i, error);
       }
@@ -438,7 +466,7 @@ export async function applyCreates(
   const allowed = prepared.slice(0, failed);
   for (const [i, write] of allowed.entries()) {
     try {
-      await keepFiles(tx, ctx, collection, write.row.id as string, write);
+      await keepFiles(tx, ctx, collection, write.row.id as string, write, true);
     } catch (error) {
       throw new CreateFailed(i, error);
     }
@@ -478,6 +506,8 @@ async function insertRows(
   };
   const [only] = rows;
   if (rows.length === 1 && only) return insertOne(only, 0);
+  // A batch's 50 creates fit in one statement unless a collection has over
+  // 1300 fields; the chunks keep any other caller under the limit too.
   const perChunk = Math.max(
     1,
     Math.floor(MAX_PARAMETERS / collection.fields.length),
@@ -555,7 +585,7 @@ export async function planUpdateRecord(
         .all();
       if (!existing) throw notFound;
 
-      let prepared: Awaited<ReturnType<typeof prepareWrite>> | undefined;
+      let prepared: PreparedWrite | undefined;
       let invalid: unknown;
       try {
         prepared = await prepareWrite(tx, input, {
@@ -595,7 +625,7 @@ export async function planUpdateRecord(
             );
         if (!matches) throw wrongOldPassword();
       }
-      await keepFiles(tx, ctx, collection, id, prepared);
+      await keepFiles(tx, ctx, collection, id, prepared, false);
       if (Object.keys(prepared.values).length > 0) {
         await tx
           .update(
@@ -606,7 +636,7 @@ export async function planUpdateRecord(
           .execute();
       }
       // The owner learns of a password change they may not have made.
-      const password = collection.fields.find((f) => f.type === "password");
+      const password = passwordField(collection);
       if (password && prepared.values[password.name] !== undefined) {
         ctx.effects?.mail.push({
           kind: "passwordChanged",
@@ -666,12 +696,10 @@ async function keepFiles(
   collection: Collection,
   id: string,
   { files }: { files: FileChanges },
+  creating: boolean,
 ): Promise<void> {
   if (files.added.length === 0 && files.removed.length === 0) return;
-  if (!ctx.effects) {
-    throw new Error("Writes that change files need storage and effects.");
-  }
-  await claimFiles(tx, ctx.effects, collection, id, files);
+  await claimFiles(tx, effectsOf(ctx), collection, id, files, creating);
 }
 
 /**
@@ -699,19 +727,19 @@ async function storeFiles(
   newFiles: NewFiles | undefined,
 ): Promise<void> {
   if (!ctx.storage || !newFiles || newFiles.files.size === 0) return;
+  const effects = effectsOf(ctx);
+  // A write with bad files or a bad id fails, so its files are not stored.
+  if (newFiles.problems.size === 0 && isId(recordId)) {
+    await storeNewFiles(ctx.storage, effects, collection, recordId, newFiles);
+  }
+}
+
+/** Where a write that changes files records them, to delete them on failure. */
+function effectsOf(ctx: RecordsContext): Effects {
   if (!ctx.effects) {
     throw new Error("Writes that change files need storage and effects.");
   }
-  // A write with bad files or a bad id fails, so its files are not stored.
-  if (newFiles.problems.size === 0 && isRecordId(recordId)) {
-    await storeNewFiles(
-      ctx.storage,
-      ctx.effects,
-      collection,
-      recordId,
-      newFiles,
-    );
-  }
+  return ctx.effects;
 }
 
 // Runs before the write's transaction, so no row stays locked during the lookup.
@@ -721,7 +749,7 @@ async function checkNewPassword(
   input: Record<string, unknown>,
 ): Promise<void> {
   if (!ctx.rejectBreachedPasswords || collection.type !== "auth") return;
-  const field = collection.fields.find((f) => f.type === "password");
+  const field = passwordField(collection);
   const password = field && input[field.name];
   if (typeof password === "string") await checkBreached(password);
 }
@@ -731,7 +759,7 @@ function checkId(collection: Collection, id: string): void {
   const valid =
     collection.type === "view"
       ? id !== "" && id.length <= 255 && !hasNul(id)
-      : /^[a-z0-9]{15}$/.test(id);
+      : isId(id);
   if (!valid) throw new ApiError(404, "Record not found.");
 }
 
@@ -852,7 +880,7 @@ async function checkOldPasswordFirst(
   input: Record<string, unknown>,
 ): Promise<{ matched: string | undefined } | undefined> {
   const { oldPassword } = input;
-  const field = collection.fields.find((f) => f.type === "password");
+  const field = passwordField(collection);
   if (
     typeof oldPassword !== "string" ||
     !field ||
@@ -895,7 +923,7 @@ async function checkOldPasswordFirst(
 }
 
 function wrongOldPassword(): ApiError {
-  return new ApiError(400, "Failed to update the record.", {
+  return new ApiError(400, writeFailed(false), {
     oldPassword: {
       code: "validation_invalid_old_password",
       message: "Does not match the current password.",
@@ -908,7 +936,7 @@ async function hashNewPassword(
   collection: Collection,
   input: Record<string, unknown>,
 ): Promise<string | undefined> {
-  const field = collection.fields.find((f) => f.type === "password");
+  const field = passwordField(collection);
   const password = field && newPassword(field, input);
   return password === undefined ? undefined : hashPassword(password);
 }
@@ -1179,6 +1207,20 @@ async function deleteWithReferences(
         .all<{ id: string; kept: number }>();
       if (referencing.length === 0) continue;
       if (field.cascadeDelete) {
+        // Around a cycle of cascades, records already being deleted still
+        // point at these until they go, which their foreign key would
+        // refuse. They lose those references first.
+        const deleting = referencing
+          .filter((row) => visited.has(`${source.id}/${row.id}`))
+          .map((row) => row.id);
+        if (deleting.length > 0) {
+          await tx
+            .newQuery(
+              `UPDATE ${t} SET ${col} = ${multiple ? kept : "NULL"} WHERE id = ANY({:deleting}::text[])`,
+            )
+            .bind({ ...params, deleting })
+            .execute();
+        }
         await deleteWithReferences(
           tx,
           schema,

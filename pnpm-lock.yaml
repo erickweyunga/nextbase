@@ -457,7 +457,7 @@ importers:
         specifier: 'catalog:'
         version: 1.2.0
       '@nextbasejs/client':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../nextbase-client
       '@vercel/functions':
         specifier: 'catalog:'

@@ -68,7 +68,7 @@ import {
 } from "../files/serve.ts";
 import type { Storage } from "../files/storage.ts";
 import { readJsonObject, readRecordBody } from "../http.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { newId } from "../random.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
   type Apply,
@@ -730,9 +730,7 @@ export const ROUTES: readonly Route[] = [
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
-        typeof input.id === "string" && input.id !== ""
-          ? input.id
-          : randomString(15, LOWER_ALPHANUMERIC);
+        typeof input.id === "string" && input.id !== "" ? input.id : newId();
       await writeRecord(context, {
         method: "POST",
         collection: collection.id,

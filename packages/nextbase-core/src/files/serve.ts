@@ -6,7 +6,7 @@ import { countAttempt, type Limit, uploaderKey } from "../auth/throttle.ts";
 import { peekToken, signToken, verifyToken } from "../auth/tokens.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { ALPHANUMERIC, randomString } from "../random.ts";
+import { ALPHANUMERIC, isId, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
 import {
@@ -228,7 +228,7 @@ export async function findFile(
   }
   if (
     collection.type === "view" ||
-    !/^[a-z0-9]{15}$/.test(recordId as string) ||
+    !isId(recordId) ||
     !isStoredName(name as string)
   ) {
     throw notFound;

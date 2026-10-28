@@ -235,6 +235,31 @@ describe("batches of creates", () => {
     expect(refused.body.message).toMatch(/^Request 3 of the batch failed/);
   });
 
+  it("checks a create rule that reads each row's body in one query", async () => {
+    await nextbase.client({ superuser: true }).collections.create({
+      name: "orders",
+      viewRule: "",
+      createRule: "@request.body.qty > 0",
+      fields: [{ name: "qty", type: "number" }],
+    });
+    const orders = (qty: number[]) =>
+      qty.map((n) => ({
+        url: "/collections/orders/records",
+        body: { qty: n },
+      }));
+    // Loads the new collection into the schema.
+    await batch(tokens.user, orders([1]));
+    queries();
+    expect((await batch(tokens.user, orders([1, 2]))).status).toBe(200);
+    const forTwo = queries();
+    expect((await batch(tokens.user, orders([1, 2, 3, 4, 5]))).status).toBe(
+      200,
+    );
+    expect(queries()).toBe(forTwo);
+    const refused = await batch(tokens.user, orders([1, 0, 3]));
+    expect(refused.body.message).toMatch(/^Request 2 of the batch failed/);
+  });
+
   it("creates one at a time when a rule reads the collection itself", async () => {
     for (const collection of ["tickets", "folders"]) {
       const creates = (n: number) =>
@@ -402,6 +427,13 @@ describe("splitting creates into runs", () => {
         plan(a, { id: "4" }, "expand=x"),
       ]),
     ).toEqual([1, 1, 2]);
+  });
+
+  it("runs a create alone when its rule does not compile, so it fails as it would in turn", () => {
+    const broken = { id: "a", createRule: "((" };
+    expect(
+      sizes([plan(broken, { id: "1" }), plan(broken, { id: "2" })]),
+    ).toEqual([1, 1]);
   });
 
   it("starts a new run at a create pointing at one earlier in the run", () => {

@@ -2,7 +2,7 @@ import type { AuthCollection, TokenType } from "@nextbasejs/client";
 import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
-import { updateRecord } from "../records/service.ts";
+import { systemContext, updateRecord } from "../records/service.ts";
 import { EMAIL_PATTERN } from "../records/values.ts";
 import type { Schema } from "../schema/cache.ts";
 import { hasNul } from "../storable.ts";
@@ -264,14 +264,7 @@ async function privilegedUpdate(
   input: Record<string, unknown>,
 ): Promise<void> {
   await updateRecord(
-    {
-      db: ctx.db,
-      pool: ctx.db,
-      schema: ctx.schema,
-      principal: { superuser: true },
-      request: { method: "PATCH", query: {}, headers: {}, body: input },
-      rejectBreachedPasswords: ctx.rejectBreachedPasswords,
-    },
+    systemContext(ctx, input),
     collection,
     record.id as string,
     input,

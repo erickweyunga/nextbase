@@ -44,6 +44,24 @@ export const nextbase = new NextBase({
 - **Connection poolers:** NextBase works behind PgBouncer (including its
   transaction mode) and the poolers of Neon, Supabase and RDS Proxy. Use the
   pooled connection string on serverless platforms.
+- **The pool:** with a connection string, NextBase keeps one `pg` pool per
+  string, with up to 10 connections. Idle connections close after 5 seconds,
+  so a suspended serverless instance lets them go, and on Vercel they are
+  released before the function suspends. A request waits at most 10 seconds
+  for a connection. Pass your own pool to change these; NextBase never ends a
+  pool you pass in.
+- **TLS:** set it in the connection string. `?sslmode=require` encrypts the
+  connection and, as `pg` reads it, also checks the server's certificate,
+  like `verify-full`. Add `&sslnegotiation=direct` to save a round trip on
+  servers that support it, such as Neon and Postgres 17.
+- **Statement timeout:** each statement of a records request may run for at
+  most 8 seconds, so an expensive filter cannot hold the database. A request
+  over it fails with a 500. Change it with `statementTimeout` (milliseconds),
+  or turn it off with `0`:
+
+  ```ts
+  export const nextbase = new NextBase({ statementTimeout: 3_000 });
+  ```
 - **Schema:** everything lives in the `nextbase` Postgres schema. The first
   request creates it, so the database role needs permission to create schemas
   and tables, or create the schema for it in advance.
@@ -87,7 +105,8 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 
 ## Security checklist
 
-- Serve the app over HTTPS. Session cookies are `Secure` in production.
+- Serve the app over HTTPS. In production the session cookie is
+  `__Host-nextbase_session`, which browsers only accept as `Secure`.
 - Add IP rate limiting at your platform or proxy. NextBase limits failed
   sign-ins per account (10 every 15 minutes), but cannot see trusted client IPs
   itself.

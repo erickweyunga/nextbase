@@ -1,10 +1,11 @@
 import type {
+  Collection,
   EmailField,
   Field,
   FieldType,
   PasswordField,
 } from "@nextbasejs/client";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
 import { parseDate } from "../storable.ts";
 import { type Issues, isRecord, type Path, Reader } from "./input.ts";
 
@@ -65,6 +66,26 @@ export interface FieldContext {
 const USER_FIELD_TYPES: ReadonlySet<string> = new Set(
   FIELD_TYPES.filter((type) => type !== "password"),
 );
+
+/** The password field of an auth collection, or undefined. */
+export function passwordField(
+  collection: Collection,
+): PasswordField | undefined {
+  return collection.fields.find(
+    (f): f is PasswordField => f.type === "password",
+  );
+}
+
+/**
+ * A random password the field accepts, for accounts created without one,
+ * such as through a provider or a phone. It is never shown; the owner can
+ * set their own with a password reset.
+ */
+export function randomPassword(collection: Collection): string {
+  const field = passwordField(collection);
+  const length = field ? Math.min(Math.max(field.min, 64), field.max) : 64;
+  return randomString(length, ALPHANUMERIC);
+}
 
 /** Whether a field is stored as a Postgres array column. */
 export function isMultiple(field: Field): boolean {
