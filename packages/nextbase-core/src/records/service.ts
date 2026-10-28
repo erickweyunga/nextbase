@@ -8,7 +8,7 @@ import {
   hash,
   type Params,
   type Row,
-  type Tx,
+  Tx,
 } from "@nextbasejs/dbx";
 import { checkBreached } from "../auth/breached.ts";
 import { verifyPassword } from "../auth/password.ts";
@@ -57,6 +57,7 @@ const DEFAULT_PER_PAGE = 30;
 const MAX_EXPAND_DEPTH = 6;
 const SUPERUSERS = "_superusers";
 const MAX_BACK_RELATIONS = 1000;
+const TOTAL = "_total";
 
 type Rule = string | null;
 type Output = Record<string, unknown>;
@@ -87,24 +88,36 @@ async function list(
     compile(ctx, collection, query.get("filter") ?? "", "filter"),
   );
   const from = `${table(collection.name)} ${ALIAS}`;
-  const rows = await ctx.db
+  const counted = !isTrue(query.get("skipTotal"));
+  const count = ctx.db.select("COUNT(*)").from(from).where(where).build();
+  const select = ctx.db
     .select(`${ALIAS}.*`)
     .from(from)
     .where(where)
     .orderBy(...sortColumns(ctx, collection, query.get("sort") ?? ""))
     .limit(perPage)
-    .offset((page - 1) * perPage)
-    .all();
+    .offset((page - 1) * perPage);
+  // The total is read in the same query as the page, as an extra column.
+  // Postgres counts once for the query, not once per row. Field names start
+  // with a letter, so `_total` cannot clash with a field.
+  if (counted) {
+    select.andSelect(`(${count.sql}) AS ${TOTAL}`).andBind(count.params);
+  }
+  const rows = await select.all();
 
   let totalItems = -1;
   let totalPages = -1;
-  if (!isTrue(query.get("skipTotal"))) {
-    const [count] = await ctx.db
-      .select("COUNT(*)")
-      .from(from)
-      .where(where)
-      .row<[string]>();
-    totalItems = Number(count);
+  if (counted) {
+    const first = rows[0];
+    if (first) {
+      totalItems = Number(first[TOTAL]);
+      for (const row of rows) delete row[TOTAL];
+    } else if (page === 1) {
+      totalItems = 0;
+    } else {
+      // A page past the end returns no rows, so the total is counted apart.
+      totalItems = Number((await count.row<[string]>())[0]);
+    }
     totalPages = Math.ceil(totalItems / perPage);
   }
   const items = await output(ctx.db, ctx, collection, rows, query);
@@ -150,7 +163,7 @@ export async function newRecord(
   denyNullRule(ctx, collection.createRule);
   await checkNewPassword(ctx, collection, input);
   return writing(collection, () =>
-    ctx.db.transaction(async (tx) => {
+    inTransaction(ctx.db, async (tx) => {
       const prepared = await prepareWrite(tx, input, {
         collection,
         schema: ctx.schema,
@@ -200,7 +213,7 @@ export async function updateRecord(
   await checkNewPassword(ctx, collection, input);
   const notFound = new ApiError(404, "Record not found.");
   return writing(collection, () =>
-    ctx.db.transaction(async (tx) => {
+    inTransaction(ctx.db, async (tx) => {
       const [existing] = await tx
         .newQuery(
           `SELECT * FROM {{${table(collection.name)}}} WHERE id = {:id} FOR UPDATE`,
@@ -284,7 +297,7 @@ export async function deleteRecord(
   checkWritable(collection);
   checkId(collection, id);
   const rule = ruleCondition(ctx, collection, collection.deleteRule);
-  await ctx.db.transaction(async (tx) => {
+  await inTransaction(ctx.db, async (tx) => {
     if (collection.id === SUPERUSERS) await keepOneSuperuser(tx, id);
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
       throw new ApiError(404, "Record not found.");
@@ -893,6 +906,18 @@ function columnValues(
 }
 
 // A unique-index violation becomes a 400 on the indexed fields.
+/**
+ * Runs `write` in the caller's transaction if there is one, or in a new one.
+ * It makes no savepoint: when a write fails the request fails too, so the
+ * whole transaction is rolled back anyway.
+ */
+function inTransaction<T>(
+  db: DB | Tx,
+  write: (tx: Tx) => Promise<T>,
+): Promise<T> {
+  return db instanceof Tx ? write(db) : db.transaction(write);
+}
+
 async function writing<T>(
   collection: Collection,
   write: () => Promise<T>,

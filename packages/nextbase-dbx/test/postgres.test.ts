@@ -575,6 +575,54 @@ describe("transactions", () => {
     expect(test.pool.idleCount).toBe(test.pool.totalCount);
   });
 
+  it("sets the timeout and runs the start query with BEGIN, in one round trip", async () => {
+    const client = await test.pool.connect();
+    const sent: string[] = [];
+    const counted = new DB({
+      connect: async () => ({
+        query: (config) => {
+          sent.push(config.text);
+          return client.query(config);
+        },
+        release: (destroy) => client.release(destroy),
+      }),
+      query: () => Promise.reject(new Error("not used")),
+    });
+    const tx = await counted.begin({
+      readOnly: true,
+      statementTimeout: 1500,
+      startQuery: "SELECT 1 AS one, 2 AS two",
+    });
+    expect(sent).toHaveLength(1);
+    expect(tx.startRows).toEqual([{ one: 1, two: 2 }]);
+    expect(
+      await tx.newQuery("SELECT current_setting('statement_timeout')").column(),
+    ).toEqual(["1500ms"]);
+    await tx.commit();
+    // SET LOCAL ends with the transaction.
+    expect(
+      await db.newQuery("SELECT current_setting('statement_timeout')").column(),
+    ).toEqual(["0"]);
+    const plain = await db.begin();
+    expect(plain.startRows).toEqual([]);
+    await plain.rollback();
+  });
+
+  it("cancels a statement that runs past the timeout", async () => {
+    await expect(
+      db.transaction((tx) => tx.newQuery("SELECT pg_sleep(1)").execute(), {
+        statementTimeout: 50,
+      }),
+    ).rejects.toMatchObject({ code: "57014" });
+    await expect(db.begin({ statementTimeout: 1.5 })).rejects.toThrow(
+      RangeError,
+    );
+    await expect(db.begin({ statementTimeout: -1 })).rejects.toThrow(
+      RangeError,
+    );
+    expect(test.pool.idleCount).toBe(test.pool.totalCount);
+  });
+
   it("rejects use after commit and returns the connection", async () => {
     const tx = await db.begin();
     await tx.model("customer", { email: "t@x.io" } as Customer).insert();
