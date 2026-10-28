@@ -248,9 +248,8 @@ export class CreateFailed extends Error {
  * A run is one collection and one URL query, so the records come back the
  * same way. A create starts a new run when it points at a record created
  * earlier in the run, which does not exist until the run is inserted. A
- * create rule or view rule that reads other records, with `@collection` or a
- * back-relation, could see records inserted earlier in the same request, so
- * such creates run alone, as when each is done in turn.
+ * create whose rules read its own collection runs alone, as when each is done
+ * in turn, since those rules could see records the run inserts.
  */
 export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
   const runs: PlannedCreate[][] = [];
@@ -277,13 +276,27 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
   return runs;
 }
 
+/**
+ * False when the create or view rule reads the collection being created,
+ * through `@collection`, a back-relation or a relation path. A run writes
+ * only its own collection, and the batch's earlier writes are done before it
+ * starts, so only such a rule could see records the run inserts.
+ */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
   if (ctx.principal.superuser) return true;
-  const readsOthers = /@collection|_via_/;
-  return (
-    !readsOthers.test(collection.createRule ?? "") &&
-    !readsOthers.test(collection.viewRule ?? "")
-  );
+  // Every collection a compiled rule reads appears in it as its table.
+  const own = `{{${table(collection.name)}}}`;
+  return [collection.createRule, collection.viewRule].every((rule) => {
+    if (!rule) return true;
+    try {
+      const sql = compile(ctx, collection, rule, "rule")?.build(ctx.pool, {});
+      return !sql?.includes(own);
+    } catch {
+      // The write fails on its rule either way; alone, it fails as it would
+      // in turn.
+      return false;
+    }
+  });
 }
 
 function referencesAny(
