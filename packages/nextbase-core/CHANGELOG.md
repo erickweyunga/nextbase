@@ -1,5 +1,33 @@
 # nextbasejs
 
+## 0.1.6
+
+### Patch Changes
+
+- fa6d1b0: A batch does consecutive creates in one collection together, with a few queries for all of them instead of a few per record. A batch of 50 creates with two relation fields went from 253 queries to 10. Errors are reported as before: the first failing create, with the same message and details.
+- a57e76d: Faster queries and expands:
+  
+  - Expanding back-relations and multi-value relations matches records to their parents in one pass. Before, it went through every related record once per parent, which took seconds on large pages.
+  - Signing in or resetting a password by email, or finding an account by phone, uses the unique index instead of reading the whole table.
+  - `?=` on multi-value fields, such as `tags ?= "news"`, uses the field's GIN index instead of reading the whole table.
+  - New indexes on the expiry columns of sign-in attempts, OAuth2 states and texted codes, so removing expired rows no longer reads the whole table.
+  
+  Fixed: a date and time with no zone, such as `2026-01-02 10:00:00`, is now read as UTC everywhere: in filters, record values and date field bounds. Before, it was read in the server's local time zone.
+- 00f0d7c: Requests take fewer database round trips:
+  
+  - Reading a list or a record takes three: one starts the transaction, sets the statement timeout and checks the schema version, one reads the page together with its total, and one commits. A signed-in request adds one to check the session.
+  - Creating or updating a record takes two fewer, and so does deleting one. Writes no longer make a savepoint inside the request's transaction, and they send the timeout with `BEGIN`.
+  - Signing in with a password takes six instead of nine. Counting attempts and removing expired ones is one statement, and so is removing expired sessions and creating the new one.
+  
+  Timeouts, transactions, rate limits and schema freshness work as before.
+- bf0a40e: Writes with files read and store them before the write's transaction starts, so a slow upload to storage no longer holds the record locked and a database connection busy. Inside the transaction, each direct upload is claimed, so one upload makes one file even when two writes use it at once. A caller the update rule refuses stores no files, unless the rule reads `@request.body`; then its files are deleted again when the write is refused.
+- ae563cb: Password changes no longer hash the new password or check the old one while the record is locked. Both now happen before the write's transaction starts. Under load, concurrent password changes could stall until the connection timeout, each holding one database connection while waiting for another; they no longer do. A caller the update rule refuses is still turned away before any password is checked or attempt counted.
+- fef7c81: - Deleting a record with cascades takes a few queries per level of related records, however many records there are. Deleting a thread with 30 replies and 60 likes went from 158 queries to 11.
+  - Updating a record no longer blocks requests that create or change records referencing it, such as adding a comment to a post being edited.
+- 94af258: Filters and rules through single relations, such as `author.name = "Ann"` or `post.status = "public"`, are a plain lookup that Postgres can serve with indexes. Before, they checked every row of the collection. Results are the same.
+- 0a871fb: Records writes are checked before their transaction starts, and only the rest runs in it. The breached-password check, an HTTP call, no longer holds a database connection and a transaction open while it waits.
+- @nextbasejs/client@0.1.6
+
 ## 0.1.5
 
 ### Patch Changes
