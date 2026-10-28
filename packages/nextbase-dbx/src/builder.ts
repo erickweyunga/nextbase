@@ -155,6 +155,38 @@ export class Builder {
   }
 
   /**
+   * One INSERT of several rows. Every row must set the same columns; as in
+   * `insert`, Expression values are SQL and `undefined` values are skipped.
+   * Postgres takes at most 65535 parameters per statement, so very many rows
+   * need several calls.
+   */
+  insertMany(table: string, rows: readonly Params[]): Query {
+    const [first, ...rest] = rows;
+    if (!first)
+      throw new TypeError(`dbx: insertMany into "${table}" has no rows.`);
+    const names = definedEntries(first).map(([name]) => name);
+    if (names.length === 0) {
+      throw new TypeError(`dbx: insertMany into "${table}" has no columns.`);
+    }
+    const params: Params = {};
+    const tuples = [first, ...rest].map((row, i) => {
+      const entries = definedEntries(row);
+      if (
+        entries.length !== names.length ||
+        entries.some(([name], j) => name !== names[j])
+      ) {
+        throw new TypeError(
+          `dbx: row ${i + 1} of insertMany into "${table}" sets other columns than the first.`,
+        );
+      }
+      return `(${entries.map(([, value]) => this.#valueSQL(value, params)).join(", ")})`;
+    });
+    return this.newQuery(
+      `INSERT INTO ${quoteIdentifierPath(table)} (${quoteIdentifiers(names)}) VALUES ${tuples.join(", ")}`,
+    ).bind(params);
+  }
+
+  /**
    * On conflict on `constraints`, sets every column in `cols` (Expressions as
    * SQL). With no columns it becomes `DO NOTHING`.
    */

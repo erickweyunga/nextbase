@@ -211,7 +211,8 @@ export async function planNewRecord(
         );
         if (
           rule &&
-          !(await matchesNewRow(tx, collection, prepared.row, rule))
+          (await refusedNewRows(tx, collection, [{ row: prepared.row, rule }]))
+            .length > 0
         ) {
           throw new ApiError(400, "Failed to create the record.");
         }
@@ -668,26 +669,41 @@ async function matchesStoredRow(
   return rows.length > 0;
 }
 
-/** Evaluates a create rule on the pending row, as a one-row CTE named ALIAS. */
-async function matchesNewRow(
+/**
+ * Evaluates the create rule on pending rows in one query, as a table named
+ * ALIAS with one row each. Each row comes with its own compiled rule, since a
+ * rule can read that row's `@request.body`. Returns the positions of the rows
+ * the rule refuses.
+ */
+async function refusedNewRows(
   q: Builder,
   collection: Collection,
-  row: Record<string, unknown>,
-  rule: Expression,
-): Promise<boolean> {
+  rows: readonly { row: Record<string, unknown>; rule: Expression }[],
+): Promise<number[]> {
   const params: Params = {};
-  const condition = rule.build(q, params);
-  const columns = collection.fields.map((field, i) => {
-    params[`nb_v${i}`] = columnValue(field, row[field.name]);
-    return `{:nb_v${i}}::${columnCast(field)} AS ${q.quoteSimpleColumnName(field.name)}`;
+  const tuples = rows.map(({ row }, i) => {
+    const values = collection.fields.map((field, j) => {
+      params[`nb_v${i}_${j}`] = columnValue(field, row[field.name]);
+      return `{:nb_v${i}_${j}}::${columnCast(field)}`;
+    });
+    return `(${i}, ${values.join(", ")})`;
   });
-  const rows = await q
+  // Field names start with a letter, so `_i` cannot clash with one.
+  const columns = [
+    `"_i"`,
+    ...collection.fields.map((field) => q.quoteSimpleColumnName(field.name)),
+  ];
+  const [first] = rows;
+  const condition =
+    first && rows.every(({ rule }) => rule === first.rule)
+      ? first.rule.build(q, params)
+      : `CASE "_i" ${rows.map(({ rule }, i) => `WHEN ${i} THEN ${rule.build(q, params)}`).join(" ")} END`;
+  return q
     .newQuery(
-      `WITH "${ALIAS}" AS (SELECT ${columns.join(", ")}) SELECT 1 FROM "${ALIAS}" WHERE ${condition}`,
+      `WITH "${ALIAS}"(${columns.join(", ")}) AS (VALUES ${tuples.join(", ")}) SELECT "_i" FROM "${ALIAS}" WHERE NOT COALESCE(${condition}, false) ORDER BY "_i"`,
     )
     .bind(params)
-    .column();
-  return rows.length > 0;
+    .column<number>();
 }
 
 /**
