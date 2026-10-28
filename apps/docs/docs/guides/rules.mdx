@@ -27,7 +27,10 @@ await superuser.collections.update("posts", {
 ```
 
 Rules are checked when you save them: a rule that does not compile, or
-refers to a missing field, is rejected.
+refers to a missing field, is rejected. That includes `@request.auth.<field>`,
+which must be a field of some auth collection. A schema change that would
+break a saved rule is rejected too, such as renaming or deleting a field the
+rule reads, or deleting a collection it reads with `@collection`.
 
 ## How each rule applies
 
@@ -92,6 +95,13 @@ To compare two different rows of the same collection, give each an alias:
 
 ```txt
 @request.auth.emailVerified = true
+```
+
+**Users with a role**, where `roles` is a multiple select on the users
+collection:
+
+```txt
+@request.auth.roles ?= "admin"
 ```
 
 **Published, or yours:**

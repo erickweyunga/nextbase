@@ -6,11 +6,11 @@ import type {
 } from "@nextbasejs/client";
 import type { Builder, DB, Tx } from "@nextbasejs/dbx";
 import { lockSchema, table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
+import { ApiError, indexRowTooLarge } from "../errors.ts";
 import { fileKey, fileNames } from "../files/files.ts";
 import { ruleProblem } from "../filter/compiler.ts";
 import { ID_PATTERN } from "../random.ts";
-import { Schema } from "./cache.ts";
+import { findCollection, Schema } from "./cache.ts";
 import { parseCollection } from "./collection.ts";
 import { isMultiple } from "./fields.ts";
 import {
@@ -124,6 +124,16 @@ export async function deleteCollection(
         `The collection is referenced by ${references.join(", ")}. Remove those relation fields first.`,
       );
     }
+    // Such as `@collection.<name>` or `<name>_via_<field>` in another rule.
+    const broken = ruleProblems(all.filter((c) => c !== existing)).map(
+      ({ collection, key }) => `the ${key} of ${collection.name}`,
+    );
+    if (broken.length > 0) {
+      throw new ApiError(
+        400,
+        `The collection is used by ${broken.join(", ")}. Change those rules first.`,
+      );
+    }
     if (existing.type === "view") {
       await dropView(tx, (await readViewRole(tx)) as string, existing.name);
     } else
@@ -185,31 +195,48 @@ const RULE_KEYS = [
   "manageRule",
 ] as const;
 
-// Rejects a change (e.g. a rename) that would break any stored rule, rather
-// than letting it fail at request time.
-function checkRules(
-  collection: Collection,
-  others: readonly Collection[],
-): void {
-  const schema = new Schema(0, [...others, collection]);
-  const data: ErrorData = {};
-  for (const target of schema.collections) {
+interface RuleProblem {
+  collection: Collection;
+  key: (typeof RULE_KEYS)[number];
+  problem: string;
+}
+
+/** The stored rules that do not compile against `collections`. */
+function ruleProblems(collections: readonly Collection[]): RuleProblem[] {
+  const schema = new Schema(0, collections);
+  const problems: RuleProblem[] = [];
+  for (const target of collections) {
     for (const key of RULE_KEYS) {
       const rule = (
         target as Partial<Record<(typeof RULE_KEYS)[number], string | null>>
       )[key];
       const problem =
         rule === undefined ? undefined : ruleProblem(rule, target, schema);
-      if (problem === undefined) continue;
-      if (target === collection) {
-        data[key] = { code: "validation_invalid_rule", message: problem };
-      } else {
-        throw new ApiError(
-          400,
-          `This change breaks the ${key} of ${target.name}: ${problem}`,
-        );
-      }
+      if (problem !== undefined)
+        problems.push({ collection: target, key, problem });
     }
+  }
+  return problems;
+}
+
+// Rejects a change (e.g. a rename) that would break any stored rule, rather
+// than letting it fail at request time.
+function checkRules(
+  collection: Collection,
+  others: readonly Collection[],
+): void {
+  const data: ErrorData = {};
+  for (const { collection: target, key, problem } of ruleProblems([
+    ...others,
+    collection,
+  ])) {
+    if (target !== collection) {
+      throw new ApiError(
+        400,
+        `This change breaks the ${key} of ${target.name}: ${problem}`,
+      );
+    }
+    data[key] = { code: "validation_invalid_rule", message: problem };
   }
   if (Object.keys(data).length > 0)
     throw new ApiError(400, "Failed to validate the collection.", data);
@@ -484,11 +511,25 @@ async function createIndex(
     return `${tx.quoteSimpleColumnName(field.name)}${opclass}`;
   });
   const using = index.type === "trigram" ? " USING gin" : "";
-  await tx
-    .newQuery(
-      `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${tx.quoteSimpleColumnName(index.name)} ON {{${table(collection.name)}}}${using} (${columns.join(", ")})`,
-    )
-    .execute();
+  try {
+    await tx
+      .newQuery(
+        `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${tx.quoteSimpleColumnName(index.name)} ON {{${table(collection.name)}}}${using} (${columns.join(", ")})`,
+      )
+      .execute();
+  } catch (error) {
+    // An entry must fit in a page, so long text cannot go in a btree index.
+    if (!indexRowTooLarge(error)) throw error;
+    const problem = {
+      code: "validation_length_out_of_range",
+      message: "Some records have values too large to index.",
+    };
+    throw new ApiError(
+      400,
+      `The index ${index.name} cannot be created: some records have values too large to index. Index other fields, or use a trigram index to search long text.`,
+      { indexes: { [collection.indexes.indexOf(index)]: { fields: problem } } },
+    );
+  }
 }
 
 // Schema-qualified so it resolves whatever the search path. Installing pg_trgm
@@ -547,9 +588,7 @@ function find(
   collections: readonly Collection[],
   idOrName: string,
 ): Collection {
-  const found = collections.find(
-    (c) => c.id === idOrName || c.name === idOrName,
-  );
+  const found = findCollection(collections, idOrName);
   if (!found) throw new ApiError(404, "Collection not found.");
   return found;
 }

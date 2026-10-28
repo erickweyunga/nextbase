@@ -17,7 +17,7 @@ import { rekeySessions } from "../auth/sessions.ts";
 import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
 import { table } from "../db/system.ts";
 import type { Effects } from "../effects.ts";
-import { ApiError, writeFailed } from "../errors.ts";
+import { ApiError, indexRowTooLarge, writeFailed } from "../errors.ts";
 import {
   claimFiles,
   type FileChanges,
@@ -1597,10 +1597,9 @@ async function writing<T>(
   try {
     return await write();
   } catch (error) {
-    const { code, constraint, message } = error as {
+    const { code, constraint } = error as {
       code?: unknown;
       constraint?: unknown;
-      message?: unknown;
     };
     if (code === "23505") {
       throw indexError(
@@ -1610,18 +1609,12 @@ async function writing<T>(
         { code: "validation_not_unique", message: "Must be unique." },
       );
     }
-    // An index entry must fit in a page. Postgres says so in one of two
-    // messages, and names the index only in the second:
-    // `index row requires 9016 bytes, maximum size is 8191`, or
-    // `index row size 2720 exceeds btree version 4 maximum 2704 for index "x"`.
-    if (
-      code === "54000" &&
-      typeof message === "string" &&
-      message.startsWith("index row ")
-    ) {
+    // An index entry must fit in a page.
+    const tooLarge = indexRowTooLarge(error);
+    if (tooLarge) {
       throw indexError(
         collection,
-        /for index "(.+)"$/.exec(message)?.[1],
+        tooLarge.index,
         "A value is too long to index.",
         {
           code: "validation_length_out_of_range",
