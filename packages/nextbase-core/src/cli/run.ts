@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import pg from "pg";
+import { endPool } from "../db/pool.ts";
 import { ApiError } from "../errors.ts";
 import { NextBase } from "../index.ts";
 import { typegen } from "./typegen.ts";
@@ -81,7 +82,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     io.err(describe(error));
     return 1;
   } finally {
-    await pool.end();
+    await endPool(pool);
   }
 }
 
