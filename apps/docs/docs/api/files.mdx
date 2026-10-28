@@ -59,7 +59,8 @@ and `validation_invalid_value` (a name the record does not have).
 With [storage in a bucket](/docs/guides/files#store-files-in-a-bucket), returns
 a URL to PUT a file to directly, and a token to put in the record's field
 once the upload finished. The URL is signed for the exact size and type and
-works for 15 minutes. The SDK does this for files over 4 MB.
+works for 15 minutes. The SDK does this when a write's files add up to more
+than 4 MB, and for every file in a batch.
 
 The record's rules apply when it is written. Before that, a signed-out caller
 may start an upload only if the collection's create or update rule is `""`,

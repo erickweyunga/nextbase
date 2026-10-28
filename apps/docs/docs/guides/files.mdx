@@ -167,9 +167,11 @@ so large files never pass through your server.
 
 ### Large files
 
-Vercel limits request bodies to 4.5 MB. With a bucket, the SDK uploads files
-larger than 4 MB straight to the bucket instead, and the record takes them
-over once they arrive, after the same type and size checks. This needs
+Vercel limits request bodies to 4.5 MB. With a bucket, when a write's files
+add up to more than 4 MB, the SDK uploads the largest straight to the bucket
+instead, until the rest fit, and the record takes them over once they arrive,
+after the same type and size checks. Batches are sent as JSON, so the SDK
+uploads all of their files this way, and batches with files need a bucket. This needs
 nothing in your code, but the bucket must accept uploads from your site.
 Add a CORS rule to the bucket, for example on AWS S3:
 

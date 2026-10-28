@@ -13,7 +13,7 @@ import {
 import type { Schema } from "../schema/cache.ts";
 import { phoneIs } from "./identity.ts";
 import type { Mailer } from "./mail.ts";
-import type { Principal } from "./principal.ts";
+import { type Principal, recordIn } from "./principal.ts";
 import type { Sms } from "./sms.ts";
 import {
   accountKey,
@@ -257,10 +257,7 @@ function checkPhone(value: unknown): string {
 }
 
 function signedIn(collection: AuthCollection, principal: Principal): Row {
-  if (!principal.record || principal.collection?.id !== collection.id) {
-    throw new ApiError(401, "Sign in to this collection to verify a phone.");
-  }
-  return principal.record;
+  return recordIn(principal, collection, "verify a phone");
 }
 
 // Hashed and salted with the purpose, so a database leak shows no live codes.

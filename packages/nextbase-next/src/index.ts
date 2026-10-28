@@ -4,7 +4,7 @@ import type {
   RouteHandler,
   ServerClientOptions,
 } from "@nextbasejs/core";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 /** Exports of `app/api/nextbase/[...path]/route.ts`. */
 export interface NextRouteHandlers {
@@ -41,5 +41,11 @@ export async function serverClient(
   nextbase: NextBase,
   options: Omit<ServerClientOptions, "cookies"> = {},
 ): Promise<NextBaseClient> {
-  return nextbase.client({ ...options, cookies: await cookies() });
+  // Next.js sets it from the connection when no proxy did.
+  const proto = (await headers()).get("x-forwarded-proto");
+  return nextbase.client({
+    ...(proto !== null && { secure: proto.split(",")[0]?.trim() === "https" }),
+    ...options,
+    cookies: await cookies(),
+  });
 }

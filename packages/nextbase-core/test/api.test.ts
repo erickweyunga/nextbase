@@ -255,7 +255,7 @@ describe("HTTP API", () => {
         token,
         body: { name: "users", type: "auth" },
       });
-      expect(users.status).toBe(200);
+      expect(users.status, JSON.stringify(users.body)).toBe(200);
       await t.db
         .insert("nextbase.users", {
           id: "user00000000001",
@@ -282,14 +282,15 @@ describe("HTTP API", () => {
           })
         ).status,
       ).toBe(403);
-      // A users token is not a superusers token, even for a record with the same id.
+      // A users token is not a superusers token, even for a record with the
+      // same id. It is still a valid session, so this is a 403, not a 401.
       expect(
         (
           await call("POST", "/collections/_superusers/auth-refresh", {
             token: login.body.token as string,
           })
         ).status,
-      ).toBe(401);
+      ).toBe(403);
     });
   });
 

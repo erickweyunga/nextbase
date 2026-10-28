@@ -9,9 +9,11 @@ import {
   createElement,
   type ReactElement,
   type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -48,6 +50,15 @@ export function NextBaseProvider({
     return nb;
   });
   const [ready, setReady] = useState(session !== undefined);
+  // A new session from the server, as after a server action signs in or out
+  // and the page refreshes.
+  const seeded = useRef(session);
+  useEffect(() => {
+    if (session === undefined || session === seeded.current) return;
+    seeded.current = session;
+    seed(client, session);
+    setReady(true);
+  }, [client, session]);
   useEffect(() => {
     if (session !== undefined) return;
     // A failed load leaves the store as it was.
@@ -105,8 +116,13 @@ export function useSession<
 >(): SessionState<T> {
   const { client, initial, ready, refetch } = useShared();
   const store = client.authStore;
+  // The same function each render, so React subscribes once.
+  const subscribe = useCallback(
+    (onChange: () => void) => store.onChange(onChange),
+    [store],
+  );
   const data = useSyncExternalStore(
-    (onChange) => store.onChange(onChange),
+    subscribe,
     () => store.record,
     // What the server rendered, so hydration matches it.
     () => initial,

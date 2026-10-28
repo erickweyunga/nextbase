@@ -68,4 +68,6 @@ Every method takes fetch options such as `signal`, `cache` and Next.js's
 `nb.authStore` holds the signed-in record (and the token, for Bearer
 sessions). In the browser it persists to `localStorage` and syncs across tabs.
 Subscribe with `nb.authStore.onChange((token, record) => {})`. A 401 from the
-server clears it.
+server clears it, and so does a response saying the request had no session,
+which is how a cookie session that ended elsewhere is noticed. A 403, such as
+for a request that needs another collection's session, leaves it.

@@ -50,8 +50,11 @@ const RETRYABLE: ReadonlySet<string> = new Set(["40001", "40P01"]);
 
 const DEFAULT_STATEMENT_TIMEOUT = 8_000;
 
-// Origin of in-process requests from `client()`; never fetched.
-const IN_PROCESS_ORIGIN = "http://nextbase.internal";
+/** Set to `none` on responses to requests that had no session. */
+const SESSION_HEADER = "nextbase-session";
+
+// Host of in-process requests from `client()`; never fetched.
+const IN_PROCESS_HOST = "nextbase.internal";
 
 // While no superuser exists, the setup token is logged at most this often.
 const SETUP_LOG_INTERVAL_MS = 60_000;
@@ -159,6 +162,11 @@ export interface CookieStore {
 export interface ServerClientOptions {
   /** Act as the user signed in through the session cookie: `await cookies()`. */
   cookies?: CookieStore;
+  /**
+   * Whether the page was requested over HTTPS, which names the session
+   * cookie outside production. Defaults to whether the secure cookie is set.
+   */
+  secure?: boolean;
   /** Bypass every rule. Trusted server code only: never let user input steer it. */
   superuser?: boolean;
 }
@@ -310,16 +318,20 @@ export class NextBase {
     const principal: Principal | undefined = options.superuser
       ? { superuser: true }
       : undefined;
+    // In-process requests take the page's scheme, so they read and set the
+    // cookie the browser sends. As for HTTP requests, production always uses
+    // the secure one.
+    const secure =
+      process.env.NODE_ENV === "production" ||
+      (options.secure ??
+        options.cookies?.get(SESSION_COOKIES.secure) !== undefined);
     return new NextBaseClient({
-      baseUrl: `${IN_PROCESS_ORIGIN}${this.#basePath}`,
+      baseUrl: `${secure ? "https" : "http"}://${IN_PROCESS_HOST}${this.#basePath}`,
       fetch: async (input, init) => {
         const request = new Request(input, init);
-        const cookies = Object.values(SESSION_COOKIES).flatMap((name) => {
-          const value = options.cookies?.get(name)?.value;
-          return value ? [`${name}=${value}`] : [];
-        });
-        if (cookies.length > 0)
-          request.headers.set("cookie", cookies.join("; "));
+        const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
+        const value = options.cookies?.get(name)?.value;
+        if (value) request.headers.set("cookie", `${name}=${value}`);
         const response = await this.#dispatch(request, {
           principal,
           http: false,
@@ -397,6 +409,7 @@ export class NextBase {
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       let setCookie: string | undefined;
+      let signedOut = false;
       const effects = new Effects();
       const response = await (async (): Promise<Response> => {
         let db: DB | undefined;
@@ -416,6 +429,7 @@ export class NextBase {
             schema = resolved.schema;
             caller = resolved.principal;
             if (http) setCookie = resolved.setCookie;
+            signedOut = http && !caller.record;
           }
           // In-process requests come from the app itself, not from someone
           // setting it up.
@@ -477,6 +491,12 @@ export class NextBase {
         );
       if (setCookie && !setsSession) {
         response.headers.append("set-cookie", setCookie);
+      }
+      // A browser with a cookie session cannot see when it ends, since the
+      // cookie is HttpOnly and an ended one is just ignored. This tells it
+      // the request had no session.
+      if (signedOut && !setsSession) {
+        response.headers.set(SESSION_HEADER, "none");
       }
       return api(response);
     }
