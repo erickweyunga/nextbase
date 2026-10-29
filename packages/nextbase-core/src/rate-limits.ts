@@ -1,4 +1,5 @@
 import { BlockList, isIP } from 'node:net';
+import type { Collection } from '@nextbasejs/client';
 import type { DB } from '@nextbasejs/dbx';
 import type { Principal } from './auth/principal.ts';
 import { table } from './db/system.ts';
@@ -80,6 +81,10 @@ export const rateLimitTimings = { pruneEvery: 100 };
 // Expired counts each delete removes at most, so none holds locks for long.
 const PRUNE_BATCH = 1000;
 
+// Keys refused until their window ends, kept per instance, so repeated
+// requests over a limit are answered without the database.
+const MAX_REFUSED = 10_000;
+
 const RATE_LIMITS = table('_rate_limits');
 
 /** The rules of one label: one per audience. */
@@ -89,15 +94,19 @@ interface Slot {
   any?: RateLimitRule;
 }
 
-/** What a request is limited by. */
+/** What a request, or a write in a batch, is limited by. */
 export interface Limited {
   /** The method, with HEAD as GET. */
   method: string;
   /** The path below `basePath`. */
   route: string;
   tags: readonly RouteTag[];
-  /** The name of the collection the route is about, if any. */
-  collection: string | undefined;
+  /** The collection the route is about, if any. */
+  collection: Collection | undefined;
+}
+
+/** Who sends the requests being counted. */
+export interface Caller {
   principal: Principal;
   ip: string | undefined;
 }
@@ -117,8 +126,10 @@ export class RateLimits {
   readonly #logger: Logger;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
   #warnedNoIp = false;
-  /** Whether any rule names a collection, so requests must look theirs up. */
-  readonly byCollection: boolean;
+  /** Keys over their limit, with when their window ends, in ms. */
+  readonly #refused = new Map<string, number>();
+  /** Whether any rule names a collection. */
+  readonly #byCollection: boolean;
 
   constructor(
     options: RateLimitsOptions,
@@ -172,7 +183,7 @@ export class RateLimits {
       slot[audience] = checked;
       slots.set(key, slot);
     }
-    this.byCollection = byCollection;
+    this.#byCollection = byCollection;
     this.#prefixes = [...prefixes]
       .map(([prefix, slot]) => ({ prefix, slot }))
       .sort((a, b) => b.prefix.length - a.prefix.length);
@@ -180,54 +191,116 @@ export class RateLimits {
   }
 
   /**
-   * Counts the request against the first rule that matches it, in one
-   * autocommit upsert, and refuses it with a 429 when it is over. Run it
-   * outside any transaction, so refused requests stay counted.
+   * Whether requests with these tags must say their collection: when a rule
+   * names one, or a create could be a sign-up.
    */
-  async check(db: DB, request: Limited): Promise<void> {
-    const { principal, ip } = request;
+  needsCollection(tags: readonly RouteTag[]): boolean {
+    if (tags.length === 0) return false;
+    return this.#byCollection || tags.includes('create');
+  }
+
+  /**
+   * Counts each request against the first rule that matches it, in one
+   * autocommit upsert, and refuses them all with a 429 when any is over.
+   * Run it outside any transaction, so refused requests stay counted.
+   */
+  async check(
+    db: DB,
+    { principal, ip }: Caller,
+    requests: readonly Limited[],
+  ): Promise<void> {
     if (principal.superuser) return;
     if (ip !== undefined && this.#excluded.check(ip, family(ip))) return;
     const { collection, record } = principal;
     const signedIn = collection !== undefined && record !== undefined;
-    const rule = this.#find(request, signedIn ? 'auth' : 'guest');
-    if (!rule) return;
-    let caller: string;
+    let caller: string | undefined;
     if (signedIn) {
       caller = `rec:${collection.id}:${String(record.id)}`;
-    } else if (ip === undefined) {
-      this.#warnNoIp();
-      return;
-    } else {
+    } else if (ip !== undefined) {
       caller = `ip:${ipKey(ip)}`;
     }
-    const key = `${rule.label}|${rule.audience ?? ''}|${caller}`;
-    const { hits, resetIn } = await db
+    // Requests that count against one rule add up on its key.
+    const counted = new Map<string, { rule: RateLimitRule; hits: number }>();
+    for (const request of requests) {
+      const rule = this.#find(request, signedIn ? 'auth' : 'guest');
+      if (!rule) continue;
+      if (caller === undefined) {
+        this.#warnNoIp();
+        return;
+      }
+      const key = `${rule.label}|${rule.audience ?? ''}|${caller}`;
+      const count = counted.get(key) ?? { rule, hits: 0 };
+      count.hits++;
+      counted.set(key, count);
+    }
+    if (counted.size === 0) return;
+    const now = Date.now();
+    for (const [key, { rule }] of counted) {
+      const until = this.#refused.get(key);
+      if (until === undefined) continue;
+      if (until > now) throw tooMany(rule, until - now);
+      this.#refused.delete(key);
+    }
+    const keys = [...counted.keys()];
+    const counts = [...counted.values()];
+    // A key over its limit is not written again until its window ends, so
+    // refusals add no dead rows and hold no row lock. For a key left as
+    // it was, the outer query reads when its window ends, as it was
+    // before the statement.
+    const rows = await db
       .newQuery(
-        `INSERT INTO {{${RATE_LIMITS}}} AS r (key, hits, window_end)
-         VALUES ({:key}, 1, now() + make_interval(secs => {:window}))
-         ON CONFLICT (key) DO UPDATE SET
-           hits = CASE WHEN r.window_end <= now() THEN 1 ELSE least(r.hits + 1, {:over}) END,
-           window_end = CASE WHEN r.window_end <= now() THEN now() + make_interval(secs => {:window}) ELSE r.window_end END
-         RETURNING hits, ceil(extract(epoch FROM window_end - now()))::int AS "resetIn"`,
+        `WITH counted AS (
+           INSERT INTO {{${RATE_LIMITS}}} AS r (key, hits, window_end)
+           SELECT key, hits, now() + make_interval(secs => window_seconds)
+           FROM unnest({:keys}::text[], {:hits}::int[], {:windows}::int[])
+             AS c(key, hits, window_seconds)
+           ON CONFLICT (key) DO UPDATE SET
+             hits = CASE WHEN r.window_end <= now() THEN excluded.hits ELSE r.hits + excluded.hits END,
+             window_end = CASE WHEN r.window_end <= now() THEN excluded.window_end ELSE r.window_end END
+           WHERE r.window_end <= now()
+             OR r.hits <= ({:maxes}::int[])[array_position({:keys}::text[], r.key)]
+           RETURNING key, hits, window_end
+         )
+         SELECT c.key, counted.hits,
+           extract(epoch FROM coalesce(counted.window_end, r.window_end) - now()) * 1000 AS "resetMs"
+         FROM unnest({:keys}::text[]) AS c(key)
+         LEFT JOIN counted ON counted.key = c.key
+         LEFT JOIN {{${RATE_LIMITS}}} AS r ON counted.key IS NULL AND r.key = c.key`,
       )
-      .bind({ key, window: rule.window, over: rule.max + 1 })
-      .one<{ hits: number; resetIn: number }>();
+      .bind({
+        keys,
+        hits: counts.map((c) => c.hits),
+        windows: counts.map((c) => c.rule.window),
+        maxes: counts.map((c) => c.rule.max),
+      })
+      .all<{ key: string; hits: number | null; resetMs: number | null }>();
     if (Math.random() * rateLimitTimings.pruneEvery < 1) this.#prune(db);
-    if (hits <= rule.max) return;
-    const seconds = String(Math.max(1, resetIn));
-    // Labels hold no quotes or backslashes, so each is a valid quoted string.
-    const name = `"${rule.label}"`;
-    throw new ApiError(
-      429,
-      'Too many requests.',
-      {},
-      {
-        'retry-after': seconds,
-        'ratelimit-policy': `${name};q=${rule.max};w=${rule.window}`,
-        ratelimit: `${name};r=0;t=${seconds}`,
-      },
-    );
+    const results = new Map(rows.map((row) => [row.key, row]));
+    let refusal: ApiError | undefined;
+    for (const [key, { rule }] of counted) {
+      const row = results.get(key);
+      if (row?.hits != null && row.hits <= rule.max) continue;
+      // Null when another instance created the row as this one counted.
+      const resetMs = Number(row?.resetMs ?? rule.window * 1000);
+      this.#refuse(key, Date.now() + resetMs);
+      refusal ??= tooMany(rule, resetMs);
+    }
+    if (refusal) throw refusal;
+  }
+
+  #refuse(key: string, until: number): void {
+    if (this.#refused.size >= MAX_REFUSED) {
+      const now = Date.now();
+      for (const [old, end] of this.#refused) {
+        if (end <= now) this.#refused.delete(old);
+      }
+      // Still full: the oldest go first.
+      for (const old of this.#refused.keys()) {
+        if (this.#refused.size < MAX_REFUSED) break;
+        this.#refused.delete(old);
+      }
+    }
+    this.#refused.set(key, until);
   }
 
   /**
@@ -242,10 +315,15 @@ export class RateLimits {
   ): RateLimitRule | undefined {
     const pick = (slot: Slot | undefined): RateLimitRule | undefined =>
       slot && (slot[audience] ?? slot.any);
-    for (const tag of tags) {
+    const name = collection?.name.toLowerCase();
+    for (const routeTag of tags) {
+      // Creating an auth record signs up, as `/sign-up` does.
+      const tag =
+        routeTag === 'create' && collection?.type === 'auth'
+          ? 'auth'
+          : routeTag;
       const rule =
-        (collection !== undefined &&
-          pick(this.#tags.get(`${collection.toLowerCase()}:${tag}`))) ||
+        (name !== undefined && pick(this.#tags.get(`${name}:${tag}`))) ||
         pick(this.#tags.get(`*:${tag}`));
       if (rule) return rule;
     }
@@ -301,6 +379,14 @@ function checkRule(rule: RateLimitRule): RateLimitRule {
   }
   const { label, audience, max, window } = rule;
   const name = JSON.stringify(label);
+  if (typeof label === 'string') {
+    const path = METHOD_LABEL.exec(label)?.[2] ?? label;
+    if (BELOW_COLLECTION.test(path)) {
+      throw new TypeError(
+        `rateLimits.rules has the label ${name}, a path below one collection, which requests can also name by its id. Use a tag label such as "posts:list" or "posts:create".`,
+      );
+    }
+  }
   if (typeof label !== 'string' || !validLabel(label)) {
     throw new TypeError(
       `rateLimits.rules has an invalid label ${name}. Use a route tag ("users:auth", "*:create"), "METHOD /path", "/path" or "/prefix/".`,
@@ -323,6 +409,10 @@ function checkRule(rule: RateLimitRule): RateLimitRule {
   }
   return { label, ...(audience !== undefined && { audience }), max, window };
 }
+
+// A path below one collection, which a request can also name by its id or
+// with escapes, so only a tag label limits it reliably.
+const BELOW_COLLECTION = /^\/(?:collections|files)\/[^/]+\//;
 
 function validLabel(label: string): boolean {
   if (label.length === 0 || label.length > MAX_LABEL) return false;
@@ -373,9 +463,9 @@ function family(ip: string): 'ipv4' | 'ipv6' {
 }
 
 /**
- * A guest's IP as counted: IPv6 by its /64, the block one subscriber is
- * usually given, so changing the rest of the address does not reset the
- * count. The IP is as `clientIp` reads it, so IPv6 is compressed.
+ * A guest's IP as counted: IPv6 by its /56, as ISPs commonly give one
+ * subscriber a /56 or a /48, so changing the rest of the address does not
+ * reset the count. The IP is as `clientIp` reads it, so IPv6 is compressed.
  */
 function ipKey(ip: string): string {
   if (isIP(ip) !== 6) return ip;
@@ -390,5 +480,24 @@ function ipKey(ip: string): string {
           ...Array<string>(8 - left.length - right.length).fill('0'),
           ...right,
         ];
-  return `${groups.slice(0, 4).join(':')}::/64`;
+  // 56 bits: three groups, and the high byte of the fourth.
+  const fourth = (Number(`0x${groups[3] ?? '0'}`) & 0xff00).toString(16);
+  return `${[...groups.slice(0, 3), fourth].join(':')}::/56`;
+}
+
+/** The 429 of a rule, its window ending in `resetMs`. */
+function tooMany(rule: RateLimitRule, resetMs: number): ApiError {
+  const seconds = String(Math.max(1, Math.ceil(resetMs / 1000)));
+  // Labels hold no quotes or backslashes, so each is a valid quoted string.
+  const name = `"${rule.label}"`;
+  return new ApiError(
+    429,
+    'Too many requests.',
+    {},
+    {
+      'retry-after': seconds,
+      'ratelimit-policy': `${name};q=${rule.max};w=${rule.window}`,
+      ratelimit: `${name};r=0;t=${seconds}`,
+    },
+  );
 }

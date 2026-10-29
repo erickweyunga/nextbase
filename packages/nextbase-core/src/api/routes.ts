@@ -76,7 +76,7 @@ import {
   logsCollection,
 } from '../logs/store.ts';
 import { newId } from '../random.ts';
-import type { RouteTag } from '../rate-limits.ts';
+import type { Limited, RouteTag } from '../rate-limits.ts';
 import type { Realtime } from '../realtime/stream.ts';
 import type { Hooks } from '../records/hooks.ts';
 import { serializeRecord } from '../records/serialize.ts';
@@ -135,6 +135,13 @@ interface Context {
    * have an error status, such as a failed OAuth2 sign-in's redirect.
    */
   noteError(error: string): void;
+  /**
+   * Counts requests against rate limits for the caller: this request when
+   * none are given, as for a route marked `countsItself`, or the writes of
+   * a batch. Throws the 429 of the first that is over. Does nothing for
+   * in-process requests or when rate limits are off.
+   */
+  rateLimit(requests?: readonly Limited[]): Promise<void>;
 }
 
 export interface Route {
@@ -164,6 +171,11 @@ export interface Route {
    * naming that collection apply too.
    */
   tags?: readonly RouteTag[];
+  /**
+   * The handler counts the request itself, through `rateLimit()`, so it
+   * can answer a refusal its own way.
+   */
+  countsItself?: true;
   handler(context: Context): Promise<Response>;
 }
 
@@ -280,6 +292,15 @@ export const ROUTES: readonly Route[] = [
     joinsTransaction: true,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
+      // Each write counts as it would sent on its own, before any runs.
+      await context.rateLimit(
+        writes.map((write) => ({
+          method: write.method,
+          route: write.path,
+          tags: [WRITE_TAGS[write.method]],
+          collection: context.schema.find(write.collection),
+        })),
+      );
       // Writes are planned before the transaction starts, then all run in it:
       // all or nothing. Planning stops at the first write that fails. The
       // writes before it still run, so the batch reports the first failing
@@ -595,7 +616,10 @@ export const ROUTES: readonly Route[] = [
       `^/collections/${segment}/auth-with-oauth2/${segment}$`,
     ),
     tags: ['auth'],
-    async handler({ request, params, db, schema, principal, origins, oauth2 }) {
+    countsItself: true,
+    async handler(context) {
+      const { request, params, db, schema, principal, origins, oauth2 } =
+        context;
       const collection = authCollection(schema, params[0] as string);
       if (collection.id === SUPERUSERS) {
         throw new ApiError(400, 'Superusers sign in with their password.');
@@ -605,6 +629,21 @@ export const ROUTES: readonly Route[] = [
       const redirect = checkRedirect(query.get('redirect'));
       const errorRedirect =
         checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
+      // The browser is navigating, so a refusal goes back to the app as
+      // its other sign-in errors do, not as JSON.
+      try {
+        await context.rateLimit();
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 429) throw error;
+        context.noteError('too_many_requests');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            ...error.headers,
+            location: oauth2.returnUrl(errorRedirect, 'too_many_requests'),
+          },
+        });
+      }
       let linkRecordId: string | null = null;
       if (query.get('link') === 'true') {
         // Linking adds a way into the account, so only this site may start it.
@@ -635,8 +674,9 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: 'GET',
+    // Untagged, so sign-in limits leave it be: it is bound to the state
+    // cookie and a single-use code, and a refusal would lose the sign-in.
     pattern: new RegExp(`^/callback/${segment}$`),
-    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
@@ -728,6 +768,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'GET',
     pattern: linkedAccounts,
+    tags: ['list'],
     async handler({ params, db, schema, principal }) {
       const { collection, id } = ownRecord(schema, principal, params);
       return Response.json({
@@ -740,6 +781,7 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(
       `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
+    tags: ['delete'],
     async handler({ params, db, schema, principal, mailer, oauth2 }) {
       const { collection, id } = ownRecord(schema, principal, params);
       const unlinked = await unlinkAccount(
@@ -1157,8 +1199,19 @@ function batchError(i: number, error: unknown): unknown {
 
 const MAX_BATCH = 50;
 
+const WRITE_TAGS = {
+  POST: 'create',
+  PATCH: 'update',
+  DELETE: 'delete',
+} as const satisfies Record<RecordWrite['method'], RouteTag>;
+
 // `{ requests: [{ method, url, body }] }`, each url a records path below the base path.
-function parseBatch(input: Record<string, unknown>): RecordWrite[] {
+/** A write of a batch, with its records path. */
+interface BatchWrite extends RecordWrite {
+  path: string;
+}
+
+function parseBatch(input: Record<string, unknown>): BatchWrite[] {
   const { requests } = input;
   if (
     !Array.isArray(requests) ||
@@ -1172,7 +1225,7 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
       },
     });
   }
-  return requests.map((request: unknown, i): RecordWrite => {
+  return requests.map((request: unknown, i): BatchWrite => {
     const invalid = (message: string): ApiError =>
       new ApiError(400, 'The batch is invalid.', {
         requests: { [i]: { code: 'validation_invalid', message } },
@@ -1206,6 +1259,7 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
       .map((p) => decodeURIComponent(p)) as [string, string | undefined];
     return {
       method,
+      path: parsed.pathname,
       collection,
       ...(id !== undefined && { id }),
       body: body as Record<string, unknown>,

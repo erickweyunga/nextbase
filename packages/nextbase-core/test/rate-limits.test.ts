@@ -119,6 +119,7 @@ describe('rate limits', () => {
       type: 'auth',
       listRule: '',
       viewRule: '',
+      createRule: '',
     });
     await superuser.collections.create({
       name: 'posts',
@@ -169,31 +170,20 @@ describe('rate limits', () => {
   });
 
   describe('which rule applies', () => {
-    const all = [
-      '/',
-      '/collections/',
-      '/collections/posts/',
-      '/collections/posts/records',
-      'GET /collections/posts/records',
-      '*:list',
-      'posts:list',
-    ];
-
     it('takes the collection tag, then any tag, method and path, path, and longest prefix', async () => {
       const list = ['GET', '/collections/posts/records'] as const;
-      expect(await labelOf(all, ...list)).toBe('posts:list');
-      expect(await labelOf(all.slice(0, 6), ...list)).toBe('*:list');
-      expect(await labelOf(all.slice(0, 5), ...list)).toBe(
-        'GET /collections/posts/records',
+      const collections = ['/', '/collections/', '*:list', 'posts:list'];
+      expect(await labelOf(collections, ...list)).toBe('posts:list');
+      expect(await labelOf(collections.slice(0, 3), ...list)).toBe('*:list');
+      expect(await labelOf(collections.slice(0, 2), ...list)).toBe(
+        '/collections/',
       );
-      expect(await labelOf(all.slice(0, 4), ...list)).toBe(
-        '/collections/posts/records',
-      );
-      expect(await labelOf(all.slice(0, 3), ...list)).toBe(
-        '/collections/posts/',
-      );
-      expect(await labelOf(all.slice(0, 2), ...list)).toBe('/collections/');
-      expect(await labelOf(all.slice(0, 1), ...list)).toBe('/');
+      const batch = ['POST', '/batch'] as const;
+      const paths = ['/', '/batch', 'POST /batch', '*:batch'];
+      expect(await labelOf(paths, ...batch)).toBe('*:batch');
+      expect(await labelOf(paths.slice(0, 3), ...batch)).toBe('POST /batch');
+      expect(await labelOf(paths.slice(0, 2), ...batch)).toBe('/batch');
+      expect(await labelOf(paths.slice(0, 1), ...batch)).toBe('/');
     });
 
     it('matches collection tags by name, in any case, and by id', async () => {
@@ -214,13 +204,14 @@ describe('rate limits', () => {
       const { rows } = await t.pool.query<{ id: string }>(
         "SELECT id FROM nextbase._collections WHERE name = 'posts'",
       );
-      expect(
-        await labelOf(
-          ['*:list', 'posts:list'],
-          'GET',
-          `/collections/${rows[0]?.id}/records`,
-        ),
-      ).toBe('posts:list');
+      for (const path of [
+        `/collections/${rows[0]?.id}/records`,
+        '/collections/%70osts/records',
+      ]) {
+        expect(await labelOf(['*:list', 'posts:list'], 'GET', path), path).toBe(
+          'posts:list',
+        );
+      }
     });
 
     it('tags every kind of route', async () => {
@@ -237,6 +228,12 @@ describe('rate limits', () => {
         ['auth', 'POST', '/collections/users/auth-refresh'],
         ['file', 'GET', '/files/posts/x/a.txt'],
         ['file', 'POST', '/collections/posts/upload-url'],
+        ['list', 'GET', '/collections/users/records/x/linked-accounts'],
+        [
+          'delete',
+          'DELETE',
+          '/collections/users/records/x/linked-accounts/github',
+        ],
       ] as const;
       for (const [tag, method, path] of tags) {
         const collection = path.split('/')[2] as string;
@@ -253,28 +250,63 @@ describe('rate limits', () => {
         ['batch', 'POST', '/batch'],
         ['realtime', 'POST', '/realtime'],
         ['file', 'POST', '/files/token'],
-        ['auth', 'GET', '/callback/github'],
       ] as const) {
         expect(await labelOf(['/', `*:${tag}`], method, path), path).toBe(
           `*:${tag}`,
         );
       }
-      // Untagged: only paths apply.
+      // Untagged: only paths apply. The OAuth2 callback is bound to its
+      // state cookie and a single-use code, so sign-in limits leave it be.
       expect(await labelOf(['/', '*:list'], 'GET', '/collections')).toBe('/');
+      expect(await labelOf(['/', '*:auth'], 'GET', '/callback/github')).toBe(
+        '/',
+      );
+    });
+
+    it('counts creating an auth record as signing up, directly or in a batch', async () => {
+      const create = ['POST', '/collections/users/records'] as const;
+      expect(
+        await labelOf(['/', '*:create', '*:auth', 'users:auth'], ...create),
+      ).toBe('users:auth');
+      expect(await labelOf(['/', '*:create', '*:auth'], ...create)).toBe(
+        '*:auth',
+      );
+      expect(
+        await labelOf(['/', '*:auth'], 'POST', '/collections/posts/records'),
+      ).toBe('/');
+      const nextbase = limited([
+        { label: '*:auth', max: 1, window: 60 },
+        { label: '*:create', max: 50, window: 60 },
+      ]);
+      const reply = await send(nextbase, 'POST', '/batch', {
+        ip: nextIp(),
+        body: {
+          requests: ['a', 'b'].map((name) => ({
+            method: 'POST',
+            url: '/collections/users/records',
+            body: {
+              email: `${name}-batch@example.com`,
+              password: PASSWORD,
+              passwordConfirm: PASSWORD,
+            },
+          })),
+        },
+      });
+      expect(reply.status).toBe(429);
+      expect(reply.headers.get('ratelimit-policy')).toBe('"*:auth";q=1;w=60');
+      const users = await nextbase
+        .client({ superuser: true })
+        .collection('users')
+        .getList(1, 10, { filter: 'email ~ "-batch@"' });
+      expect(users.totalItems).toBe(0);
     });
 
     it('matches an exact path only, a method only as sent, and HEAD as GET', async () => {
-      const labels = [
-        '/',
-        '/collections/posts',
-        'POST /collections/posts/records',
-      ];
-      expect(await labelOf(labels, 'GET', '/collections/posts/records')).toBe(
-        '/',
-      );
-      expect(await labelOf(labels, 'POST', '/collections/posts/records')).toBe(
-        'POST /collections/posts/records',
-      );
+      const labels = ['/', '/batc', 'GET /batch'];
+      expect(await labelOf(labels, 'POST', '/batch')).toBe('/');
+      expect(
+        await labelOf(['/', '/batch', 'GET /batch'], 'POST', '/batch'),
+      ).toBe('/batch');
       expect(
         await labelOf(['/', 'GET /collections'], 'HEAD', '/collections'),
       ).toBe('GET /collections');
@@ -362,11 +394,200 @@ describe('rate limits', () => {
     await t.pool.query(
       "UPDATE nextbase._rate_limits SET window_end = now() - interval '1 millisecond'",
     );
-    expect(await statuses(nextbase, 3, 'GET', path, { ip })).toEqual([
+    // This instance still refuses until the window it saw ends, without
+    // asking the database. Another starts the new window.
+    expect((await send(nextbase, 'GET', path, { ip })).status).toBe(429);
+    const another = limited([{ label: '/', max: 2, window: 60 }]);
+    expect(await statuses(another, 3, 'GET', path, { ip })).toEqual([
       200, 200, 429,
     ]);
     // Refused requests count no further than one past the limit.
     expect(Object.values(await counts())).toEqual([3]);
+  });
+
+  it('answers repeated refusals without the database, and never rewrites a refused count', async () => {
+    const rules = [{ label: '/', max: 1, window: 60 }];
+    const path = '/collections/posts/records';
+    const ip = nextIp();
+    const first = limited(rules);
+    expect(await statuses(first, 2, 'GET', path, { ip })).toEqual([200, 429]);
+    const row = async () =>
+      (
+        await t.pool.query<{ hits: number; version: string }>(
+          'SELECT hits, xmin::text AS version FROM nextbase._rate_limits',
+        )
+      ).rows[0];
+    const over = await row();
+    expect(over?.hits).toBe(2);
+    // Another instance asks the database once, which leaves the row as it
+    // is, then answers from memory too.
+    let queries = 0;
+    const pool = new Proxy(t.pool, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== 'function') return value;
+        if (prop !== 'query') return value.bind(target);
+        return (...args: unknown[]) => {
+          queries++;
+          return value.apply(target, args);
+        };
+      },
+    });
+    const second = limited(rules, { database: pool });
+    await second.migrate();
+    queries = 0;
+    const refused = await send(second, 'GET', path, { ip });
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(55);
+    expect(queries).toBe(1);
+    expect(await row()).toEqual(over);
+    expect(await statuses(second, 5, 'GET', path, { ip })).toEqual(
+      Array<number>(5).fill(429),
+    );
+    expect(queries).toBe(1);
+    expect(await statuses(first, 5, 'GET', path, { ip })).toEqual(
+      Array<number>(5).fill(429),
+    );
+    expect(await row()).toEqual(over);
+  });
+
+  describe('batches', () => {
+    const creates = (n: number, title: string) => ({
+      requests: Array.from({ length: n }, () => ({
+        method: 'POST',
+        url: '/collections/posts/records',
+        body: { title },
+      })),
+    });
+    const titled = async (nextbase: NextBase, title: string) =>
+      (
+        await nextbase
+          .client({ superuser: true })
+          .collection('posts')
+          .getList(1, 1, { filter: `title = "${title}"` })
+      ).totalItems;
+
+    it('counts every write as if sent on its own, refusing the whole batch', async () => {
+      const nextbase = limited([
+        { label: '*:create', max: 3, window: 60 },
+        { label: '*:update', max: 1, window: 60 },
+        { label: '/', max: 100, window: 60 },
+      ]);
+      const ip = nextIp();
+      const batch = (body: unknown) =>
+        send(nextbase, 'POST', '/batch', { ip, body });
+      expect((await batch(creates(2, 'batch-a'))).status).toBe(200);
+      const refused = await batch(creates(2, 'batch-b'));
+      expect(refused.status).toBe(429);
+      expect(refused.headers.get('ratelimit-policy')).toBe(
+        '"*:create";q=3;w=60',
+      );
+      expect(await titled(nextbase, 'batch-a')).toBe(2);
+      expect(await titled(nextbase, 'batch-b')).toBe(0);
+      // The batch itself counts under its own rule too.
+      expect(Object.values(await counts()).sort()).toEqual([2, 4]);
+      // Other kinds of writes count under their own tags.
+      const updates = await batch({
+        requests: ['x', 'y'].map((id) => ({
+          method: 'PATCH',
+          url: `/collections/posts/records/${id}`,
+          body: {},
+        })),
+      });
+      expect(updates.headers.get('ratelimit-policy')).toBe(
+        '"*:update";q=1;w=60',
+      );
+    });
+
+    it('refuses a batch over its own rule before counting its writes', async () => {
+      const nextbase = limited([
+        { label: 'POST /batch', max: 1, window: 60 },
+        { label: '*:create', max: 50, window: 60 },
+      ]);
+      const ip = nextIp();
+      expect(
+        (await send(nextbase, 'POST', '/batch', { ip, body: creates(1, 'b1') }))
+          .status,
+      ).toBe(200);
+      const refused = await send(nextbase, 'POST', '/batch', {
+        ip,
+        body: creates(1, 'b2'),
+      });
+      expect(refused.headers.get('ratelimit-policy')).toBe(
+        '"POST /batch";q=1;w=60',
+      );
+      expect(await titled(nextbase, 'b2')).toBe(0);
+    });
+
+    it('counts a signed-in caller by record', async () => {
+      const nextbase = limited([{ label: '*:create', max: 3, window: 60 }]);
+      expect(
+        (
+          await send(nextbase, 'POST', '/batch', {
+            token: user,
+            body: creates(3, 'mine'),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await send(nextbase, 'POST', '/collections/posts/records', {
+            token: user,
+            ip: nextIp(),
+            body: { title: 'mine' },
+          })
+        ).status,
+      ).toBe(429);
+    });
+
+    it('limits the default batch to far fewer creates than it carries', async () => {
+      const nextbase = instance();
+      const reply = await send(nextbase, 'POST', '/batch', {
+        token: user,
+        body: creates(25, 'default'),
+      });
+      expect(reply.status).toBe(429);
+      expect(reply.headers.get('ratelimit-policy')).toBe('"*:create";q=20;w=5');
+      expect(await titled(nextbase, 'default')).toBe(0);
+    });
+  });
+
+  it('counts requests with an invalid token as a guest', async () => {
+    const nextbase = limited([{ label: '/', max: 1, window: 60 }]);
+    const ip = nextIp();
+    const path = '/collections/posts/records';
+    expect(
+      await statuses(nextbase, 2, 'GET', path, { ip, token: 'made-up' }),
+    ).toEqual([401, 429]);
+    expect(await counts()).toEqual({ [`/||ip:${ip}`]: 2 });
+  });
+
+  it('sends a refused OAuth2 sign-in back to the app', async () => {
+    const nextbase = limited([{ label: '*:auth', max: 1, window: 60 }], {
+      appUrl: 'https://app.example',
+      oauth2: { github: { clientId: 'client', clientSecret: 'secret' } },
+    });
+    const ip = nextIp();
+    const path =
+      '/collections/users/auth-with-oauth2/github?redirect=/home&errorRedirect=/login';
+    const started = await send(nextbase, 'GET', path, { ip });
+    expect(started.status).toBe(302);
+    expect(started.headers.get('location')).toMatch(/^https:\/\/github\.com\//);
+    const refused = await send(nextbase, 'GET', path, { ip });
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get('location')).toBe(
+      'https://app.example/login?error=too_many_requests',
+    );
+    expect(refused.headers.get('ratelimit-policy')).toBe('"*:auth";q=1;w=60');
+    expect(refused.headers.get('retry-after')).toMatch(/^\d+$/);
+    // A bad redirect is still refused as JSON, as before.
+    const invalid = await send(
+      nextbase,
+      'GET',
+      '/collections/users/auth-with-oauth2/github?redirect=https://evil.example',
+      { ip },
+    );
+    expect(invalid.status).toBe(400);
   });
 
   it('ends a real window after its seconds', async () => {
@@ -486,28 +707,21 @@ describe('rate limits', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it('counts an IPv6 guest by its /64', async () => {
+  it('counts an IPv6 guest by its /56', async () => {
     const nextbase = limited([{ label: '/', max: 2, window: 60 }]);
     const path = '/collections/posts/records';
-    expect(
-      (await send(nextbase, 'GET', path, { ip: '2001:db8:1:2::1' })).status,
-    ).toBe(200);
-    expect(
-      (await send(nextbase, 'GET', path, { ip: '[2001:DB8:1:2:ffff::5]:443' }))
-        .status,
-    ).toBe(200);
-    expect(
-      (await send(nextbase, 'GET', path, { ip: '2001:db8:1:2:abcd::' })).status,
-    ).toBe(429);
-    expect(
-      (await send(nextbase, 'GET', path, { ip: '2001:db8:1:3::1' })).status,
-    ).toBe(200);
-    expect(
-      (await send(nextbase, 'GET', path, { ip: '::ffff:203.0.113.9' })).status,
-    ).toBe(200);
+    const status = async (ip: string) =>
+      (await send(nextbase, 'GET', path, { ip })).status;
+    expect(await status('2001:db8:1:2::1')).toBe(200);
+    expect(await status('[2001:DB8:1:FF:ffff::5]:443')).toBe(200);
+    expect(await status('2001:db8:1:0:abcd::')).toBe(429);
+    expect(await status('2001:db8:1:100::1')).toBe(200);
+    expect(await status('2001:db8:2::1')).toBe(200);
+    expect(await status('::ffff:203.0.113.9')).toBe(200);
     expect(await counts()).toEqual({
-      '/||ip:2001:db8:1:2::/64': 3,
-      '/||ip:2001:db8:1:3::/64': 1,
+      '/||ip:2001:db8:1:0::/56': 3,
+      '/||ip:2001:db8:1:100::/56': 1,
+      '/||ip:2001:db8:2:0::/56': 1,
       '/||ip:203.0.113.9': 1,
     });
   });
@@ -542,13 +756,29 @@ describe('rate limits', () => {
     ]) {
       expect(create({ rules: [rule({ label })] }), label).toThrow(TypeError);
     }
+    // Paths below one collection can also be sent with its id or escapes.
+    for (const label of [
+      '/collections/posts/',
+      '/collections/posts/records',
+      'POST /collections/posts/records',
+      'DELETE /collections/posts/records/x',
+      '/files/posts/',
+      '/files/posts/x/a.txt',
+    ]) {
+      expect(create({ rules: [rule({ label })] }), label).toThrow(
+        /tag label such as "posts:list"/,
+      );
+    }
     for (const label of [
       '/',
       '/x',
       '/x/',
       '/x%20y',
       'GET /x',
-      'DELETE /collections/posts/records/x',
+      '/collections/',
+      '/collections/posts',
+      '/files/',
+      'GET /collections',
       '*:auth',
       '_superusers:auth',
       'Posts:list',

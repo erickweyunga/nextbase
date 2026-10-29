@@ -14,13 +14,15 @@ Rate limits are on by default, with these rules:
 
 | Label | Requests | Window | Limits |
 | ----- | -------- | ------ | ------ |
-| `*:auth` | 2 | 3 seconds | sign-ins, sign-ups, session refreshes and every request and confirm route of email and phone flows |
+| `*:auth` | 2 | 3 seconds | sign-ins, sign-ups (including creates in auth collections), session refreshes and every request and confirm route of email and phone flows |
 | `*:create` | 20 | 5 seconds | record creates |
 | `POST /batch` | 3 | 1 second | batches |
 | `/` | 300 | 10 seconds | every other route |
 
 A request over its limit gets a `429`, and nothing else happens: its handler
-never runs.
+never runs. Each write in a [batch](/docs/api/records) counts as if it were
+sent on its own, besides the batch itself, so a batch of 25 creates is over
+the default `*:create` limit and is refused whole, before any write runs.
 
 ## Guests need the client's IP
 
@@ -36,8 +38,10 @@ export const nextbase = new NextBase({
 
 Without it, guests are not limited, and the server log says so once per
 instance. Signed-in callers are limited either way. IPv6 guests are counted
-by the `/64` they come from, the block one subscriber is usually given, so
-changing the rest of the address does not reset the count.
+by the `/56` they come from, as ISPs commonly give one subscriber a `/56` or
+a `/48`, so changing the rest of the address does not reset the count. A
+request with an invalid token counts as a guest's before it is refused with
+a `401`.
 
 ## Your own rules
 
@@ -52,7 +56,7 @@ export const nextbase = new NextBase({
       { label: "*:create", audience: "guest", max: 5, window: 60 },
       { label: "*:create", max: 20, window: 5 },
       { label: "POST /batch", max: 3, window: 1 },
-      { label: "/files/", max: 600, window: 10 },
+      { label: "posts:list", max: 100, window: 10 },
       { label: "/", max: 300, window: 10 },
     ],
     excludedIps: ["10.0.0.0/8"],
@@ -73,14 +77,20 @@ A label is one of:
 | `*:auth` | routes with that tag, of any collection |
 | `POST /batch` | that method and exact path |
 | `/files/token` | that exact path, any method |
-| `/files/` | every path that starts with it; ends with a slash |
+| `/collections/` | every path that starts with it; ends with a slash |
 
-Paths are below `basePath`, so `/batch` is `/api/nextbase/batch`. The tags are:
+Paths are below `basePath`, so `/batch` is `/api/nextbase/batch`. A path
+label cannot name anything below one collection, such as
+`/collections/posts/records` or `/files/posts/`: a request can name the
+collection by its id or with escapes instead, so such a label would be easy
+to get around. Use a tag label, such as `posts:list`, which matches however
+the collection is named; NextBase refuses those path labels when it is
+created. The tags are:
 
 | Tag | Routes |
 | --- | ------ |
-| `auth` | sign-in with password, phone code or OAuth2 (and its callback), sign-up, `auth-refresh`, and every `request-*` and `confirm-*` route |
-| `create`, `list`, `view`, `update`, `delete` | the records routes |
+| `auth` | sign-in with password, phone code or OAuth2, sign-up, creates in auth collections, `auth-refresh`, and every `request-*` and `confirm-*` route |
+| `create`, `list`, `view`, `update`, `delete` | the records routes; `list` and `delete` also the linked accounts routes |
 | `batch` | `POST /batch` |
 | `realtime` | `POST /realtime` |
 | `file` | file downloads, file tokens and upload URLs |
@@ -124,16 +134,28 @@ RateLimit: "*:auth";r=0;t=2
 
 `Retry-After` and `t` are the seconds until the window ends; `q` and `w` are
 the rule's `max` and `window`. Requests within their limit carry none of these
-headers. Refused requests are [logged](/docs/guides/logs) at warn, with
+headers.
+
+Starting an OAuth2 sign-in is a browser navigation, so a refused one is not
+answered with JSON: it is sent back to its `errorRedirect` (or `redirect`)
+with `?error=too_many_requests`, as its other sign-in errors are. The OAuth2
+callback has no tag, so sign-in limits never cut a sign-in short on its way
+back from the provider. Refused requests are [logged](/docs/guides/logs) at warn, with
 `data.error` saying `Too many requests.`
 
 ## How counting works
 
 Each limited request takes one round trip to the database: a single upsert,
 before the route opens any transaction, adds one to its count and reads it
-back, so parallel requests can never all pass. About one request in 100 also
-deletes expired counts, in the background. The table is unlogged: the counts
-are short-lived, and a database crash only resets them.
+back, so parallel requests can never all pass. A count already over its
+limit is not written again until its window ends, and each instance
+remembers it, answering further requests for it without the database. About
+one request in 100 also deletes expired counts, in the background.
+
+The table is unlogged, so counts reset when the database crashes or fails
+over to a replica, which it is not copied to, and on some managed hosts when
+compute restarts. They are short-lived, so this only gives callers a fresh
+window.
 
 Rate limits come on top of the limit on failed sign-ins per account, 10 every
 15 minutes, which holds whatever the caller's IP.

@@ -175,7 +175,11 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 - Check that guests are [rate limited](/docs/guides/rate-limits). NextBase
   limits every caller by default, but counts guests by IP, which it only
   knows on Vercel or with `clientIp` set to the header your proxy sets.
-  Failed sign-ins are also limited per account (10 every 15 minutes).
+  Failed sign-ins are also limited per account (10 every 15 minutes). Each
+  limited request adds one round trip to the database, which shows more on
+  serverless hosts far from it. On a cold instance, the first create, or the
+  first request a rule naming a collection could match, can add a schema
+  read.
 - Review every collection's rules. New collections default to superuser-only.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.
