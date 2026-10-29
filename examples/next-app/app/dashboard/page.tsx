@@ -1,18 +1,18 @@
-import { redirect } from "next/navigation";
-import { links } from "@/lib/links";
-import { nb } from "@/lib/nextbase";
-import { OAUTH2_ERRORS } from "@/lib/oauth2-errors";
-import { UnlinkButton } from "./unlink-button";
+import { redirect } from 'next/navigation';
+import { links } from '@/lib/links';
+import { nb } from '@/lib/nextbase';
+import { OAUTH2_ERRORS } from '@/lib/oauth2-errors';
+import { UnlinkButton } from './unlink-button';
 
 // proxy.ts redirects signed-out visitors; collection rules decide what this user may read.
 export default async function Dashboard({
   searchParams,
-}: PageProps<"/dashboard">) {
+}: PageProps<'/dashboard'>) {
   const { error } = await searchParams;
   const client = await nb();
   const session = await client.getSession();
   // The session can end between proxy.ts and this render.
-  if (!session) redirect("/sign-in");
+  if (!session) redirect('/sign-in');
   const record = session.record;
   const collection = String(record.collectionName);
   const users = client.collection(collection);
@@ -32,13 +32,13 @@ export default async function Dashboard({
       {/* Accounts made by phone sign-in may have no email. */}
       <p>Welcome, {String(record.email || record.phone)}.</p>
       <h2>Linked accounts</h2>
-      {typeof error === "string" && (
-        <p role="alert">{OAUTH2_ERRORS[error] ?? "Linking failed."}</p>
+      {typeof error === 'string' && (
+        <p role="alert">{OAUTH2_ERRORS[error] ?? 'Linking failed.'}</p>
       )}
       <ul>
         {linked.map((auth) => (
           <li key={auth.id}>
-            {name(auth.provider)}{" "}
+            {name(auth.provider)}{' '}
             <UnlinkButton
               collection={collection}
               recordId={record.id}
@@ -51,7 +51,7 @@ export default async function Dashboard({
             <a
               href={links.collection(collection).oauth2Url(provider.name, {
                 link: true,
-                redirect: "/dashboard",
+                redirect: '/dashboard',
               })}
             >
               Connect {provider.displayName}

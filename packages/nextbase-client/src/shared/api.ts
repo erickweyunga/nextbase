@@ -1,5 +1,5 @@
 /** Default mount point of the NextBase route handler. */
-export const DEFAULT_BASE_PATH = "/api/nextbase";
+export const DEFAULT_BASE_PATH = '/api/nextbase';
 
 /** One validation failure. `code` is stable; `message` is for humans. */
 export interface FieldError {
@@ -20,7 +20,7 @@ export interface ApiErrorBody {
 }
 
 export interface HealthResponse {
-  status: "ok";
+  status: 'ok';
 }
 
 /** A page of a list. With `skipTotal`, `totalItems` and `totalPages` are -1. */

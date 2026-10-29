@@ -1,13 +1,13 @@
-import type { BaseCollection } from "@nextbasejs/client";
-import { and, type Builder, type DB } from "@nextbasejs/dbx";
-import type { Principal } from "../auth/principal.ts";
-import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { compileFilter } from "../filter/compiler.ts";
-import { FilterError } from "../filter/parser.ts";
-import type { Schema } from "../schema/cache.ts";
+import type { BaseCollection } from '@nextbasejs/client';
+import { and, type Builder, type DB } from '@nextbasejs/dbx';
+import type { Principal } from '../auth/principal.ts';
+import { table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { compileFilter } from '../filter/compiler.ts';
+import { FilterError } from '../filter/parser.ts';
+import type { Schema } from '../schema/cache.ts';
 
-const LOGS = "_logs";
+const LOGS = '_logs';
 
 /**
  * `_logs` as a collection, so the records API's listing, filters and sorts
@@ -17,25 +17,25 @@ export function logsCollection(): BaseCollection {
   return {
     id: LOGS,
     name: LOGS,
-    type: "base",
+    type: 'base',
     system: true,
     fields: [
       {
-        id: "_id",
-        name: "id",
-        type: "text",
+        id: '_id',
+        name: 'id',
+        type: 'text',
         system: true,
         required: true,
         hidden: false,
         min: 15,
         max: 15,
-        pattern: "^[a-z0-9]+$",
+        pattern: '^[a-z0-9]+$',
         primaryKey: true,
       },
       {
-        id: "_created",
-        name: "created",
-        type: "autodate",
+        id: '_created',
+        name: 'created',
+        type: 'autodate',
         system: true,
         required: false,
         hidden: false,
@@ -43,9 +43,9 @@ export function logsCollection(): BaseCollection {
         onUpdate: false,
       },
       {
-        id: "_level",
-        name: "level",
-        type: "number",
+        id: '_level',
+        name: 'level',
+        type: 'number',
         system: true,
         required: true,
         hidden: false,
@@ -54,21 +54,21 @@ export function logsCollection(): BaseCollection {
         onlyInt: true,
       },
       {
-        id: "_message",
-        name: "message",
-        type: "text",
+        id: '_message',
+        name: 'message',
+        type: 'text',
         system: true,
         required: true,
         hidden: false,
         min: 0,
         max: 0,
-        pattern: "",
+        pattern: '',
         primaryKey: false,
       },
       {
-        id: "_data",
-        name: "data",
-        type: "json",
+        id: '_data',
+        name: 'data',
+        type: 'json',
         system: true,
         required: false,
         hidden: false,
@@ -98,7 +98,7 @@ export interface LogStat {
   total: number;
 }
 
-const ALIAS = "t0";
+const ALIAS = 't0';
 
 /** Entries matching `filter` per hour, in UTC, oldest first. */
 export async function logStats(
@@ -110,8 +110,8 @@ export async function logStats(
   try {
     where = compileFilter(filter, logsCollection(), ALIAS, {
       ...context,
-      request: { method: "GET", query: {}, headers: {}, body: {} },
-      mode: "filter",
+      request: { method: 'GET', query: {}, headers: {}, body: {} },
+      mode: 'filter',
     });
   } catch (error) {
     if (!(error instanceof FilterError)) throw error;
@@ -119,7 +119,7 @@ export async function logStats(
   }
   const hour = `date_trunc('hour', ${ALIAS}.created, 'UTC')`;
   const rows = await q
-    .select(`${hour} AS date`, "COUNT(*) AS total")
+    .select(`${hour} AS date`, 'COUNT(*) AS total')
     .from(`${table(LOGS)} ${ALIAS}`)
     .where(and(where))
     .groupBy(hour)

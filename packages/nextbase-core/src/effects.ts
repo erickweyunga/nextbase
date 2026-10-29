@@ -1,4 +1,4 @@
-import type { MailKind } from "./auth/mail.ts";
+import type { MailKind } from './auth/mail.ts';
 
 export interface MailNote {
   kind: MailKind;

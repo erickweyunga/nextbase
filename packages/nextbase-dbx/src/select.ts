@@ -1,12 +1,12 @@
-import type { Builder } from "./builder.ts";
-import { and, type Expression, hash, or } from "./expression.ts";
+import type { Builder } from './builder.ts';
+import { and, type Expression, hash, or } from './expression.ts';
 import {
   CompositePKError,
   MissingPKError,
   type ModelOptions,
-} from "./model.ts";
-import type { Params, Query, Row } from "./query.ts";
-import { mergeParams } from "./sql.ts";
+} from './model.ts';
+import type { Params, Query, Row } from './query.ts';
+import { mergeParams } from './sql.ts';
 
 interface Join {
   type: string;
@@ -33,7 +33,7 @@ export class SelectQuery {
   readonly #builder: Builder;
   #selects: string[] = [];
   #distinct = false;
-  #selectOption = "";
+  #selectOption = '';
   #from: string[] = [];
   #where: Expression | undefined;
   #joins: Join[] = [];
@@ -99,15 +99,15 @@ export class SelectQuery {
   }
 
   innerJoin(table: string, on?: Expression): this {
-    return this.join("INNER JOIN", table, on);
+    return this.join('INNER JOIN', table, on);
   }
 
   leftJoin(table: string, on?: Expression): this {
-    return this.join("LEFT JOIN", table, on);
+    return this.join('LEFT JOIN', table, on);
   }
 
   rightJoin(table: string, on?: Expression): this {
-    return this.join("RIGHT JOIN", table, on);
+    return this.join('RIGHT JOIN', table, on);
   }
 
   /** Sets the ORDER BY columns. Each may end in `ASC` or `DESC`, and `NULLS FIRST` or `NULLS LAST`. */
@@ -160,13 +160,13 @@ export class SelectQuery {
 
   /** Negative means no limit. Throws RangeError for a non-integer. */
   limit(limit: number): this {
-    this.#limit = checkInteger("limit", limit);
+    this.#limit = checkInteger('limit', limit);
     return this;
   }
 
   /** Throws RangeError for a non-integer. */
   offset(offset: number): this {
-    this.#offset = checkInteger("offset", offset);
+    this.#offset = checkInteger('offset', offset);
     return this;
   }
 
@@ -209,13 +209,13 @@ export class SelectQuery {
    * `from()`; for composite keys use `where(hash(...)).one()`.
    */
   async model<T = Row>(pk: unknown, options: ModelOptions = {}): Promise<T> {
-    const key = options.pk ?? "id";
-    const cols = typeof key === "string" ? [key] : key;
+    const key = options.pk ?? 'id';
+    const cols = typeof key === 'string' ? [key] : key;
     const [col] = cols;
     if (col === undefined) throw new MissingPKError();
     if (cols.length > 1) throw new CompositePKError();
     if (this.#from.length === 0) {
-      throw new TypeError("dbx: model() needs from() to name the table.");
+      throw new TypeError('dbx: model() needs from() to name the table.');
     }
     const where = and(this.#where, hash({ [col]: pk }));
     return this.#build(where, this.#firstRowLimit()).one<T>();
@@ -227,21 +227,21 @@ export class SelectQuery {
       this.#buildSelect(),
       this.#buildFrom(),
       this.#buildJoins(params),
-      this.#buildCondition("WHERE", where, params),
+      this.#buildCondition('WHERE', where, params),
       this.#buildGroupBy(),
-      this.#buildCondition("HAVING", this.#having, params),
+      this.#buildCondition('HAVING', this.#having, params),
       this.#buildOrderBy(),
       buildLimit(limit, this.#offset),
     ]
-      .filter((clause) => clause !== "")
-      .join(" ");
+      .filter((clause) => clause !== '')
+      .join(' ');
 
     if (this.#unions.length > 0) {
       const unions = this.#unions.map(
         ({ all, query }) =>
-          `${all ? "UNION ALL" : "UNION"} (${mergeParams(query.sql, query.params, params)})`,
+          `${all ? 'UNION ALL' : 'UNION'} (${mergeParams(query.sql, query.params, params)})`,
       );
-      sql = `(${sql}) ${unions.join(" ")}`;
+      sql = `(${sql}) ${unions.join(' ')}`;
     }
 
     return this.#builder.newQuery(sql).bind(params);
@@ -253,9 +253,9 @@ export class SelectQuery {
   }
 
   #buildSelect(): string {
-    let sql = "SELECT ";
-    if (this.#distinct) sql += "DISTINCT ";
-    if (this.#selectOption !== "") sql += `${this.#selectOption} `;
+    let sql = 'SELECT ';
+    if (this.#distinct) sql += 'DISTINCT ';
+    if (this.#selectOption !== '') sql += `${this.#selectOption} `;
     if (this.#selects.length === 0) return `${sql}*`;
     const cols = this.#selects.map((col) => {
       const match = ALIAS.exec(col);
@@ -263,46 +263,46 @@ export class SelectQuery {
       const name = col.slice(0, -match[0].length);
       return `${this.#builder.quoteColumnName(name)} AS ${this.#builder.quoteSimpleColumnName(match[1] as string)}`;
     });
-    return sql + cols.join(", ");
+    return sql + cols.join(', ');
   }
 
   #buildFrom(): string {
-    if (this.#from.length === 0) return "";
-    return `FROM ${this.#from.map((table) => this.#quoteTableAndAlias(table)).join(", ")}`;
+    if (this.#from.length === 0) return '';
+    return `FROM ${this.#from.map((table) => this.#quoteTableAndAlias(table)).join(', ')}`;
   }
 
   #buildJoins(params: Params): string {
     return this.#joins
       .map(({ type, table, on }) => {
         const sql = `${type} ${this.#quoteTableAndAlias(table)}`;
-        const condition = on?.build(this.#builder, params) ?? "";
-        return condition === "" ? sql : `${sql} ON ${condition}`;
+        const condition = on?.build(this.#builder, params) ?? '';
+        return condition === '' ? sql : `${sql} ON ${condition}`;
       })
-      .join(" ");
+      .join(' ');
   }
 
   #buildCondition(
-    keyword: "WHERE" | "HAVING",
+    keyword: 'WHERE' | 'HAVING',
     exp: Expression | undefined,
     params: Params,
   ): string {
-    const condition = exp?.build(this.#builder, params) ?? "";
-    return condition === "" ? "" : `${keyword} ${condition}`;
+    const condition = exp?.build(this.#builder, params) ?? '';
+    return condition === '' ? '' : `${keyword} ${condition}`;
   }
 
   #buildGroupBy(): string {
-    if (this.#groupBy.length === 0) return "";
-    return `GROUP BY ${this.#groupBy.map((col) => this.#builder.quoteColumnName(col)).join(", ")}`;
+    if (this.#groupBy.length === 0) return '';
+    return `GROUP BY ${this.#groupBy.map((col) => this.#builder.quoteColumnName(col)).join(', ')}`;
   }
 
   #buildOrderBy(): string {
-    if (this.#orderBy.length === 0) return "";
+    if (this.#orderBy.length === 0) return '';
     const cols = this.#orderBy.map((col) => {
       const match = DIRECTION.exec(col);
       if (!match) return this.#builder.quoteColumnName(col);
       return `${this.#builder.quoteColumnName(col.slice(0, -match[0].length))} ${match[1]}`;
     });
-    return `ORDER BY ${cols.join(", ")}`;
+    return `ORDER BY ${cols.join(', ')}`;
   }
 
   #quoteTableAndAlias(table: string): string {
@@ -316,7 +316,7 @@ function buildLimit(limit: number, offset: number): string {
   const parts: string[] = [];
   if (limit >= 0) parts.push(`LIMIT ${limit}`);
   if (offset > 0) parts.push(`OFFSET ${offset}`);
-  return parts.join(" ");
+  return parts.join(' ');
 }
 
 // LIMIT and OFFSET are written into the SQL text, so they must be real integers.

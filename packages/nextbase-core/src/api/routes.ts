@@ -2,8 +2,8 @@ import type {
   AuthCollection,
   AuthMethods,
   Collection,
-} from "@nextbasejs/client";
-import { type DB, hash, type Tx, type TxOptions } from "@nextbasejs/dbx";
+} from '@nextbasejs/client';
+import { type DB, hash, type Tx, type TxOptions } from '@nextbasejs/dbx';
 import {
   confirmEmailChange,
   confirmEmailVerification,
@@ -12,20 +12,20 @@ import {
   requestEmailChange,
   requestEmailVerification,
   requestPasswordReset,
-} from "../auth/flows.ts";
+} from '../auth/flows.ts';
 import {
   accountFor,
   listLinkedAccounts,
   unlinkAccount,
-} from "../auth/linked-accounts.ts";
-import { authWithPassword, checkAuthRule } from "../auth/login.ts";
-import type { Mailer } from "../auth/mail.ts";
+} from '../auth/linked-accounts.ts';
+import { authWithPassword, checkAuthRule } from '../auth/login.ts';
+import type { Mailer } from '../auth/mail.ts';
 import {
   checkRedirect,
   type OAuth2,
   OAuth2Error,
   setStateCookie,
-} from "../auth/oauth2.ts";
+} from '../auth/oauth2.ts';
 import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
@@ -34,12 +34,12 @@ import {
   requestPasswordResetByPhone,
   requestPhoneCode,
   requestPhoneVerification,
-} from "../auth/phone.ts";
+} from '../auth/phone.ts';
 import {
   type Principal,
   recordIn,
   requireSuperuser,
-} from "../auth/principal.ts";
+} from '../auth/principal.ts';
 import {
   bearerToken,
   checkSameOrigin,
@@ -53,32 +53,32 @@ import {
   sessionCookie,
   sessionModel,
   setSessionCookie,
-} from "../auth/sessions.ts";
-import type { Sms } from "../auth/sms.ts";
-import { completeSetup, hasSuperuser } from "../auth/superusers.ts";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
+} from '../auth/sessions.ts';
+import type { Sms } from '../auth/sms.ts';
+import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError } from '../errors.ts';
 import {
   createUpload,
   fileResponse,
   fileToken,
   findFile,
   principalOfFileToken,
-} from "../files/serve.ts";
-import type { Storage } from "../files/storage.ts";
-import { readJsonObject, readRecordBody } from "../http.ts";
-import type { Logger } from "../logs/logger.ts";
+} from '../files/serve.ts';
+import type { Storage } from '../files/storage.ts';
+import { readJsonObject, readRecordBody } from '../http.ts';
+import type { Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
   logModel,
   logStats,
   logsCollection,
-} from "../logs/store.ts";
-import { newId } from "../random.ts";
-import type { Realtime } from "../realtime/stream.ts";
-import type { Hooks } from "../records/hooks.ts";
-import { serializeRecord } from "../records/serialize.ts";
+} from '../logs/store.ts';
+import { newId } from '../random.ts';
+import type { Realtime } from '../realtime/stream.ts';
+import type { Hooks } from '../records/hooks.ts';
+import { serializeRecord } from '../records/serialize.ts';
 import {
   type Apply,
   applyCreate,
@@ -93,13 +93,13 @@ import {
   planUpdateRecord,
   type RecordsContext,
   viewRecord,
-} from "../records/service.ts";
-import { SCHEMA_VERSION_SQL, type Schema } from "../schema/cache.ts";
+} from '../records/service.ts';
+import { SCHEMA_VERSION_SQL, type Schema } from '../schema/cache.ts';
 import {
   deleteCollection,
   newCollection,
   updateCollection,
-} from "../schema/sync.ts";
+} from '../schema/sync.ts';
 
 interface Context {
   request: Request;
@@ -160,8 +160,8 @@ export interface Route {
   handler(context: Context): Promise<Response>;
 }
 
-const segment = "([^/]+)";
-const SUPERUSERS = "_superusers";
+const segment = '([^/]+)';
+const SUPERUSERS = '_superusers';
 
 const records = new RegExp(`^/collections/${segment}/records$`);
 const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
@@ -171,7 +171,7 @@ const linkedAccounts = new RegExp(
 
 export const ROUTES: readonly Route[] = [
   {
-    method: "GET",
+    method: 'GET',
     pattern: records,
     transaction: true,
     joinsTransaction: true,
@@ -190,14 +190,14 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: records,
     joinsTransaction: true,
     async handler(context) {
       const body = await readRecordBody(context.request);
       return replyOf(
         await writeRecord(context, {
-          method: "POST",
+          method: 'POST',
           collection: context.params[0] as string,
           body,
           query: parse(context).url.searchParams,
@@ -206,7 +206,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: record,
     transaction: true,
     joinsTransaction: true,
@@ -227,7 +227,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "PATCH",
+    method: 'PATCH',
     pattern: record,
     joinsTransaction: true,
     async handler(context) {
@@ -235,7 +235,7 @@ export const ROUTES: readonly Route[] = [
       const body = await readRecordBody(context.request);
       return replyOf(
         await writeRecord(context, {
-          method: "PATCH",
+          method: 'PATCH',
           collection,
           id,
           body,
@@ -245,14 +245,14 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: record,
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       return replyOf(
         await writeRecord(context, {
-          method: "DELETE",
+          method: 'DELETE',
           collection,
           id,
           body: {},
@@ -262,7 +262,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/batch$/,
     joinsTransaction: true,
     async handler(context) {
@@ -287,7 +287,7 @@ export const ROUTES: readonly Route[] = [
         }
         // A delete can cascade into any collection that points at it.
         const names =
-          write.method === "DELETE"
+          write.method === 'DELETE'
             ? context.schema.collections.map((c) => c.name)
             : [context.schema.get(write.collection).name];
         for (const name of names) written.add(name);
@@ -298,14 +298,14 @@ export const ROUTES: readonly Route[] = [
         while (replies.length < planned.length) {
           const i = replies.length;
           const write = planned[i] as PlannedWrite;
-          if ("apply" in write) {
+          if ('apply' in write) {
             replies.push(await inBatch(i, () => write.apply(tx)));
             continue;
           }
           // Consecutive creates are done together, a run at a time.
           const creates: PlannedCreate[] = [];
           for (const next of planned.slice(i)) {
-            if (!("create" in next)) break;
+            if (!('create' in next)) break;
             creates.push(next.create);
           }
           for (const run of createRuns(creates)) {
@@ -326,24 +326,24 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/realtime$/,
     stream: true,
     async handler(context) {
       if (!context.realtime)
-        throw new ApiError(404, "Realtime is not enabled.");
+        throw new ApiError(404, 'Realtime is not enabled.');
       return context.realtime.open(context);
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/setup$/,
     async handler({ db }) {
       return Response.json({ required: !(await hasSuperuser(db)) });
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/setup$/,
     async handler({ request, db, schema, principal }) {
       const record = await completeSetup(
@@ -352,7 +352,7 @@ export const ROUTES: readonly Route[] = [
         await readJsonObject(request),
       );
       return Response.json(
-        serializeRecord(schema.get("_superusers"), record, {
+        serializeRecord(schema.get('_superusers'), record, {
           ...principal,
           superuser: true,
         }),
@@ -360,7 +360,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/collections$/,
     async handler({ schema, principal }) {
       requireSuperuser(principal);
@@ -375,7 +375,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/collections$/,
     async handler({ request, db, principal }) {
       requireSuperuser(principal);
@@ -384,7 +384,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/collections/${segment}$`),
     async handler({ params, schema, principal }) {
       requireSuperuser(principal);
@@ -392,7 +392,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "PATCH",
+    method: 'PATCH',
     pattern: new RegExp(`^/collections/${segment}$`),
     async handler({ request, params, db, principal, effects }) {
       requireSuperuser(principal);
@@ -410,7 +410,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(`^/collections/${segment}$`),
     async handler({ params, db, schema, principal, storage, logger }) {
       requireSuperuser(principal);
@@ -419,7 +419,7 @@ export const ROUTES: readonly Route[] = [
       // A failure only leaves unused files behind.
       await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
         logger.failure(
-          "storage",
+          'storage',
           "deleting a collection's files failed",
           error,
         );
@@ -428,7 +428,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/upload-url$`),
     async handler({ request, params, db, schema, principal, storage, logger }) {
       const collection = schema.get(params[0] as string);
@@ -439,11 +439,11 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/files\/token$/,
     async handler({ principal }) {
       if (!principal.record || !principal.collection) {
-        throw new ApiError(401, "Sign in to get a file token.");
+        throw new ApiError(401, 'Sign in to get a file token.');
       }
       return Response.json({
         token: await fileToken(principal.collection, principal.record),
@@ -451,7 +451,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/files/${segment}/${segment}/${segment}$`),
     async handler(context) {
       const { request, params, db, schema, storage } = context;
@@ -459,7 +459,7 @@ export const ROUTES: readonly Route[] = [
       const query = new URL(request.url).searchParams;
       if (field.protected) {
         // The view rule decides, for the session's caller or the file token's.
-        const token = query.get("token");
+        const token = query.get('token');
         const principal = token
           ? ((await principalOfFileToken(db, schema, token)) ?? {
               superuser: false,
@@ -472,7 +472,7 @@ export const ROUTES: readonly Route[] = [
           new URLSearchParams(),
         );
       }
-      const download = query.has("download") && query.get("download") !== "0";
+      const download = query.has('download') && query.get('download') !== '0';
       return fileResponse(storage, key, request, {
         download,
         protectedFile: field.protected,
@@ -480,19 +480,19 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-password$`),
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { identity, password, cookie } = await readJsonObject(request);
-      if (typeof identity !== "string" || typeof password !== "string") {
-        throw new ApiError(400, "Failed to authenticate.", {
-          ...(typeof identity !== "string" && {
-            identity: { code: "validation_required", message: "Required." },
+      if (typeof identity !== 'string' || typeof password !== 'string') {
+        throw new ApiError(400, 'Failed to authenticate.', {
+          ...(typeof identity !== 'string' && {
+            identity: { code: 'validation_required', message: 'Required.' },
           }),
-          ...(typeof password !== "string" && {
-            password: { code: "validation_required", message: "Required." },
+          ...(typeof password !== 'string' && {
+            password: { code: 'validation_required', message: 'Required.' },
           }),
         });
       }
@@ -509,7 +509,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
     async handler({ params, schema, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
@@ -532,27 +532,27 @@ export const ROUTES: readonly Route[] = [
       } satisfies AuthMethods);
     },
   },
-  ...phoneFlow("request-phone-code", (ctx, collection, input) =>
+  ...phoneFlow('request-phone-code', (ctx, collection, input) =>
     requestPhoneCode(ctx, collection, input.phone),
   ),
-  ...phoneFlow("request-password-reset-by-phone", (ctx, collection, input) =>
+  ...phoneFlow('request-password-reset-by-phone', (ctx, collection, input) =>
     requestPasswordResetByPhone(ctx, collection, input.phone),
   ),
-  ...phoneFlow("confirm-password-reset-by-phone", (ctx, collection, input) =>
+  ...phoneFlow('confirm-password-reset-by-phone', (ctx, collection, input) =>
     confirmPasswordResetByPhone(ctx, collection, input),
   ),
   ...phoneFlow(
-    "request-phone-verification",
+    'request-phone-verification',
     (ctx, collection, input, principal) =>
       requestPhoneVerification(ctx, collection, principal, input.phone),
   ),
   ...phoneFlow(
-    "confirm-phone-verification",
+    'confirm-phone-verification',
     (ctx, collection, input, principal) =>
       confirmPhoneVerification(ctx, collection, principal, input),
   ),
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
@@ -571,28 +571,28 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(
       `^/collections/${segment}/auth-with-oauth2/${segment}$`,
     ),
     async handler({ request, params, db, schema, principal, origins, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
       if (collection.id === SUPERUSERS) {
-        throw new ApiError(400, "Superusers sign in with their password.");
+        throw new ApiError(400, 'Superusers sign in with their password.');
       }
       const provider = oauth2.provider(params[1] as string);
       const query = new URL(request.url).searchParams;
-      const redirect = checkRedirect(query.get("redirect"));
+      const redirect = checkRedirect(query.get('redirect'));
       const errorRedirect =
-        checkRedirect(query.get("errorRedirect"), "errorRedirect") || redirect;
+        checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
       let linkRecordId: string | null = null;
-      if (query.get("link") === "true") {
+      if (query.get('link') === 'true') {
         // Linking adds a way into the account, so only this site may start it.
         checkSameOrigin(request, origins);
         if (!principal.record || principal.collection?.id !== collection.id) {
           throw new ApiError(
             401,
-            "Sign in to this collection to link a provider.",
+            'Sign in to this collection to link a provider.',
           );
         }
         linkRecordId = principal.record.id as string;
@@ -607,29 +607,29 @@ export const ROUTES: readonly Route[] = [
       return new Response(null, {
         status: 302,
         headers: [
-          ["location", location],
-          ["set-cookie", setStateCookie(request, state)],
+          ['location', location],
+          ['set-cookie', setStateCookie(request, state)],
         ],
       });
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/callback/${segment}$`),
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
       // Unknown, or OAuth2 is not set up: there is no app URL to return to.
       oauth2.provider(params[0] as string);
-      let redirect = "";
-      let errorRedirect = "";
+      let redirect = '';
+      let errorRedirect = '';
       const back = (error?: string): Response => {
         const to = error === undefined ? redirect : errorRedirect;
         const response = new Response(null, {
           status: 302,
-          headers: [["location", oauth2.returnUrl(to, error)]],
+          headers: [['location', oauth2.returnUrl(to, error)]],
         });
-        response.headers.append("set-cookie", setStateCookie(request));
+        response.headers.append('set-cookie', setStateCookie(request));
         return response;
       };
       try {
@@ -639,8 +639,8 @@ export const ROUTES: readonly Route[] = [
         // another provider's.
         if (params[0] !== state.provider) {
           throw new OAuth2Error(
-            "oauth2_failed",
-            "The sign-in returned from another provider.",
+            'oauth2_failed',
+            'The sign-in returned from another provider.',
           );
         }
         const provider = oauth2.provider(state.provider);
@@ -651,8 +651,8 @@ export const ROUTES: readonly Route[] = [
           principal.record?.id !== state.linkRecordId
         ) {
           throw new OAuth2Error(
-            "oauth2_failed",
-            "Sign in again to link this provider.",
+            'oauth2_failed',
+            'Sign in again to link this provider.',
           );
         }
         const identity = await oauth2.identify(provider, state, request);
@@ -664,7 +664,7 @@ export const ROUTES: readonly Route[] = [
           state.linkRecordId,
         );
         if (linkedTo !== undefined) {
-          mailer.send("oauth2Linked", collection.name, linkedTo, {
+          mailer.send('oauth2Linked', collection.name, linkedTo, {
             provider: provider.displayName,
           });
         }
@@ -673,7 +673,7 @@ export const ROUTES: readonly Route[] = [
           await checkAuthRule(db, schema, collection, record.id as string);
         } catch (error) {
           if (error instanceof ApiError && error.status === 403) {
-            throw new OAuth2Error("sign_in_forbidden", error.message);
+            throw new OAuth2Error('sign_in_forbidden', error.message);
           }
           throw error;
         }
@@ -685,11 +685,11 @@ export const ROUTES: readonly Route[] = [
           db,
           collection,
           record,
-          request.headers.get("user-agent") ?? "",
+          request.headers.get('user-agent') ?? '',
         );
         const response = back();
         response.headers.append(
-          "set-cookie",
+          'set-cookie',
           setSessionCookie(request, { token, expires: session.expires }),
         );
         return response;
@@ -698,14 +698,14 @@ export const ROUTES: readonly Route[] = [
           context.noteError(error.code);
           return back(error.code);
         }
-        context.logger.failure("oauth2", "an OAuth2 sign-in failed", error);
-        context.noteError("oauth2_failed");
-        return back("oauth2_failed");
+        context.logger.failure('oauth2', 'an OAuth2 sign-in failed', error);
+        context.noteError('oauth2_failed');
+        return back('oauth2_failed');
       }
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: linkedAccounts,
     async handler({ params, db, schema, principal }) {
       const { collection, id } = ownRecord(schema, principal, params);
@@ -715,7 +715,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(
       `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
@@ -727,40 +727,40 @@ export const ROUTES: readonly Route[] = [
         id,
         params[2] as string,
       );
-      if (!unlinked) throw new ApiError(404, "The provider is not linked.");
+      if (!unlinked) throw new ApiError(404, 'The provider is not linked.');
       const [owner] = await db
-        .select("email")
+        .select('email')
         .from(table(collection.name))
         .where(hash({ id }))
         .all();
       if (owner) {
-        mailer.send("oauth2Unlinked", collection.name, owner.email as string, {
+        mailer.send('oauth2Unlinked', collection.name, owner.email as string, {
           provider: oauth2.displayName(params[2] as string),
         });
       }
       return new Response(null, { status: 204 });
     },
   },
-  ...flow("request-email-verification", (ctx, collection, input) =>
+  ...flow('request-email-verification', (ctx, collection, input) =>
     requestEmailVerification(ctx, collection, input.email),
   ),
-  ...flow("confirm-email-verification", (ctx, collection, input) =>
+  ...flow('confirm-email-verification', (ctx, collection, input) =>
     confirmEmailVerification(ctx, collection, input.token),
   ),
-  ...flow("request-password-reset", (ctx, collection, input) =>
+  ...flow('request-password-reset', (ctx, collection, input) =>
     requestPasswordReset(ctx, collection, input.email),
   ),
-  ...flow("confirm-password-reset", (ctx, collection, input) =>
+  ...flow('confirm-password-reset', (ctx, collection, input) =>
     confirmPasswordReset(ctx, collection, input),
   ),
-  ...flow("request-email-change", (ctx, collection, input, principal) =>
+  ...flow('request-email-change', (ctx, collection, input, principal) =>
     requestEmailChange(ctx, collection, principal, input.newEmail),
   ),
-  ...flow("confirm-email-change", (ctx, collection, input) =>
+  ...flow('confirm-email-change', (ctx, collection, input) =>
     confirmEmailChange(ctx, collection, input),
   ),
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/sign-up$`),
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
@@ -769,9 +769,9 @@ export const ROUTES: readonly Route[] = [
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
-        typeof input.id === "string" && input.id !== "" ? input.id : newId();
+        typeof input.id === 'string' && input.id !== '' ? input.id : newId();
       await writeRecord(context, {
-        method: "POST",
+        method: 'POST',
         collection: collection.id,
         body: { ...input, id },
         query: new URLSearchParams(),
@@ -799,15 +799,15 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
     async handler(context) {
       const { request, params, schema, principal, db } = context;
       const collection = authCollection(schema, params[0] as string);
-      const record = recordIn(principal, collection, "refresh");
+      const record = recordIn(principal, collection, 'refresh');
       const { session } = principal;
       if (!session) {
-        throw new ApiError(401, "Sign in to this collection to refresh.");
+        throw new ApiError(401, 'Sign in to this collection to refresh.');
       }
       await checkAuthRule(db, schema, collection, record.id as string);
       const body = await authRecord(context, collection, record);
@@ -819,7 +819,7 @@ export const ROUTES: readonly Route[] = [
       const token = sessionCookie(request);
       if (token) {
         response.headers.append(
-          "set-cookie",
+          'set-cookie',
           setSessionCookie(request, { token, expires }),
         );
       }
@@ -827,7 +827,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/session$/,
     async handler({ principal }) {
       const { collection, record, session } = principal;
@@ -839,20 +839,20 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: /^\/session$/,
     async handler({ request, db, principal }) {
       if (principal.session) await deleteSession(db, principal.session);
       const response = new Response(null, { status: 204 });
       // Removed even when the session was already gone.
-      if (request.headers.has("cookie")) {
-        response.headers.append("set-cookie", setSessionCookie(request));
+      if (request.headers.has('cookie')) {
+        response.headers.append('set-cookie', setSessionCookie(request));
       }
       return response;
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/sessions$/,
     async handler({ db, principal }) {
       const current = requireSession(principal);
@@ -867,7 +867,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: /^\/sessions$/,
     async handler({ db, principal }) {
       await deleteOtherSessions(db, requireSession(principal));
@@ -875,7 +875,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(`^/sessions/${segment}$`),
     async handler({ request, params, db, principal }) {
       const current = requireSession(principal);
@@ -885,16 +885,16 @@ export const ROUTES: readonly Route[] = [
         collectionId: current.collectionId,
         recordId: current.recordId,
       });
-      if (!deleted) throw new ApiError(404, "Session not found.");
+      if (!deleted) throw new ApiError(404, 'Session not found.');
       const response = new Response(null, { status: 204 });
       if (id === current.id && principal.viaCookie) {
-        response.headers.append("set-cookie", setSessionCookie(request));
+        response.headers.append('set-cookie', setSessionCookie(request));
       }
       return response;
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/logs$/,
     transaction: true,
     async handler(context) {
@@ -911,19 +911,19 @@ export const ROUTES: readonly Route[] = [
   },
   // Before `/logs/{id}`, which would match it too.
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/logs\/stats$/,
     transaction: true,
     async handler(context) {
       requireSuperuser(context.principal);
-      const filter = parse(context).url.searchParams.get("filter") ?? "";
+      const filter = parse(context).url.searchParams.get('filter') ?? '';
       return Response.json(
         await bounded(context, (db) => logStats(db, context, filter)),
       );
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/logs/${segment}$`),
     transaction: true,
     async handler(context) {
@@ -937,7 +937,7 @@ export const ROUTES: readonly Route[] = [
         ),
       ).catch((error: unknown) => {
         if (error instanceof ApiError && error.status === 404) {
-          throw new ApiError(404, "Log entry not found.");
+          throw new ApiError(404, 'Log entry not found.');
         }
         throw error;
       });
@@ -945,7 +945,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: /^\/logs$/,
     async handler({ db, principal }) {
       requireSuperuser(principal);
@@ -1046,7 +1046,7 @@ function replyOf({ status, body }: Reply): Response {
 }
 
 interface RecordWrite {
-  method: "POST" | "PATCH" | "DELETE";
+  method: 'POST' | 'PATCH' | 'DELETE';
   collection: string;
   id?: string;
   body: Record<string, unknown>;
@@ -1059,7 +1059,7 @@ async function writeRecord(
   write: RecordWrite,
 ): Promise<Reply> {
   const planned = await planRecordWrite(context, write);
-  if ("apply" in planned) return bounded(context, planned.apply);
+  if ('apply' in planned) return bounded(context, planned.apply);
   const apply = applyCreate(planned.create);
   return bounded(context, async (tx) => replyWith(await apply(tx)));
 }
@@ -1085,12 +1085,12 @@ async function planRecordWrite(
     }),
     ...(written && { written }),
   };
-  if (write.method === "POST") {
+  if (write.method === 'POST') {
     return {
       create: await planNewRecord(ctx, collection, write.body, write.query),
     };
   }
-  if (write.method === "DELETE") {
+  if (write.method === 'DELETE') {
     const apply = await planDeleteRecord(ctx, collection, write.id as string);
     return {
       apply: async (tx) => {
@@ -1142,39 +1142,39 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
     requests.length === 0 ||
     requests.length > MAX_BATCH
   ) {
-    throw new ApiError(400, "The batch is invalid.", {
+    throw new ApiError(400, 'The batch is invalid.', {
       requests: {
-        code: "validation_invalid",
+        code: 'validation_invalid',
         message: `Must be a list of 1 to ${MAX_BATCH} requests.`,
       },
     });
   }
   return requests.map((request: unknown, i): RecordWrite => {
     const invalid = (message: string): ApiError =>
-      new ApiError(400, "The batch is invalid.", {
-        requests: { [i]: { code: "validation_invalid", message } },
+      new ApiError(400, 'The batch is invalid.', {
+        requests: { [i]: { code: 'validation_invalid', message } },
       });
     if (
       request === null ||
-      typeof request !== "object" ||
+      typeof request !== 'object' ||
       Array.isArray(request)
     )
-      throw invalid("Must be an object.");
+      throw invalid('Must be an object.');
     const { method, url, body = {} } = request as Record<string, unknown>;
-    if (method !== "POST" && method !== "PATCH" && method !== "DELETE")
-      throw invalid("method must be POST, PATCH or DELETE.");
-    if (typeof url !== "string" || !url.startsWith("/"))
+    if (method !== 'POST' && method !== 'PATCH' && method !== 'DELETE')
+      throw invalid('method must be POST, PATCH or DELETE.');
+    if (typeof url !== 'string' || !url.startsWith('/'))
       throw invalid(
-        "url must be a records path such as /collections/posts/records.",
+        'url must be a records path such as /collections/posts/records.',
       );
-    if (body === null || typeof body !== "object" || Array.isArray(body))
-      throw invalid("body must be an object.");
-    const parsed = new URL(url, "http://batch.invalid");
-    const match = (method === "POST" ? records : record).exec(parsed.pathname);
+    if (body === null || typeof body !== 'object' || Array.isArray(body))
+      throw invalid('body must be an object.');
+    const parsed = new URL(url, 'http://batch.invalid');
+    const match = (method === 'POST' ? records : record).exec(parsed.pathname);
     if (!match) {
       throw invalid(
-        method === "POST"
-          ? "POST creates records: /collections/{collection}/records."
+        method === 'POST'
+          ? 'POST creates records: /collections/{collection}/records.'
           : `${method} needs a record: /collections/{collection}/records/{id}.`,
       );
     }
@@ -1203,7 +1203,7 @@ function flow(
 ): Route[] {
   return [
     {
-      method: "POST",
+      method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
       async handler(context) {
         const { request, params, db, schema, principal, mailer } = context;
@@ -1234,7 +1234,7 @@ function phoneFlow(
 ): Route[] {
   return [
     {
-      method: "POST",
+      method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
       async handler(context) {
         const { request, params, schema, principal } = context;
@@ -1279,12 +1279,12 @@ async function startSession(
     db,
     collection,
     record,
-    request.headers.get("user-agent") ?? "",
+    request.headers.get('user-agent') ?? '',
   );
   const response = authResponse(body, cookie ? undefined : token);
   if (cookie) {
     response.headers.append(
-      "set-cookie",
+      'set-cookie',
       setSessionCookie(request, { token, expires: session.expires }),
     );
   }
@@ -1322,7 +1322,7 @@ function authResponse(
 
 function requireSession(principal: Principal): Session {
   if (!principal.session)
-    throw new ApiError(401, "Sign in to manage sessions.");
+    throw new ApiError(401, 'Sign in to manage sessions.');
   return principal.session;
 }
 
@@ -1335,20 +1335,20 @@ function ownRecord(
   const collection = authCollection(schema, params[0] as string);
   const id = params[1] as string;
   if (!principal.superuser && !principal.record) {
-    throw new ApiError(401, "Sign in to manage linked accounts.");
+    throw new ApiError(401, 'Sign in to manage linked accounts.');
   }
   const own =
     principal.collection?.id === collection.id && principal.record?.id === id;
   if (!principal.superuser && !own) {
-    throw new ApiError(404, "Record not found.");
+    throw new ApiError(404, 'Record not found.');
   }
   return { collection, id };
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {
   const collection: Collection = schema.get(idOrName);
-  if (collection.type !== "auth")
-    throw new ApiError(404, "Collection not found.");
+  if (collection.type !== 'auth')
+    throw new ApiError(404, 'Collection not found.');
   return collection;
 }
 
@@ -1359,7 +1359,7 @@ async function schemaChange<T>(change: () => Promise<T>): Promise<T> {
   } catch (error) {
     const { code, message } = error as { code?: unknown; message?: unknown };
     // Class 23: integrity constraint violations.
-    if (typeof code === "string" && code.startsWith("23")) {
+    if (typeof code === 'string' && code.startsWith('23')) {
       throw new ApiError(
         400,
         `The change conflicts with existing records: ${String(message)}`,
@@ -1367,8 +1367,8 @@ async function schemaChange<T>(change: () => Promise<T>): Promise<T> {
     }
     // A view reads what the change would drop or retype.
     if (
-      code === "2BP01" ||
-      (code === "0A000" && /\bview\b/.test(String(message)))
+      code === '2BP01' ||
+      (code === '0A000' && /\bview\b/.test(String(message)))
     ) {
       throw new ApiError(
         400,

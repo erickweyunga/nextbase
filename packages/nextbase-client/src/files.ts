@@ -1,6 +1,6 @@
-import { ClientError } from "./client-error.ts";
-import type { NextBaseClient, SendOptions } from "./index.ts";
-import type { RecordModel } from "./shared/api.ts";
+import { ClientError } from './client-error.ts';
+import type { NextBaseClient, SendOptions } from './index.ts';
+import type { RecordModel } from './shared/api.ts';
 
 // Larger files go straight to the bucket: Vercel caps request bodies at 4.5 MB.
 const DIRECT_UPLOAD_BYTES = 4 * 1024 * 1024;
@@ -22,11 +22,11 @@ export class FileService {
 
   /** A file's URL. Protected files also need the session cookie or a `token`. */
   getUrl(
-    record: Pick<RecordModel, "id" | "collectionId">,
+    record: Pick<RecordModel, 'id' | 'collectionId'>,
     filename: string,
     options: FileUrlOptions = {},
   ): string {
-    if (!filename) return "";
+    if (!filename) return '';
     return this.#client.buildUrl(
       `/files/${encodeURIComponent(record.collectionId)}/${encodeURIComponent(record.id)}/${encodeURIComponent(filename)}`,
       {
@@ -39,9 +39,9 @@ export class FileService {
   /** A short-lived token for protected files, for `getUrl` when no cookie is sent. */
   async getToken(options?: SendOptions): Promise<string> {
     return (
-      await this.#client.send<{ token: string }>("/files/token", {
+      await this.#client.send<{ token: string }>('/files/token', {
         ...options,
-        method: "POST",
+        method: 'POST',
       })
     ).token;
   }
@@ -92,7 +92,7 @@ export async function toFormData(
       else form.append(key, token);
     }
   }
-  form.append("@jsonPayload", JSON.stringify(payload));
+  form.append('@jsonPayload', JSON.stringify(payload));
   return form;
 }
 
@@ -129,7 +129,7 @@ export async function withUploadedFiles(
       if (token === undefined) {
         throw new ClientError({
           status: 400,
-          message: "Files in a batch need storage in a bucket.",
+          message: 'Files in a batch need storage in a bucket.',
           data: {},
         });
       }
@@ -149,26 +149,26 @@ async function uploadDirectly(
   options: SendOptions,
 ): Promise<string | undefined> {
   // `field+`, `+field` and `field-` upload to `field`.
-  const name = field.replace(/^\+|[+-]$/g, "");
+  const name = field.replace(/^\+|[+-]$/g, '');
   let upload: { token: string; url: string; headers: Record<string, string> };
   try {
     upload = await client.send(
       `/collections/${encodeURIComponent(collection)}/upload-url`,
       {
         ...options,
-        method: "POST",
+        method: 'POST',
         body: {
           field: name,
           filename: fileName(file),
           size: file.size,
-          type: file.type || "application/octet-stream",
+          type: file.type || 'application/octet-stream',
         },
       },
     );
   } catch (error) {
     if (
       error instanceof ClientError &&
-      error.data.storage?.code === "direct_upload_unavailable"
+      error.data.storage?.code === 'direct_upload_unavailable'
     ) {
       return undefined;
     }
@@ -179,7 +179,7 @@ async function uploadDirectly(
   let response: Response;
   try {
     response = await fetch(upload.url, {
-      method: "PUT",
+      method: 'PUT',
       headers: upload.headers,
       body: file,
       signal: options.signal ?? null,
@@ -188,7 +188,7 @@ async function uploadDirectly(
     throw new ClientError(
       {
         status: 0,
-        message: cause instanceof Error ? cause.message : "The upload failed.",
+        message: cause instanceof Error ? cause.message : 'The upload failed.',
         data: {},
       },
       { cause, signal: options.signal },
@@ -205,11 +205,11 @@ async function uploadDirectly(
 }
 
 function isFile(value: unknown): value is Blob {
-  return typeof Blob !== "undefined" && value instanceof Blob;
+  return typeof Blob !== 'undefined' && value instanceof Blob;
 }
 
 function fileName(file: Blob): string {
-  return typeof File !== "undefined" && file instanceof File
+  return typeof File !== 'undefined' && file instanceof File
     ? file.name
-    : "file";
+    : 'file';
 }

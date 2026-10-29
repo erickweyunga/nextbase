@@ -1,7 +1,7 @@
-import Link from "@docusaurus/Link";
-import Layout from "@theme/Layout";
-import ThemedImage from "@theme/ThemedImage";
-import type { ReactNode } from "react";
+import Link from '@docusaurus/Link';
+import Layout from '@theme/Layout';
+import ThemedImage from '@theme/ThemedImage';
+import type { ReactNode } from 'react';
 
 export default function Home(): ReactNode {
   return (
@@ -11,8 +11,8 @@ export default function Home(): ReactNode {
           alt="NextBase"
           height={72}
           sources={{
-            light: "/nextbase-mark-dark.svg",
-            dark: "/nextbase-mark-light.svg",
+            light: '/nextbase-mark-dark.svg',
+            dark: '/nextbase-mark-light.svg',
           }}
         />
         <h1 className="hero__title margin-top--lg">

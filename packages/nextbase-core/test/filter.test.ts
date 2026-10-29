@@ -1,96 +1,96 @@
-import type { AuthCollection, Collection } from "@nextbasejs/client";
-import { DB, type Params } from "@nextbasejs/dbx";
-import { describe, expect, it } from "vitest";
-import type { Principal } from "../src/auth/principal.ts";
+import type { AuthCollection, Collection } from '@nextbasejs/client';
+import { DB, type Params } from '@nextbasejs/dbx';
+import { describe, expect, it } from 'vitest';
+import type { Principal } from '../src/auth/principal.ts';
 import {
   compileFilter,
   type FilterContext,
   ruleProblem,
-} from "../src/filter/compiler.ts";
-import { FilterError, parseFilter } from "../src/filter/parser.ts";
-import { Schema } from "../src/schema/cache.ts";
-import { parseCollection } from "../src/schema/collection.ts";
+} from '../src/filter/compiler.ts';
+import { FilterError, parseFilter } from '../src/filter/parser.ts';
+import { Schema } from '../src/schema/cache.ts';
+import { parseCollection } from '../src/schema/collection.ts';
 
 const users = parseCollection(
   {
-    id: "users0000000000",
-    name: "users",
-    type: "auth",
-    viewRule: "id = @request.auth.id",
+    id: 'users0000000000',
+    name: 'users',
+    type: 'auth',
+    viewRule: 'id = @request.auth.id',
     fields: [
-      { name: "name", type: "text" },
-      { name: "secret", type: "text", hidden: true },
+      { name: 'name', type: 'text' },
+      { name: 'secret', type: 'text', hidden: true },
     ],
   },
   { others: [] },
 ) as AuthCollection;
 const posts = parseCollection(
   {
-    id: "posts0000000000",
-    name: "posts",
+    id: 'posts0000000000',
+    name: 'posts',
     fields: [
-      { name: "title", type: "text" },
-      { name: "views", type: "number" },
-      { name: "published", type: "bool" },
-      { name: "publishedAt", type: "date" },
-      { name: "tags", type: "select", values: ["a", "b"], maxSelect: 2 },
-      { name: "author", type: "relation", collectionId: users.id },
+      { name: 'title', type: 'text' },
+      { name: 'views', type: 'number' },
+      { name: 'published', type: 'bool' },
+      { name: 'publishedAt', type: 'date' },
+      { name: 'tags', type: 'select', values: ['a', 'b'], maxSelect: 2 },
+      { name: 'author', type: 'relation', collectionId: users.id },
       {
-        name: "editors",
-        type: "relation",
+        name: 'editors',
+        type: 'relation',
         collectionId: users.id,
         maxSelect: 5,
       },
-      { name: "meta", type: "json" },
+      { name: 'meta', type: 'json' },
     ],
   },
   { others: [users] },
 );
 const comments = parseCollection(
   {
-    id: "comments0000000",
-    name: "comments",
+    id: 'comments0000000',
+    name: 'comments',
     fields: [
-      { name: "text", type: "text" },
-      { name: "post", type: "relation", collectionId: posts.id },
+      { name: 'text', type: 'text' },
+      { name: 'post', type: 'relation', collectionId: posts.id },
     ],
   },
   { others: [users, posts] },
 );
 const schema = new Schema(1, [users, posts, comments]);
 const db = new DB({
-  query: () => Promise.reject(new Error("no database")),
-  connect: () => Promise.reject(new Error("no database")),
+  query: () => Promise.reject(new Error('no database')),
+  connect: () => Promise.reject(new Error('no database')),
 });
 
 const anonymous: Principal = { superuser: false };
 const ann: Principal = {
   superuser: false,
   collection: users,
-  record: { id: "ann000000000000", emailVerified: true },
+  record: { id: 'ann000000000000', emailVerified: true },
 };
 
 function compile(
   source: string,
   options: {
-    mode?: FilterContext["mode"];
+    mode?: FilterContext['mode'];
     principal?: Principal;
     body?: Record<string, unknown>;
     collection?: Collection;
   } = {},
 ): { sql: string; params: Params } {
-  const expression = compileFilter(source, options.collection ?? posts, "t0", {
+  const expression = compileFilter(source, options.collection ?? posts, 't0', {
     schema,
     principal: options.principal ?? anonymous,
     request: {
-      method: "GET",
+      method: 'GET',
       query: {},
       headers: {},
       body: options.body ?? {},
     },
-    mode: options.mode ?? "filter",
+    mode: options.mode ?? 'filter',
   });
-  if (!expression) return { sql: "", params: {} };
+  if (!expression) return { sql: '', params: {} };
   const params: Params = {};
   return { sql: expression.build(db, params), params };
 }
@@ -104,58 +104,58 @@ const fails = (
   expect(() => compile(source, options)).toThrow(message);
 };
 
-describe("parseFilter", () => {
-  it("parses precedence, parentheses, literals and modifiers", () => {
+describe('parseFilter', () => {
+  it('parses precedence, parentheses, literals and modifiers', () => {
     expect(parseFilter('a = 1 || b ?~ "x" && (c != null)')).toEqual({
-      kind: "logical",
-      op: "||",
+      kind: 'logical',
+      op: '||',
       left: {
-        kind: "comparison",
-        op: "=",
+        kind: 'comparison',
+        op: '=',
         any: false,
-        left: { kind: "identifier", path: ["a"], modifier: undefined },
-        right: { kind: "literal", value: 1 },
+        left: { kind: 'identifier', path: ['a'], modifier: undefined },
+        right: { kind: 'literal', value: 1 },
       },
       right: {
-        kind: "logical",
-        op: "&&",
+        kind: 'logical',
+        op: '&&',
         left: {
-          kind: "comparison",
-          op: "~",
+          kind: 'comparison',
+          op: '~',
           any: true,
-          left: { kind: "identifier", path: ["b"], modifier: undefined },
-          right: { kind: "literal", value: "x" },
+          left: { kind: 'identifier', path: ['b'], modifier: undefined },
+          right: { kind: 'literal', value: 'x' },
         },
         right: {
-          kind: "comparison",
-          op: "!=",
+          kind: 'comparison',
+          op: '!=',
           any: false,
-          left: { kind: "identifier", path: ["c"], modifier: undefined },
-          right: { kind: "literal", value: null },
+          left: { kind: 'identifier', path: ['c'], modifier: undefined },
+          right: { kind: 'literal', value: null },
         },
       },
     });
-    expect(parseFilter("tags:length > -1")).toMatchObject({
-      left: { modifier: "length" },
+    expect(parseFilter('tags:length > -1')).toMatchObject({
+      left: { modifier: 'length' },
       right: { value: -1 },
     });
     expect(parseFilter(`title = 'it\\'s'`)).toMatchObject({
       right: { value: "it's" },
     });
-    expect(parseFilter("   ")).toBeUndefined();
+    expect(parseFilter('   ')).toBeUndefined();
   });
 
-  it("rejects bad syntax and enforces its limits", () => {
+  it('rejects bad syntax and enforces its limits', () => {
     for (const [source, message] of [
       ['title = "open', /Unterminated/],
-      ["title =", /Expected a value/],
-      ["title = 1 title = 2", /Expected &&/],
-      ["(title = 1", /Expected "\)"/],
-      ["title # 1", /Unexpected character/],
-      ["x".repeat(3501), /at most 3500/],
-      [`${"(".repeat(7)}a = 1${")".repeat(7)}`, /nest at most 6/],
+      ['title =', /Expected a value/],
+      ['title = 1 title = 2', /Expected &&/],
+      ['(title = 1', /Expected "\)"/],
+      ['title # 1', /Unexpected character/],
+      ['x'.repeat(3501), /at most 3500/],
+      [`${'('.repeat(7)}a = 1${')'.repeat(7)}`, /nest at most 6/],
       [
-        Array.from({ length: 201 }, () => "a = 1").join(" && "),
+        Array.from({ length: 201 }, () => 'a = 1').join(' && '),
         /at most 200 comparisons/,
       ],
     ] as const) {
@@ -164,8 +164,8 @@ describe("parseFilter", () => {
   });
 });
 
-describe("compileFilter", () => {
-  it("binds every value and quotes every name", () => {
+describe('compileFilter', () => {
+  it('binds every value and quotes every name', () => {
     const { sql, params } = compile(
       'title = "x\\" OR 1=1 --" && views >= 10 && published = true',
     );
@@ -175,11 +175,11 @@ describe("compileFilter", () => {
     expect(params).toEqual({ f0: 'x" OR 1=1 --', f1: 10, f2: true });
   });
 
-  it("matches text with ~ case-insensitively, escaping LIKE wildcards unless the value has %", () => {
-    expect(compile('title ~ "50%_off"').params).toEqual({ f0: "50%_off" });
+  it('matches text with ~ case-insensitively, escaping LIKE wildcards unless the value has %', () => {
+    expect(compile('title ~ "50%_off"').params).toEqual({ f0: '50%_off' });
     expect(compile('title ~ "a_b"')).toEqual({
       sql: `"t0"."title" ILIKE {:f0}::text ESCAPE '\\'`,
-      params: { f0: "%a\\_b%" },
+      params: { f0: '%a\\_b%' },
     });
     expect(compile('title !~ "x"').sql).toMatch(/^"t0"."title" NOT ILIKE/);
     // A column that can be NULL keeps its NULL rows in !~.
@@ -189,13 +189,13 @@ describe("compileFilter", () => {
     // Two values match the same way.
     expect(compile('"Spring sale" ~ "sale"')).toEqual({
       sql: `{:f0}::text ILIKE {:f1}::text ESCAPE '\\'`,
-      params: { f0: "Spring sale", f1: "%sale%" },
+      params: { f0: 'Spring sale', f1: '%sale%' },
     });
   });
 
   it("compares blanks as each type's blank value", () => {
-    expect(compile('title = ""').params).toEqual({ f0: "" });
-    expect(compile("views = null").params).toEqual({ f0: 0 });
+    expect(compile('title = ""').params).toEqual({ f0: '' });
+    expect(compile('views = null').params).toEqual({ f0: 0 });
     expect(compile('publishedAt = ""')).toEqual({
       sql: '"t0"."publishedAt" IS NULL',
       params: {},
@@ -212,10 +212,10 @@ describe("compileFilter", () => {
       '"t0"."author" = {:f0}::text',
     );
     expect(compile('tags = ""').sql).toBe('cardinality("t0"."tags") = 0');
-    expect(compile("tags != null").sql).toBe('cardinality("t0"."tags") > 0');
+    expect(compile('tags != null').sql).toBe('cardinality("t0"."tags") > 0');
   });
 
-  it("compiles values of multi-valued fields: ?op is any, op is all of a non-empty set", () => {
+  it('compiles values of multi-valued fields: ?op is any, op is all of a non-empty set', () => {
     // Containment, so the GIN index on the field can serve it.
     expect(compile('tags ?= "a"').sql).toBe(
       '"t0"."tags" @> ARRAY[{:f0}::text]',
@@ -226,12 +226,12 @@ describe("compileFilter", () => {
     expect(compile('tags = "a"').sql).toBe(
       '(EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE TRUE) AND NOT EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE NOT COALESCE("f1"."v" = {:f0}::text, false)))',
     );
-    expect(compile("tags:length > 1").sql).toBe(
+    expect(compile('tags:length > 1').sql).toBe(
       'cardinality("t0"."tags") > {:f0}::double precision',
     );
   });
 
-  it("walks relations in subqueries, limited to records the caller may view", () => {
+  it('walks relations in subqueries, limited to records the caller may view', () => {
     const { sql, params } = compile('author.name ?= "Ann"', {
       principal: ann,
       collection: posts,
@@ -241,128 +241,128 @@ describe("compileFilter", () => {
     // users' viewRule, `id = @request.auth.id`, applies to the related records.
     expect(sql).toContain('"f1"."id" = {:f0}::text');
     expect(Object.values(params)).toEqual(
-      expect.arrayContaining(["ann000000000000", "Ann"]),
+      expect.arrayContaining(['ann000000000000', 'Ann']),
     );
     expect(compile('editors.name ?= "x"').sql).toContain(
       '"f1"."id" = ANY("t0"."editors")',
     );
   });
 
-  it("compiles a path with at most one value as one lookup", () => {
+  it('compiles a path with at most one value as one lookup', () => {
     // `author` is a single relation: at most one name to compare.
     const single = compile('author.name != "x"', { collection: posts }).sql;
     expect(single).toMatch(/^EXISTS \(SELECT 1 FROM /);
-    expect(single).not.toContain("NOT EXISTS");
+    expect(single).not.toContain('NOT EXISTS');
     // `editors` is a multi relation: every editor's name must differ.
     expect(compile('editors.name != "x"', { collection: posts }).sql).toContain(
-      "NOT EXISTS",
+      'NOT EXISTS',
     );
   });
 
-  it("stops filters at collections whose view rule is null", () => {
+  it('stops filters at collections whose view rule is null', () => {
     const locked = { ...users, viewRule: null };
     const lockedSchema = new Schema(1, [locked, posts]);
-    const expression = compileFilter('author.name = "x"', posts, "t0", {
+    const expression = compileFilter('author.name = "x"', posts, 't0', {
       schema: lockedSchema,
       principal: anonymous,
-      request: { method: "GET", query: {}, headers: {}, body: {} },
-      mode: "filter",
+      request: { method: 'GET', query: {}, headers: {}, body: {} },
+      mode: 'filter',
     });
-    expect(expression?.build(db, {})).toContain("FALSE");
+    expect(expression?.build(db, {})).toContain('FALSE');
   });
 
-  it("keeps hidden fields, secrets and @request values out of client filters", () => {
+  it('keeps hidden fields, secrets and @request values out of client filters', () => {
     fails("author.secret = 'x'", /Unknown field "author.secret"/);
     fails("author.password = 'x'", /cannot be used/);
     fails("author.tokenKey = 'x'", /cannot be used/);
     fails("@request.auth.id = ''", /Filters cannot read @request/);
-    expect(compile("author.secret = 'x'", { mode: "rule" }).sql).toContain(
+    expect(compile("author.secret = 'x'", { mode: 'rule' }).sql).toContain(
       '"secret"',
     );
   });
 
-  it("hides emails a viewer may not see", () => {
+  it('hides emails a viewer may not see', () => {
     expect(compile("email = 'a@b.co'", { collection: users }).sql).toContain(
       'CASE WHEN "t0"."emailVisibility"',
     );
     expect(
-      compile("email = 'a@b.co'", { collection: users, mode: "rule" }).sql,
-    ).not.toContain("CASE");
+      compile("email = 'a@b.co'", { collection: users, mode: 'rule' }).sql,
+    ).not.toContain('CASE');
   });
 
-  it("resolves @request values in rules, with blanks for missing ones", () => {
-    expect(compile('@request.auth.id != ""', { mode: "rule" }).params).toEqual({
-      f0: "",
-      f1: "",
+  it('resolves @request values in rules, with blanks for missing ones', () => {
+    expect(compile('@request.auth.id != ""', { mode: 'rule' }).params).toEqual({
+      f0: '',
+      f1: '',
     });
     expect(
-      compile('@request.auth.id != ""', { mode: "rule", principal: ann })
+      compile('@request.auth.id != ""', { mode: 'rule', principal: ann })
         .params,
-    ).toEqual({ f0: "ann000000000000", f1: "" });
+    ).toEqual({ f0: 'ann000000000000', f1: '' });
     expect(
-      compile("author = @request.auth.id", { mode: "rule", principal: ann })
+      compile('author = @request.auth.id', { mode: 'rule', principal: ann })
         .params,
-    ).toEqual({ f0: "ann000000000000" });
+    ).toEqual({ f0: 'ann000000000000' });
     expect(
-      compile("author = @request.auth.id", { mode: "rule" }).params,
+      compile('author = @request.auth.id', { mode: 'rule' }).params,
     ).toEqual({});
-    expect(compile("author = @request.auth.id", { mode: "rule" }).sql).toBe(
+    expect(compile('author = @request.auth.id', { mode: 'rule' }).sql).toBe(
       '"t0"."author" IS NULL',
     );
     expect(
-      compile("@request.auth.emailVerified = true", { mode: "rule" }).params,
+      compile('@request.auth.emailVerified = true', { mode: 'rule' }).params,
     ).toEqual({ f0: false, f1: true });
     expect(
-      compile("@request.body.title:isset = false", {
-        mode: "rule",
-        body: { title: "x" },
+      compile('@request.body.title:isset = false', {
+        mode: 'rule',
+        body: { title: 'x' },
       }).params,
     ).toEqual({ f0: true, f1: false });
     expect(
-      compile("views < @request.body.views", {
-        mode: "rule",
+      compile('views < @request.body.views', {
+        mode: 'rule',
         body: { views: 3 },
       }).params,
     ).toEqual({ f0: 3 });
-    expect(compile("publishedAt <= @now", { mode: "rule" }).params.f0).toMatch(
+    expect(compile('publishedAt <= @now', { mode: 'rule' }).params.f0).toMatch(
       /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}\+00$/,
     );
   });
 
-  it("compares two multi-valued sides over every pair of values", () => {
+  it('compares two multi-valued sides over every pair of values', () => {
     const pairs =
       'FROM unnest("t0"."tags") AS "f1"("v"), unnest("t0"."editors") AS "f2"("v")';
-    expect(compile("tags ?= editors").sql).toBe(
+    expect(compile('tags ?= editors').sql).toBe(
       `EXISTS (SELECT 1 ${pairs} WHERE "f1"."v" = "f2"."v")`,
     );
-    expect(compile("tags = editors").sql).toBe(
+    expect(compile('tags = editors').sql).toBe(
       `(EXISTS (SELECT 1 FROM unnest("t0"."tags") AS "f1"("v") WHERE TRUE) AND EXISTS (SELECT 1 FROM unnest("t0"."editors") AS "f2"("v") WHERE TRUE) AND NOT EXISTS (SELECT 1 ${pairs} WHERE NOT COALESCE("f1"."v" = "f2"."v", false)))`,
     );
   });
 
-  it("reads JSON values as dates through a parser that never fails", () => {
-    const { sql, params } = compile("meta.when > @now", { mode: "rule" });
+  it('reads JSON values as dates through a parser that never fails', () => {
+    const { sql, params } = compile('meta.when > @now', { mode: 'rule' });
     expect(sql).toBe(
       `(CASE WHEN jsonb_typeof(jsonb_extract_path("t0"."meta", {:f0}::text)) = 'string' THEN {{nextbase.parse_timestamptz}}(jsonb_extract_path_text("t0"."meta", {:f0}::text)) END) > {:f1}::timestamptz`,
     );
-    expect(params.f0).toBe("when");
+    expect(params.f0).toBe('when');
   });
 
-  it("rejects unknown fields, wrong types and unsupported references", () => {
-    fails("nope = 1", /Unknown field "nope"/);
-    fails("title.x = 1", /not a relation/);
+  it('rejects unknown fields, wrong types and unsupported references', () => {
+    fails('nope = 1', /Unknown field "nope"/);
+    fails('title.x = 1', /not a relation/);
     fails('views = "lots"', /not a valid number/);
-    fails("published > true", /does not apply to booleans/);
+    fails('published > true', /does not apply to booleans/);
     fails('publishedAt = "someday"', /not a valid date/);
-    fails("views ~ 1", /applies to text/);
-    fails("meta = 1", /whole JSON field/);
-    fails("title:length = 1", /:length applies/);
-    fails("tags ~ editors", /right side of ~ must be a value/);
+    fails('views ~ 1', /applies to text/);
+    fails('meta = 1', /whole JSON field/);
+    fails('title:length = 1', /:length applies/);
+    fails('tags ~ editors', /right side of ~ must be a value/);
     fails("@collection.users.name = 'x'", /Filters cannot read @collection/);
     fails("@collection.nope.id = 'x'", /Unknown collection "nope"/, {
-      mode: "rule",
+      mode: 'rule',
     });
-    fails("title:lower.x = 1", /Unexpected ":lower"/);
+    fails('title:lower.x = 1', /Unexpected ":lower"/);
     fails(
       "comments_via_title.text = 'x'",
       /Unknown field "comments_via_title"/,
@@ -370,11 +370,11 @@ describe("compileFilter", () => {
   });
 });
 
-describe("ruleProblem", () => {
-  it("reports rules that no longer fit the schema", () => {
+describe('ruleProblem', () => {
+  it('reports rules that no longer fit the schema', () => {
     expect(ruleProblem(null, posts, schema)).toBeUndefined();
     expect(
-      ruleProblem("author = @request.auth.id", posts, schema),
+      ruleProblem('author = @request.auth.id', posts, schema),
     ).toBeUndefined();
     expect(ruleProblem("status = 'live'", posts, schema)).toMatch(
       /Unknown field "status"/,
@@ -382,45 +382,45 @@ describe("ruleProblem", () => {
   });
 });
 
-describe("back-relations, @collection and JSON", () => {
-  it("walks back-relations and counts them", () => {
-    const { sql } = compile('comments_via_post.text ?= "hi"', { mode: "rule" });
+describe('back-relations, @collection and JSON', () => {
+  it('walks back-relations and counts them', () => {
+    const { sql } = compile('comments_via_post.text ?= "hi"', { mode: 'rule' });
     expect(sql).toContain(
       'FROM {{nextbase.comments}} "f1" WHERE "f1"."post" = "t0"."id"',
     );
     // comments has a null view rule: a client filter cannot count them.
-    expect(compile("comments_via_post:length > 2").sql).toContain("AND FALSE");
-    expect(compile("comments_via_post:length > 2", { mode: "rule" })).toEqual({
+    expect(compile('comments_via_post:length > 2').sql).toContain('AND FALSE');
+    expect(compile('comments_via_post:length > 2', { mode: 'rule' })).toEqual({
       sql: '(SELECT count(*) FROM {{nextbase.comments}} "f1" WHERE "f1"."post" = "t0"."id") > {:f0}::double precision',
       params: { f0: 2 },
     });
     expect(
-      compile('comments_via_post ?= "c00000000000001"', { mode: "rule" }).sql,
+      compile('comments_via_post ?= "c00000000000001"', { mode: 'rule' }).sql,
     ).toContain('"f1"."id" = {:f0}::text');
   });
 
-  it("reads JSON values by key, typed by what they are compared with", () => {
+  it('reads JSON values by key, typed by what they are compared with', () => {
     expect(compile('meta.address.city = "Oslo"')).toEqual({
       sql: 'jsonb_extract_path_text("t0"."meta", {:f0}::text, {:f1}::text) = {:f2}::text',
-      params: { f0: "address", f1: "city", f2: "Oslo" },
+      params: { f0: 'address', f1: 'city', f2: 'Oslo' },
     });
-    expect(compile("meta.count > 5").sql).toBe(
+    expect(compile('meta.count > 5').sql).toBe(
       `(CASE WHEN jsonb_typeof(jsonb_extract_path("t0"."meta", {:f0}::text)) = 'number' THEN (jsonb_extract_path_text("t0"."meta", {:f0}::text))::double precision END) > {:f1}::double precision`,
     );
     expect(compile("meta.items.0 = 'x'").params).toEqual({
-      f0: "items",
-      f1: "0",
-      f2: "x",
+      f0: 'items',
+      f1: '0',
+      f2: 'x',
     });
     expect(compile('meta.missing = ""').sql).toBe(
       'jsonb_extract_path_text("t0"."meta", {:f0}::text) IS NULL',
     );
   });
 
-  it("joins @collection rows, sharing one row per collection and alias", () => {
+  it('joins @collection rows, sharing one row per collection and alias', () => {
     const shared = compile(
       "@collection.users.name = 'a' && @collection.users.emailVerified = true",
-      { mode: "rule" },
+      { mode: 'rule' },
     ).sql;
     expect(shared).toMatch(
       /^EXISTS \(SELECT 1 FROM \(SELECT 1\) AS "nb_one" LEFT JOIN \{\{nextbase\.users\}\} "c1" ON TRUE WHERE /,
@@ -428,7 +428,7 @@ describe("back-relations, @collection and JSON", () => {
     expect(shared).not.toContain('"c2"');
     const separate = compile(
       "@collection.users:a.name = 'a' && @collection.users:b.name = 'b'",
-      { mode: "rule" },
+      { mode: 'rule' },
     ).sql;
     expect(separate).toContain(
       '"c1" ON TRUE LEFT JOIN {{nextbase.users}} "c2" ON TRUE',

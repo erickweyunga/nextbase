@@ -1,7 +1,7 @@
-import { waitUntil as vercelWaitUntil } from "@vercel/functions";
-import { ApiError } from "../errors.ts";
-import type { Logger } from "../logs/logger.ts";
-import { phoneCountry } from "../phone.ts";
+import { waitUntil as vercelWaitUntil } from '@vercel/functions';
+import { ApiError } from '../errors.ts';
+import type { Logger } from '../logs/logger.ts';
+import { phoneCountry } from '../phone.ts';
 
 export interface SmsMessage {
   /** In E.164, such as `+255712345678`. */
@@ -10,10 +10,10 @@ export interface SmsMessage {
 }
 
 export type SmsKind =
-  | "signIn"
-  | "passwordReset"
-  | "verifyPhone"
-  | "phoneChanged";
+  | 'signIn'
+  | 'passwordReset'
+  | 'verifyPhone'
+  | 'phoneChanged';
 
 export interface SmsContext {
   kind: SmsKind;
@@ -45,7 +45,7 @@ const DEFAULT_TEMPLATES: Record<SmsKind, SmsTemplate> = {
   verifyPhone: ({ code }) =>
     `${code} is your code to verify this phone number. It expires in 10 minutes.`,
   phoneChanged: () =>
-    "The phone number of your account was just changed. If this was not you, contact support right away.",
+    'The phone number of your account was just changed. If this was not you, contact support right away.',
 };
 
 /**
@@ -73,19 +73,19 @@ export class Sms {
 
   /** Development without SMS set up logs texts instead. */
   check(phone: string): void {
-    if (!this.#options && process.env.NODE_ENV === "production") {
+    if (!this.#options && process.env.NODE_ENV === 'production') {
       throw new ApiError(
         400,
-        "Sending SMS is not set up. Pass the sms option to new NextBase().",
-        { sms: { code: "sms_not_configured", message: "Not set up." } },
+        'Sending SMS is not set up. Pass the sms option to new NextBase().',
+        { sms: { code: 'sms_not_configured', message: 'Not set up.' } },
       );
     }
     const country = phoneCountry(phone);
     if (this.#countries && !(country && this.#countries.has(country))) {
-      throw new ApiError(400, "Texts cannot be sent to this country.", {
+      throw new ApiError(400, 'Texts cannot be sent to this country.', {
         phone: {
-          code: "validation_country_not_allowed",
-          message: "Texts cannot be sent to this country.",
+          code: 'validation_country_not_allowed',
+          message: 'Texts cannot be sent to this country.',
         },
       });
     }
@@ -111,7 +111,7 @@ export class Sms {
       }
       await options.send({ to, text });
     })().catch((error: unknown) => {
-      this.#logger.failure("sms", `sending a ${kind} text failed`, error);
+      this.#logger.failure('sms', `sending a ${kind} text failed`, error);
     });
     this.#waitUntil(work);
   }

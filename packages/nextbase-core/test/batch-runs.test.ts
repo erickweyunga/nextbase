@@ -1,10 +1,10 @@
-import type pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Principal } from "../src/auth/principal.ts";
-import { NextBase } from "../src/index.ts";
-import { createRuns, type PlannedCreate } from "../src/records/service.ts";
-import { call, type Reply } from "./http.ts";
-import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import type pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Principal } from '../src/auth/principal.ts';
+import { NextBase } from '../src/index.ts';
+import { createRuns, type PlannedCreate } from '../src/records/service.ts';
+import { call, type Reply } from './http.ts';
+import { createTestDatabase, type TestDatabase } from './postgres.ts';
 
 /** Wraps `pool` to count the queries sent to Postgres, including those inside transactions. */
 function counting(pool: pg.Pool): { pool: pg.Pool; queries: () => number } {
@@ -13,14 +13,14 @@ function counting(pool: pg.Pool): { pool: pg.Pool; queries: () => number } {
     new Proxy(target, {
       get(target, prop) {
         const value = Reflect.get(target, prop, target);
-        if (typeof value !== "function") return value;
-        if (prop === "query") {
+        if (typeof value !== 'function') return value;
+        if (prop === 'query') {
           return (...args: unknown[]) => {
             count++;
             return value.apply(target, args);
           };
         }
-        if (prop === "connect") {
+        if (prop === 'connect') {
           return async () => countQueries(await value.apply(target));
         }
         return value.bind(target);
@@ -36,25 +36,25 @@ function counting(pool: pg.Pool): { pool: pg.Pool; queries: () => number } {
   };
 }
 
-const PASSWORD = "password 123 456";
-const CREATE = "/collections/customers/records";
+const PASSWORD = 'password 123 456';
+const CREATE = '/collections/customers/records';
 
-describe("batches of creates", () => {
+describe('batches of creates', () => {
   let t: TestDatabase;
   let nextbase: NextBase;
   let queries: () => number;
-  const tokens: Record<"user" | "admin", string> = { user: "", admin: "" };
+  const tokens: Record<'user' | 'admin', string> = { user: '', admin: '' };
   const ids: Record<string, string> = {};
 
   const batch = (
     token: string,
     requests: { url?: string; body: Record<string, unknown> }[],
   ): Promise<Reply> =>
-    call(nextbase, "POST", "/batch", {
+    call(nextbase, 'POST', '/batch', {
       token,
       body: {
         requests: requests.map(({ url = CREATE, body }) => ({
-          method: "POST",
+          method: 'POST',
           url,
           body,
         })),
@@ -80,88 +80,88 @@ describe("batches of creates", () => {
     const counted = counting(t.pool);
     queries = counted.queries;
     nextbase = new NextBase({ database: counted.pool, logs: false });
-    await nextbase.createSuperuser("admin@example.com", "admin password 123");
+    await nextbase.createSuperuser('admin@example.com', 'admin password 123');
     const admin = nextbase.client({ superuser: true });
-    await admin.collections.create({ name: "users", type: "auth" });
+    await admin.collections.create({ name: 'users', type: 'auth' });
     const workspaces = await admin.collections.create({
-      name: "workspaces",
-      viewRule: "",
+      name: 'workspaces',
+      viewRule: '',
     });
     const segments = await admin.collections.create({
-      name: "segments",
-      viewRule: "",
+      name: 'segments',
+      viewRule: '',
     });
     await admin.collections.create({
-      name: "customers",
-      listRule: "",
-      viewRule: "",
+      name: 'customers',
+      listRule: '',
+      viewRule: '',
       // Refuses blocked names, so tests can make the rule refuse one row.
       createRule: '@request.auth.id != "" && name != "blocked"',
       fields: [
-        { id: "custname00", name: "name", type: "text", required: true },
-        { name: "workspace", type: "relation", collectionId: workspaces.id },
+        { id: 'custname00', name: 'name', type: 'text', required: true },
+        { name: 'workspace', type: 'relation', collectionId: workspaces.id },
         {
-          name: "segments",
-          type: "relation",
+          name: 'segments',
+          type: 'relation',
           collectionId: segments.id,
           maxSelect: 5,
         },
       ],
       indexes: [
-        { name: "customers_name", unique: true, fields: ["custname00"] },
+        { name: 'customers_name', unique: true, fields: ['custname00'] },
       ],
     });
-    const users = await admin.collections.getOne("users");
+    const users = await admin.collections.getOne('users');
     await admin.collections.create({
-      name: "memberships",
+      name: 'memberships',
       fields: [
-        { name: "user", type: "relation", collectionId: users.id },
-        { name: "workspace", type: "relation", collectionId: workspaces.id },
+        { name: 'user', type: 'relation', collectionId: users.id },
+        { name: 'workspace', type: 'relation', collectionId: workspaces.id },
       ],
     });
     // Membership-style: reads another collection, so creates run together.
     await admin.collections.create({
-      name: "leads",
-      viewRule: "",
+      name: 'leads',
+      viewRule: '',
       createRule:
-        "@collection.memberships.user = @request.auth.id && @collection.memberships.workspace = workspace",
+        '@collection.memberships.user = @request.auth.id && @collection.memberships.workspace = workspace',
       fields: [
-        { name: "workspace", type: "relation", collectionId: workspaces.id },
+        { name: 'workspace', type: 'relation', collectionId: workspaces.id },
       ],
     });
     // Reads the collection itself, so each create runs alone.
     await admin.collections.create({
-      name: "tickets",
-      viewRule: "",
+      name: 'tickets',
+      viewRule: '',
       createRule: '@request.auth.id != "" || @collection.tickets.id = "x"',
     });
     const folders = await admin.collections.create({
-      name: "folders",
-      viewRule: "",
+      name: 'folders',
+      viewRule: '',
     });
-    await admin.collections.update("folders", {
+    await admin.collections.update('folders', {
       createRule: '@request.auth.id != "" || folders_via_parent.id ?= "x"',
-      fields: [{ name: "parent", type: "relation", collectionId: folders.id }],
+      fields: [{ name: 'parent', type: 'relation', collectionId: folders.id }],
     });
     const categories = await admin.collections.create({
-      name: "categories",
-      createRule: "",
-      viewRule: "",
+      name: 'categories',
+      createRule: '',
+      viewRule: '',
     });
-    await admin.collections.update("categories", {
+    await admin.collections.update('categories', {
       fields: [
-        { name: "parent", type: "relation", collectionId: categories.id },
+        { name: 'parent', type: 'relation', collectionId: categories.id },
       ],
     });
-    ids.workspace = (await admin.collection("workspaces").create({}))?.id ?? "";
-    ids.segment = (await admin.collection("segments").create({}))?.id ?? "";
-    const robin = await admin.collection("users").create({
-      email: "robin@example.com",
+    ids.workspace = (await admin.collection('workspaces').create({}))?.id ?? '';
+    ids.segment = (await admin.collection('segments').create({}))?.id ?? '';
+    const robin = await admin.collection('users').create({
+      email: 'robin@example.com',
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });
     await admin
-      .collection("memberships")
+      .collection('memberships')
       .create({ user: robin?.id, workspace: ids.workspace });
     const signIn = async (
       collection: string,
@@ -171,16 +171,16 @@ describe("batches of creates", () => {
       (
         await call(
           nextbase,
-          "POST",
+          'POST',
           `/collections/${collection}/auth-with-password`,
           { body: { identity: email, password } },
         )
       ).body.token as string;
-    tokens.user = await signIn("users", "robin@example.com", PASSWORD);
+    tokens.user = await signIn('users', 'robin@example.com', PASSWORD);
     tokens.admin = await signIn(
-      "_superusers",
-      "admin@example.com",
-      "admin password 123",
+      '_superusers',
+      'admin@example.com',
+      'admin password 123',
     );
   });
 
@@ -190,9 +190,9 @@ describe("batches of creates", () => {
     await t.close();
   });
 
-  it("creates 50 records with a few queries, not a few per record", async () => {
+  it('creates 50 records with a few queries, not a few per record', async () => {
     // Warms the schema and the setup check, which are read once per process.
-    await batch(tokens.user, [customer("warm")]);
+    await batch(tokens.user, [customer('warm')]);
     const fifty = Array.from({ length: 50 }, (_, i) => customer(`user ${i}`));
     queries();
     const reply = await batch(tokens.user, fifty);
@@ -215,10 +215,10 @@ describe("batches of creates", () => {
     expect(queries()).toBe(9);
   });
 
-  it("creates together when the create rule reads other collections", async () => {
+  it('creates together when the create rule reads other collections', async () => {
     const leads = (n: number) =>
       Array.from({ length: n }, () => ({
-        url: "/collections/leads/records",
+        url: '/collections/leads/records',
         body: { workspace: ids.workspace },
       }));
     queries();
@@ -230,25 +230,25 @@ describe("batches of creates", () => {
     // Not a member of this workspace: the rule refuses the lead.
     const other = await nextbase
       .client({ superuser: true })
-      .collection("workspaces")
+      .collection('workspaces')
       .create({});
     const refused = await batch(tokens.user, [
       ...leads(2),
-      { url: "/collections/leads/records", body: { workspace: other?.id } },
+      { url: '/collections/leads/records', body: { workspace: other?.id } },
     ]);
     expect(refused.body.message).toMatch(/^Request 3 of the batch failed/);
   });
 
   it("checks a create rule that reads each row's body in one query", async () => {
     await nextbase.client({ superuser: true }).collections.create({
-      name: "orders",
-      viewRule: "",
-      createRule: "@request.body.qty > 0",
-      fields: [{ name: "qty", type: "number" }],
+      name: 'orders',
+      viewRule: '',
+      createRule: '@request.body.qty > 0',
+      fields: [{ name: 'qty', type: 'number' }],
     });
     const orders = (qty: number[]) =>
       qty.map((n) => ({
-        url: "/collections/orders/records",
+        url: '/collections/orders/records',
         body: { qty: n },
       }));
     // Loads the new collection into the schema.
@@ -264,8 +264,8 @@ describe("batches of creates", () => {
     expect(refused.body.message).toMatch(/^Request 2 of the batch failed/);
   });
 
-  it("creates one at a time when a rule reads the collection itself", async () => {
-    for (const collection of ["tickets", "folders"]) {
+  it('creates one at a time when a rule reads the collection itself', async () => {
+    for (const collection of ['tickets', 'folders']) {
       const creates = (n: number) =>
         Array.from({ length: n }, () => ({
           url: `/collections/${collection}/records`,
@@ -280,34 +280,34 @@ describe("batches of creates", () => {
     }
   });
 
-  it("reports the first failing create, as when each is done in turn", async () => {
-    const before = await count("customers");
+  it('reports the first failing create, as when each is done in turn', async () => {
+    const before = await count('customers');
     const fails = async (requests: ReturnType<typeof customer>[]) => {
       const reply = await batch(tokens.user, requests);
       expect(reply.status).toBe(400);
-      expect(await count("customers")).toBe(before);
+      expect(await count('customers')).toBe(before);
       return reply.body;
     };
     // A required name missing on the 3rd, the rule refusing the 5th.
     expect(
       await fails([
-        customer("a1"),
-        customer("a2"),
-        customer(""),
-        customer("a4"),
-        customer("blocked"),
+        customer('a1'),
+        customer('a2'),
+        customer(''),
+        customer('a4'),
+        customer('blocked'),
       ]),
     ).toMatchObject({
       message: expect.stringMatching(/^Request 3 of the batch failed/),
-      data: { requests: { 2: { name: { code: "validation_required" } } } },
+      data: { requests: { 2: { name: { code: 'validation_required' } } } },
     });
     // The rule refusing the 2nd comes before a problem on the 4th.
     expect(
       await fails([
-        customer("b1"),
-        customer("blocked"),
-        customer("b3"),
-        customer(""),
+        customer('b1'),
+        customer('blocked'),
+        customer('b3'),
+        customer(''),
       ]),
     ).toMatchObject({
       message: expect.stringMatching(/^Request 2 of the batch failed/),
@@ -315,82 +315,82 @@ describe("batches of creates", () => {
     // A missing related record, named for its row.
     expect(
       await fails([
-        customer("c1"),
-        customer("c2", { segments: [ids.segment, "missing00000000"] }),
+        customer('c1'),
+        customer('c2', { segments: [ids.segment, 'missing00000000'] }),
       ]),
     ).toMatchObject({
       message: expect.stringMatching(/^Request 2 of the batch failed/),
       data: {
-        requests: { 1: { segments: { code: "validation_missing_relation" } } },
+        requests: { 1: { segments: { code: 'validation_missing_relation' } } },
       },
     });
   });
 
-  it("finds the create that duplicates a unique value in the middle of a run", async () => {
-    const before = await count("customers");
+  it('finds the create that duplicates a unique value in the middle of a run', async () => {
+    const before = await count('customers');
     const reply = await batch(tokens.user, [
-      customer("d1"),
-      customer("d2"),
-      customer("d3"),
-      customer("d2"),
-      customer("d5"),
+      customer('d1'),
+      customer('d2'),
+      customer('d3'),
+      customer('d2'),
+      customer('d5'),
     ]);
     expect(reply.status).toBe(400);
     expect(reply.body).toMatchObject({
       message: expect.stringMatching(/^Request 4 of the batch failed/),
-      data: { requests: { 3: { name: { code: "validation_not_unique" } } } },
+      data: { requests: { 3: { name: { code: 'validation_not_unique' } } } },
     });
-    expect(await count("customers")).toBe(before);
+    expect(await count('customers')).toBe(before);
     // A duplicate on the 1st comes before the rule refusing the 2nd.
     const first = await batch(tokens.user, [
-      customer("warm"),
-      customer("blocked"),
+      customer('warm'),
+      customer('blocked'),
     ]);
     expect(first.body).toMatchObject({
       message: expect.stringMatching(/^Request 1 of the batch failed/),
-      data: { requests: { 0: { name: { code: "validation_not_unique" } } } },
+      data: { requests: { 0: { name: { code: 'validation_not_unique' } } } },
     });
-    expect(await count("customers")).toBe(before);
+    expect(await count('customers')).toBe(before);
   });
 
-  it("names the create whose value is too long for its index", async () => {
+  it('names the create whose value is too long for its index', async () => {
     // 3000 different three-byte characters, which do not compress, are over
     // the most an index entry takes.
     const long = Array.from({ length: 3000 }, (_, i) =>
       String.fromCharCode(0x4e00 + ((i * 7919) % 20_000)),
-    ).join("");
-    const one = await call(nextbase, "POST", CREATE, {
+    ).join('');
+    const one = await call(nextbase, 'POST', CREATE, {
       token: tokens.user,
       body: customer(long).body,
     });
     expect(one.status).toBe(400);
-    expect(one.body.message).toBe("A value is too long to index.");
-    const reply = await batch(tokens.user, [customer("f1"), customer(long)]);
+    expect(one.body.message).toBe('A value is too long to index.');
+    const reply = await batch(tokens.user, [customer('f1'), customer(long)]);
     expect(reply.status).toBe(400);
     expect(reply.body.message).toMatch(/^Request 2 of the batch failed/);
   });
 
-  it("creates rows that set different fields", async () => {
+  it('creates rows that set different fields', async () => {
     const reply = await batch(tokens.user, [
-      { body: { name: "e1" } },
-      customer("e2"),
-      { body: { name: "e3", segments: [ids.segment] } },
+      { body: { name: 'e1' } },
+      customer('e2'),
+      { body: { name: 'e3', segments: [ids.segment] } },
     ]);
     expect(reply.status).toBe(200);
     const results = reply.body as unknown as Reply[];
     expect(results.map((r) => [r.body.workspace, r.body.segments])).toEqual([
-      ["", []],
+      ['', []],
       [ids.workspace, [ids.segment]],
-      ["", [ids.segment]],
+      ['', [ids.segment]],
     ]);
   });
 
-  it("creates a record pointing at one created earlier in the batch", async () => {
-    const parent = "parent000000000";
+  it('creates a record pointing at one created earlier in the batch', async () => {
+    const parent = 'parent000000000';
     const reply = await batch(tokens.user, [
-      { url: "/collections/categories/records", body: { id: parent } },
+      { url: '/collections/categories/records', body: { id: parent } },
       {
-        url: "/collections/categories/records",
+        url: '/collections/categories/records',
         body: { parent },
       },
     ]);
@@ -400,16 +400,16 @@ describe("batches of creates", () => {
   });
 });
 
-describe("splitting creates into runs", () => {
+describe('splitting creates into runs', () => {
   const principal: Principal = { superuser: false };
   const plan = (
     collection: { id: string; createRule?: string; viewRule?: string },
     input: Record<string, unknown>,
-    query = "",
+    query = '',
   ): PlannedCreate =>
     ({
       ctx: { principal },
-      collection: { createRule: "", viewRule: "", ...collection },
+      collection: { createRule: '', viewRule: '', ...collection },
       input,
       query: new URLSearchParams(query),
       passwordHash: undefined,
@@ -418,35 +418,35 @@ describe("splitting creates into runs", () => {
   const sizes = (plans: PlannedCreate[]) =>
     createRuns(plans).map((run) => run.length);
 
-  it("keeps consecutive creates of one collection and query together", () => {
-    const a = { id: "a" };
+  it('keeps consecutive creates of one collection and query together', () => {
+    const a = { id: 'a' };
     expect(
-      sizes([plan(a, { id: "1" }), plan(a, { id: "2" }), plan(a, { id: "3" })]),
+      sizes([plan(a, { id: '1' }), plan(a, { id: '2' }), plan(a, { id: '3' })]),
     ).toEqual([3]);
     expect(
       sizes([
-        plan(a, { id: "1" }),
-        plan({ id: "b" }, { id: "2" }),
-        plan(a, { id: "3" }, "expand=x"),
-        plan(a, { id: "4" }, "expand=x"),
+        plan(a, { id: '1' }),
+        plan({ id: 'b' }, { id: '2' }),
+        plan(a, { id: '3' }, 'expand=x'),
+        plan(a, { id: '4' }, 'expand=x'),
       ]),
     ).toEqual([1, 1, 2]);
   });
 
-  it("runs a create alone when its rule does not compile, so it fails as it would in turn", () => {
-    const broken = { id: "a", createRule: "((" };
+  it('runs a create alone when its rule does not compile, so it fails as it would in turn', () => {
+    const broken = { id: 'a', createRule: '((' };
     expect(
-      sizes([plan(broken, { id: "1" }), plan(broken, { id: "2" })]),
+      sizes([plan(broken, { id: '1' }), plan(broken, { id: '2' })]),
     ).toEqual([1, 1]);
   });
 
-  it("starts a new run at a create pointing at one earlier in the run", () => {
-    const a = { id: "a" };
+  it('starts a new run at a create pointing at one earlier in the run', () => {
+    const a = { id: 'a' };
     expect(
       sizes([
-        plan(a, { id: "1" }),
-        plan(a, { id: "2", parent: "1" }),
-        plan(a, { id: "3", tags: ["x", "2"] }),
+        plan(a, { id: '1' }),
+        plan(a, { id: '2', parent: '1' }),
+        plan(a, { id: '3', tags: ['x', '2'] }),
       ]),
     ).toEqual([1, 1, 1]);
   });

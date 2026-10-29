@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import type { Builder } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
+import { createHash } from 'node:crypto';
+import type { Builder } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
 
 // Counted in Postgres so limits hold across serverless instances without
 // trusting client IP headers. Trade-off: someone can lock a known account out
@@ -13,7 +13,7 @@ export interface Limit {
   window: string;
 }
 
-const DEFAULT_LIMIT: Limit = { max: 10, window: "15 minutes" };
+const DEFAULT_LIMIT: Limit = { max: 10, window: '15 minutes' };
 
 /**
  * Counts before the password is checked, in one atomic upsert, so parallel
@@ -35,10 +35,10 @@ export async function countAttempt(
   const rows = await q
     .newQuery(
       `WITH expired AS (
-         DELETE FROM {{${table("_auth_attempts")}}}
+         DELETE FROM {{${table('_auth_attempts')}}}
          WHERE window_end <= now() AND key <> ALL({:keys}::text[])
        )
-       INSERT INTO {{${table("_auth_attempts")}}} AS a (key, failures, window_end)
+       INSERT INTO {{${table('_auth_attempts')}}} AS a (key, failures, window_end)
        SELECT key, 1, now() + {:window}::interval FROM unnest({:keys}::text[]) AS key
        ON CONFLICT (key) DO UPDATE SET
          failures = CASE WHEN a.window_end <= now() THEN 1 ELSE a.failures + 1 END,
@@ -52,9 +52,9 @@ export async function countAttempt(
     const retryAfter = Math.max(1, ...over.map((row) => row.retryAfter));
     throw new ApiError(
       429,
-      "Too many attempts. Try again later.",
+      'Too many attempts. Try again later.',
       {},
-      { "retry-after": String(retryAfter) },
+      { 'retry-after': String(retryAfter) },
     );
   }
 }
@@ -65,7 +65,7 @@ export async function clearAttempts(
 ): Promise<void> {
   await q
     .newQuery(
-      `DELETE FROM {{${table("_auth_attempts")}}} WHERE key = ANY({:keys}::text[])`,
+      `DELETE FROM {{${table('_auth_attempts')}}} WHERE key = ANY({:keys}::text[])`,
     )
     .bind({ keys: [...keys] })
     .execute();
@@ -81,9 +81,9 @@ export function accountKey(collectionId: string, recordId: string): string {
  * a long key would not fit the table's index.
  */
 export function identityKey(collectionId: string, identity: string): string {
-  const digest = createHash("sha256")
+  const digest = createHash('sha256')
     .update(identity.toLowerCase())
-    .digest("hex");
+    .digest('hex');
   return `${collectionId}:identity:${digest}`;
 }
 

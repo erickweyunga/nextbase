@@ -11,9 +11,41 @@
   "formatter": {
     "indentStyle": "space"
   },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double"
+    }
+  },
   "linter": {
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "style": {
+        "noDefaultExport": "error",
+        "noNamespace": "error",
+        "useConsistentArrayType": {
+          "level": "error",
+          "options": { "syntax": "shorthand" }
+        },
+        "useConsistentTypeDefinitions": {
+          "level": "error",
+          "options": { "style": "interface" }
+        },
+        "useConst": "error",
+        "useDefaultSwitchClause": "error",
+        "useArrayLiterals": "error",
+        "useThrowNewError": "error",
+        "useThrowOnlyError": "error"
+      },
+      "suspicious": {
+        "noDoubleEquals": "error",
+        "noExplicitAny": "error",
+        "noTsIgnore": "error",
+        "noVar": "error"
+      },
+      "complexity": {
+        "noStaticOnlyClass": "error"
+      }
     }
   },
   "assist": {
@@ -22,5 +54,24 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "**/*.config.ts",
+        "**/*.d.ts",
+        "apps/docs/sidebars.ts",
+        "apps/docs/src/pages/**",
+        "examples/next-app/app/**/page.tsx",
+        "examples/next-app/app/**/layout.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noDefaultExport": "off"
+          }
+        }
+      }
+    }
+  ]
 }

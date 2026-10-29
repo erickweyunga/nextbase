@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { isIP } from 'node:net';
 
 /**
  * Where the client's IP comes from: `"vercel"` for Vercel's own headers, a
@@ -6,7 +6,7 @@ import { isIP } from "node:net";
  * in, only for logs and rate limits.
  */
 export type ClientIpOption =
-  | "vercel"
+  | 'vercel'
   | {
       /** A header your proxy appends the client's IP to, such as `x-forwarded-for`. */
       header: string;
@@ -31,41 +31,41 @@ const UNKNOWN: ClientIp = () => undefined;
 export function clientIpReader(
   option: ClientIpOption | undefined,
   onVercel: boolean = process.env.VERCEL !== undefined &&
-    process.env.VERCEL !== "",
+    process.env.VERCEL !== '',
 ): ClientIp {
-  const config = option ?? (onVercel ? "vercel" : undefined);
+  const config = option ?? (onVercel ? 'vercel' : undefined);
   if (config === undefined) return UNKNOWN;
-  if (config === "vercel") {
+  if (config === 'vercel') {
     // Vercel sets both itself, replacing what the client sent.
     return (request) =>
-      fromHeader(request, "x-vercel-forwarded-for", 0) ??
-      fromHeader(request, "x-real-ip", 0);
+      fromHeader(request, 'x-vercel-forwarded-for', 0) ??
+      fromHeader(request, 'x-real-ip', 0);
   }
-  if (typeof config === "function") {
+  if (typeof config === 'function') {
     return (request) => {
       try {
         const ip = config(request);
-        return typeof ip === "string" ? normalizeIp(ip.trim()) : undefined;
+        return typeof ip === 'string' ? normalizeIp(ip.trim()) : undefined;
       } catch (error) {
-        console.error("[nextbase] clientIp failed:", error);
+        console.error('[nextbase] clientIp failed:', error);
         return undefined;
       }
     };
   }
-  if (config === null || typeof config !== "object") {
+  if (config === null || typeof config !== 'object') {
     throw new TypeError(
       'clientIp must be "vercel", { header, trustedHops } or a function.',
     );
   }
   const { header, trustedHops = 0 } = config;
   if (
-    typeof header !== "string" ||
+    typeof header !== 'string' ||
     !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header)
   ) {
-    throw new TypeError("clientIp.header must be a header name.");
+    throw new TypeError('clientIp.header must be a header name.');
   }
   if (!Number.isSafeInteger(trustedHops) || trustedHops < 0) {
-    throw new RangeError("clientIp.trustedHops must be a whole number, or 0.");
+    throw new RangeError('clientIp.trustedHops must be a whole number, or 0.');
   }
   const name = header.toLowerCase();
   return (request) => fromHeader(request, name, trustedHops);
@@ -85,9 +85,9 @@ function fromHeader(
   const value = request.headers.get(name);
   if (value === null) return undefined;
   const entries = value
-    .split(",")
+    .split(',')
     .map((entry) => entry.trim())
-    .filter((entry) => entry !== "");
+    .filter((entry) => entry !== '');
   const entry = entries[entries.length - 1 - hops];
   return entry === undefined ? undefined : normalizeIp(entry);
 }
@@ -111,7 +111,7 @@ function normalizeIp(value: string): string | undefined {
   const port = withPort?.[2];
   if (port !== undefined && Number(port) > MAX_PORT) return undefined;
   let ip = withPort?.[1] ?? value;
-  const zone = ip.indexOf("%");
+  const zone = ip.indexOf('%');
   if (zone !== -1) {
     if (zone === ip.length - 1) return undefined;
     ip = ip.slice(0, zone);
@@ -126,5 +126,5 @@ function normalizeIp(value: string): string | undefined {
   if (!mapped) return canonical;
   const high = Number.parseInt(mapped[1] as string, 16);
   const low = Number.parseInt(mapped[2] as string, 16);
-  return [high >> 8, high & 255, low >> 8, low & 255].join(".");
+  return [high >> 8, high & 255, low >> 8, low & 255].join('.');
 }

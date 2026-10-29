@@ -1,11 +1,11 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import type { AuthCollection, AuthProvider } from "@nextbasejs/client";
-import type { Builder } from "@nextbasejs/dbx";
-import * as oauth from "oauth4webapi";
-import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { unstorableText } from "../storable.ts";
-import { isSecure, readCookie } from "./sessions.ts";
+import { createHash, timingSafeEqual } from 'node:crypto';
+import type { AuthCollection, AuthProvider } from '@nextbasejs/client';
+import type { Builder } from '@nextbasejs/dbx';
+import * as oauth from 'oauth4webapi';
+import { table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { unstorableText } from '../storable.ts';
+import { isSecure, readCookie } from './sessions.ts';
 
 // OAuth2 / OpenID Connect sign-in (protocol details via oauth4webapi):
 // 1. start() redirects to the provider with a PKCE challenge and a random
@@ -76,8 +76,8 @@ const STATE_MAX_AGE = 600;
 const MAX_REDIRECT = 2048;
 
 const STATE_COOKIES = {
-  secure: "__Host-nextbase_oauth2",
-  plain: "nextbase_oauth2",
+  secure: '__Host-nextbase_oauth2',
+  plain: 'nextbase_oauth2',
 } as const;
 
 const signal = (): AbortSignal => AbortSignal.timeout(TIMEOUT_MS);
@@ -125,7 +125,7 @@ export class OAuth2 {
 
   provider(name: string): Provider {
     const provider = this.#providers.get(name);
-    if (!provider) throw new ApiError(404, "OAuth2 provider not found.");
+    if (!provider) throw new ApiError(404, 'OAuth2 provider not found.');
     return provider;
   }
 
@@ -153,12 +153,12 @@ export class OAuth2 {
     // Abandoned sign-ins are cleaned up here, where sign-ins start.
     await q
       .newQuery(
-        `DELETE FROM {{${table("_oauth2_states")}}} WHERE expires <= now()`,
+        `DELETE FROM {{${table('_oauth2_states')}}} WHERE expires <= now()`,
       )
       .execute();
     await q
       .newQuery(
-        `INSERT INTO {{${table("_oauth2_states")}}}
+        `INSERT INTO {{${table('_oauth2_states')}}}
            (id, collection_id, provider, code_verifier, nonce, redirect, error_redirect,
             link_record_id, expires)
          VALUES ({:id}, {:collectionId}, {:provider}, {:codeVerifier}, {:nonce}, {:redirect},
@@ -176,17 +176,17 @@ export class OAuth2 {
       })
       .execute();
     const url = new URL(server.authorization_endpoint as string);
-    url.searchParams.set("client_id", provider.client.client_id);
-    url.searchParams.set("redirect_uri", this.callbackUrl(provider));
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", provider.scope);
-    url.searchParams.set("state", state);
+    url.searchParams.set('client_id', provider.client.client_id);
+    url.searchParams.set('redirect_uri', this.callbackUrl(provider));
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('scope', provider.scope);
+    url.searchParams.set('state', state);
     url.searchParams.set(
-      "code_challenge",
+      'code_challenge',
       await oauth.calculatePKCECodeChallenge(codeVerifier),
     );
-    url.searchParams.set("code_challenge_method", "S256");
-    if (provider.oidc) url.searchParams.set("nonce", nonce);
+    url.searchParams.set('code_challenge_method', 'S256');
+    if (provider.oidc) url.searchParams.set('nonce', nonce);
     return { location: url.href, state };
   }
 
@@ -195,16 +195,16 @@ export class OAuth2 {
    * another site cannot sign the browser in to an account of its choosing.
    */
   async consumeState(q: Builder, request: Request): Promise<OAuth2State> {
-    const returned = new URL(request.url).searchParams.get("state") ?? "";
-    const expected = readCookie(request, stateCookieName(request)) ?? "";
+    const returned = new URL(request.url).searchParams.get('state') ?? '';
+    const expected = readCookie(request, stateCookieName(request)) ?? '';
     const lost = new OAuth2Error(
-      "oauth2_failed",
-      "The sign-in started in another browser or took too long. Try again.",
+      'oauth2_failed',
+      'The sign-in started in another browser or took too long. Try again.',
     );
-    if (returned === "" || !sameText(returned, expected)) throw lost;
+    if (returned === '' || !sameText(returned, expected)) throw lost;
     const [state] = await q
       .newQuery(
-        `DELETE FROM {{${table("_oauth2_states")}}}
+        `DELETE FROM {{${table('_oauth2_states')}}}
          WHERE id = {:id} AND expires > now()
          RETURNING collection_id AS "collectionId", provider,
            code_verifier AS "codeVerifier", nonce, redirect,
@@ -222,15 +222,15 @@ export class OAuth2 {
     request: Request,
   ): Promise<Identity> {
     const params = new URL(request.url).searchParams;
-    if (params.get("error") === "access_denied") {
-      throw new OAuth2Error("oauth2_denied", "The sign-in was cancelled.");
+    if (params.get('error') === 'access_denied') {
+      throw new OAuth2Error('oauth2_denied', 'The sign-in was cancelled.');
     }
     const server = await provider.server();
     const callback = oauth.validateAuthResponse(
       server,
       provider.client,
       params,
-      params.get("state") ?? "",
+      params.get('state') ?? '',
     );
     const response = await oauth.authorizationCodeGrantRequest(
       server,
@@ -252,8 +252,8 @@ export class OAuth2 {
 
   returnUrl(redirect: string, error?: string): string {
     const base = this.#appUrl as URL;
-    const url = redirect === "" ? new URL(base) : new URL(redirect, base);
-    if (error !== undefined) url.searchParams.set("error", error);
+    const url = redirect === '' ? new URL(base) : new URL(redirect, base);
+    if (error !== undefined) url.searchParams.set('error', error);
     return url.href;
   }
 }
@@ -261,21 +261,21 @@ export class OAuth2 {
 /** App paths only, so a sign-in link cannot forward users to a look-alike site. */
 export function checkRedirect(
   value: string | null,
-  param = "redirect",
+  param = 'redirect',
 ): string {
-  if (value === null || value === "") return "";
+  if (value === null || value === '') return '';
   // `//host` and `/\host` are protocol-relative URLs to another site.
   if (
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    value.startsWith("/\\") ||
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.startsWith('/\\') ||
     value.length > MAX_REDIRECT ||
     unstorableText(value) !== undefined
   ) {
     throw new ApiError(400, `${param} must be a path on the app.`, {
       [param]: {
-        code: "validation_invalid_redirect",
-        message: "Must be a path, such as /dashboard.",
+        code: 'validation_invalid_redirect',
+        message: 'Must be a path, such as /dashboard.',
       },
     });
   }
@@ -286,13 +286,13 @@ export function checkRedirect(
 export function setStateCookie(request: Request, state?: string): string {
   const secure = isSecure(request);
   return [
-    `${stateCookieName(request)}=${state ?? ""}`,
-    "Path=/",
+    `${stateCookieName(request)}=${state ?? ''}`,
+    'Path=/',
     `Max-Age=${state === undefined ? 0 : STATE_MAX_AGE}`,
-    "HttpOnly",
-    "SameSite=Lax",
-    ...(secure ? ["Secure"] : []),
-  ].join("; ");
+    'HttpOnly',
+    'SameSite=Lax',
+    ...(secure ? ['Secure'] : []),
+  ].join('; ');
 }
 
 function stateCookieName(request: Request): string {
@@ -301,7 +301,7 @@ function stateCookieName(request: Request): string {
 
 // States are stored hashed, so a database leak cannot finish a sign-in.
 function stateHash(state: string): string {
-  return createHash("sha256").update(state).digest("hex");
+  return createHash('sha256').update(state).digest('hex');
 }
 
 function sameText(a: string, b: string): boolean {
@@ -328,16 +328,16 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
     client: { client_id: options.clientId },
     clientAuth: oauth.ClientSecretPost(options.clientSecret),
   };
-  if (options.issuer === undefined && name === "github") {
+  if (options.issuer === undefined && name === 'github') {
     return {
       ...base,
-      displayName: options.displayName ?? "GitHub",
+      displayName: options.displayName ?? 'GitHub',
       ...github(),
     };
   }
   const issuer =
     options.issuer ??
-    (name === "google" ? "https://accounts.google.com" : undefined);
+    (name === 'google' ? 'https://accounts.google.com' : undefined);
   if (issuer === undefined) {
     throw new TypeError(
       `OAuth2 provider "${name}" needs the issuer of its OpenID Connect provider.`,
@@ -345,7 +345,7 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
   }
   return {
     ...base,
-    displayName: options.displayName ?? (name === "google" ? "Google" : name),
+    displayName: options.displayName ?? (name === 'google' ? 'Google' : name),
     ...openIdConnect(issuer, base.client),
   };
 }
@@ -353,16 +353,16 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
 function openIdConnect(
   issuer: string,
   client: oauth.Client,
-): Pick<Provider, "scope" | "oidc" | "server" | "identity"> {
+): Pick<Provider, 'scope' | 'oidc' | 'server' | 'identity'> {
   const url = new URL(issuer);
   let discovered: Promise<oauth.AuthorizationServer> | undefined;
   return {
-    scope: "openid email",
+    scope: 'openid email',
     oidc: true,
     server() {
       // Once per instance; a failed discovery is retried on the next sign-in.
       discovered ??= oauth
-        .discoveryRequest(url, { algorithm: "oidc", signal })
+        .discoveryRequest(url, { algorithm: 'oidc', signal })
         .then((response) => oauth.processDiscoveryResponse(url, response))
         .catch((error: unknown) => {
           discovered = undefined;
@@ -376,7 +376,7 @@ function openIdConnect(
       };
       const sub = claims.sub as string;
       // Providers may leave the email out of the ID token and in UserInfo.
-      if (typeof claims.email !== "string" && server.userinfo_endpoint) {
+      if (typeof claims.email !== 'string' && server.userinfo_endpoint) {
         const response = await oauth.userInfoRequest(
           server,
           client,
@@ -394,7 +394,7 @@ function openIdConnect(
       }
       return {
         id: sub,
-        email: typeof claims.email === "string" ? claims.email : undefined,
+        email: typeof claims.email === 'string' ? claims.email : undefined,
         emailVerified: claims.email_verified === true,
       };
     },
@@ -402,19 +402,19 @@ function openIdConnect(
 }
 
 // GitHub has no OpenID Connect: the account and primary email come from its REST API.
-function github(): Pick<Provider, "scope" | "oidc" | "server" | "identity"> {
+function github(): Pick<Provider, 'scope' | 'oidc' | 'server' | 'identity'> {
   const server: oauth.AuthorizationServer = {
-    issuer: "https://github.com/login/oauth",
-    authorization_endpoint: "https://github.com/login/oauth/authorize",
-    token_endpoint: "https://github.com/login/oauth/access_token",
+    issuer: 'https://github.com/login/oauth',
+    authorization_endpoint: 'https://github.com/login/oauth/authorize',
+    token_endpoint: 'https://github.com/login/oauth/access_token',
   };
   const api = async <T>(path: string, token: string): Promise<T> => {
     const response = await fetch(`https://api.github.com${path}`, {
       headers: {
-        accept: "application/vnd.github+json",
+        accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
-        "user-agent": "nextbase",
-        "x-github-api-version": "2022-11-28",
+        'user-agent': 'nextbase',
+        'x-github-api-version': '2022-11-28',
       },
       signal: signal(),
     });
@@ -424,14 +424,14 @@ function github(): Pick<Provider, "scope" | "oidc" | "server" | "identity"> {
     return (await response.json()) as T;
   };
   return {
-    scope: "read:user user:email",
+    scope: 'read:user user:email',
     oidc: false,
     server: async () => server,
     async identity(_server, tokens) {
-      const user = await api<{ id: number }>("/user", tokens.access_token);
+      const user = await api<{ id: number }>('/user', tokens.access_token);
       const emails = await api<
         { email: string; primary: boolean; verified: boolean }[]
-      >("/user/emails", tokens.access_token);
+      >('/user/emails', tokens.access_token);
       const primary = emails.find((e) => e.primary);
       return {
         id: String(user.id),

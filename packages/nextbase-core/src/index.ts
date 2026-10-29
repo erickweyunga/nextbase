@@ -1,5 +1,5 @@
-import adminHtml from "@nextbasejs/admin/index.html?raw";
-import type { AuthCollection, RecordModel } from "@nextbasejs/client";
+import adminHtml from '@nextbasejs/admin/index.html?raw';
+import type { AuthCollection, RecordModel } from '@nextbasejs/client';
 import {
   AuthStore,
   ClientError,
@@ -7,68 +7,68 @@ import {
   DEFAULT_BASE_PATH,
   type HealthResponse,
   NextBaseClient,
-} from "@nextbasejs/client";
-import { DB, type Pool, type Tx } from "@nextbasejs/dbx";
-import { waitUntil as vercelWaitUntil } from "@vercel/functions";
-import { beginRoute, ROUTES, type Route } from "./api/routes.ts";
-import { checkAppUrl } from "./app-url.ts";
-import { Mailer, type MailOptions } from "./auth/mail.ts";
-import { OAuth2, type OAuth2Options } from "./auth/oauth2.ts";
-import { type Principal, resolvePrincipal } from "./auth/principal.ts";
+} from '@nextbasejs/client';
+import { DB, type Pool, type Tx } from '@nextbasejs/dbx';
+import { waitUntil as vercelWaitUntil } from '@vercel/functions';
+import { beginRoute, ROUTES, type Route } from './api/routes.ts';
+import { checkAppUrl } from './app-url.ts';
+import { Mailer, type MailOptions } from './auth/mail.ts';
+import { OAuth2, type OAuth2Options } from './auth/oauth2.ts';
+import { type Principal, resolvePrincipal } from './auth/principal.ts';
 import {
   bearerToken,
   checkSameOrigin,
   type OriginPolicy,
   SESSION_COOKIES,
   sessionCookie,
-} from "./auth/sessions.ts";
-import { Sms, type SmsOptions } from "./auth/sms.ts";
+} from './auth/sessions.ts';
+import { Sms, type SmsOptions } from './auth/sms.ts';
 import {
   hasSuperuser,
   insertSuperuser,
   setupToken,
-} from "./auth/superusers.ts";
+} from './auth/superusers.ts';
 import {
   type ClientIp,
   type ClientIpOption,
   clientIpReader,
-} from "./client-ip.ts";
-import { migrate } from "./db/migrations.ts";
-import { sharedPool } from "./db/pool.ts";
-import { TYPES } from "./db/types.ts";
-import { Effects } from "./effects.ts";
-import { ApiError } from "./errors.ts";
+} from './client-ip.ts';
+import { migrate } from './db/migrations.ts';
+import { sharedPool } from './db/pool.ts';
+import { TYPES } from './db/types.ts';
+import { Effects } from './effects.ts';
+import { ApiError } from './errors.ts';
 import {
   newStorage,
   type Storage,
   type StorageOptions,
-} from "./files/storage.ts";
-import { Logger, type LogsOptions } from "./logs/logger.ts";
-import { type RequestOutcome, requestEntry } from "./logs/request.ts";
-import { Realtime, type RealtimeOptions } from "./realtime/stream.ts";
+} from './files/storage.ts';
+import { Logger, type LogsOptions } from './logs/logger.ts';
+import { type RequestOutcome, requestEntry } from './logs/request.ts';
+import { Realtime, type RealtimeOptions } from './realtime/stream.ts';
 import {
   Hooks,
   type Join,
   type JoinedClient,
   type RecordHooks,
-} from "./records/hooks.ts";
+} from './records/hooks.ts';
 import {
   readSchemaVersion,
   SCHEMA_RACE,
   type Schema,
   SchemaCache,
-} from "./schema/cache.ts";
+} from './schema/cache.ts';
 
 // Serialization failures and deadlocks: retrying the transaction can fix them.
-const RETRYABLE: ReadonlySet<string> = new Set(["40001", "40P01"]);
+const RETRYABLE: ReadonlySet<string> = new Set(['40001', '40P01']);
 
 const DEFAULT_STATEMENT_TIMEOUT = 8_000;
 
 /** Set to `none` on responses to requests that had no session. */
-const SESSION_HEADER = "nextbase-session";
+const SESSION_HEADER = 'nextbase-session';
 
 // Host of in-process requests from `client()`; never fetched.
-const IN_PROCESS_HOST = "nextbase.internal";
+const IN_PROCESS_HOST = 'nextbase.internal';
 
 // While no superuser exists, the setup token is logged at most this often.
 const SETUP_LOG_INTERVAL_MS = 60_000;
@@ -88,28 +88,28 @@ export type {
   FieldError,
   HealthResponse,
   LinkedAccountModel,
-} from "@nextbasejs/client";
-export type { Pool } from "@nextbasejs/dbx";
+} from '@nextbasejs/client';
+export type { Pool } from '@nextbasejs/dbx';
 export type {
   MailContext,
   MailKind,
   MailMessage,
   MailOptions,
   MailTemplate,
-} from "./auth/mail.ts";
-export type { OAuth2Options, OAuth2ProviderOptions } from "./auth/oauth2.ts";
+} from './auth/mail.ts';
+export type { OAuth2Options, OAuth2ProviderOptions } from './auth/oauth2.ts';
 export type {
   SmsContext,
   SmsKind,
   SmsMessage,
   SmsOptions,
   SmsTemplate,
-} from "./auth/sms.ts";
-export type { ClientIpOption } from "./client-ip.ts";
-export { ApiError } from "./errors.ts";
-export type { S3StorageOptions, StorageOptions } from "./files/storage.ts";
-export type { LogsOptions } from "./logs/logger.ts";
-export type { RealtimeOptions } from "./realtime/stream.ts";
+} from './auth/sms.ts';
+export type { ClientIpOption } from './client-ip.ts';
+export { ApiError } from './errors.ts';
+export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
+export type { LogsOptions } from './logs/logger.ts';
+export type { RealtimeOptions } from './realtime/stream.ts';
 export type {
   BeforeCreateEvent,
   BeforeDeleteEvent,
@@ -123,7 +123,7 @@ export type {
   RecordEvent,
   RecordHooks,
   UpdateEvent,
-} from "./records/hooks.ts";
+} from './records/hooks.ts';
 
 /**
  * Whether a request has a session cookie, unverified: for optimistic redirects
@@ -220,7 +220,7 @@ export interface CookieStore {
       path: string;
       maxAge: number;
       httpOnly: boolean;
-      sameSite: "lax";
+      sameSite: 'lax';
       secure: boolean;
     },
   ): unknown;
@@ -274,14 +274,14 @@ export class NextBase<C extends Collections = Collections> {
     // Requests are matched on their URL's pathname, so any other form, such
     // as one without the leading slash, would match nothing.
     if (
-      !basePath.startsWith("/") ||
+      !basePath.startsWith('/') ||
       new URL(basePath, `http://${IN_PROCESS_HOST}`).pathname !== basePath
     ) {
       throw new TypeError(
         `basePath must be an absolute URL path such as "${DEFAULT_BASE_PATH}", not ${JSON.stringify(basePath)}.`,
       );
     }
-    this.#basePath = basePath.replace(/\/+$/, "");
+    this.#basePath = basePath.replace(/\/+$/, '');
     this.#database = options.database;
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     const appUrl =
@@ -308,7 +308,7 @@ export class NextBase<C extends Collections = Collections> {
       appUrl ??
       (options.mail?.appUrl === undefined
         ? undefined
-        : checkAppUrl(options.mail.appUrl, "mail.appUrl"));
+        : checkAppUrl(options.mail.appUrl, 'mail.appUrl'));
     this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
@@ -321,14 +321,14 @@ export class NextBase<C extends Collections = Collections> {
       this.#statementTimeout < 0
     ) {
       throw new RangeError(
-        "statementTimeout must be a whole number of milliseconds, or 0.",
+        'statementTimeout must be a whole number of milliseconds, or 0.',
       );
     }
     this.#realtime = options.realtime
       ? new Realtime(options.realtime as true | RealtimeOptions, {
           db: () => this.#connection(),
           database:
-            typeof options.database === "string" ? options.database : undefined,
+            typeof options.database === 'string' ? options.database : undefined,
           schemas: this.#schema,
           waitUntil: this.#waitUntil,
           logger: this.#logger,
@@ -381,13 +381,13 @@ export class NextBase<C extends Collections = Collections> {
   #connection(): DB {
     if (this.#db) return this.#db;
     const database = this.#database ?? process.env.DATABASE_URL;
-    if (database === undefined || database === "") {
+    if (database === undefined || database === '') {
       throw new Error(
-        "NextBase needs a database: set DATABASE_URL or pass the `database` option.",
+        'NextBase needs a database: set DATABASE_URL or pass the `database` option.',
       );
     }
     this.#db = new DB(
-      typeof database === "string" ? sharedPool(database) : database,
+      typeof database === 'string' ? sharedPool(database) : database,
       { types: TYPES },
     );
     return this.#db;
@@ -400,7 +400,7 @@ export class NextBase<C extends Collections = Collections> {
     const schema = await this.#schema.get(db);
     await insertSuperuser(
       db,
-      schema.get("_superusers") as AuthCollection,
+      schema.get('_superusers') as AuthCollection,
       email,
       password,
     );
@@ -419,7 +419,7 @@ export class NextBase<C extends Collections = Collections> {
     if (Date.now() - this.#setupLoggedAt < SETUP_LOG_INTERVAL_MS) return;
     this.#setupLoggedAt = Date.now();
     const token = await setupToken(db);
-    const origin = this.#appUrl?.origin ?? "https://<your app>";
+    const origin = this.#appUrl?.origin ?? 'https://<your app>';
     console.info(
       `[nextbase] No superuser exists yet. Within the next hour, create one with:\n` +
         `  curl -X POST ${origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
@@ -458,7 +458,7 @@ export class NextBase<C extends Collections = Collections> {
     // cookie the browser sends. As for HTTP requests, production always uses
     // the secure one.
     const secure =
-      process.env.NODE_ENV === "production" ||
+      process.env.NODE_ENV === 'production' ||
       (options.secure ??
         options.cookies?.get(SESSION_COOKIES.secure) !== undefined);
     const { cookies } = options;
@@ -475,14 +475,14 @@ export class NextBase<C extends Collections = Collections> {
         }
       });
     return new NextBaseClient<C>({
-      baseUrl: `${secure ? "https" : "http"}://${IN_PROCESS_HOST}${this.#basePath}`,
+      baseUrl: `${secure ? 'https' : 'http'}://${IN_PROCESS_HOST}${this.#basePath}`,
       fetch: async (input, init) => {
         const request = new Request(input, init);
         // As fetch does, an aborted signal rejects before anything is sent.
         request.signal.throwIfAborted();
         const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
         const value = cookies?.get(name)?.value;
-        if (value) request.headers.set("cookie", `${name}=${value}`);
+        if (value) request.headers.set('cookie', `${name}=${value}`);
         const response = this.#dispatch(request, {
           principal,
           http: false,
@@ -592,7 +592,7 @@ export class NextBase<C extends Collections = Collections> {
       (async () => {
         for (const run of hooks) await run();
       })().catch((error: unknown) => {
-        this.#logger.failure("hook", "running after hooks failed", error);
+        this.#logger.failure('hook', 'running after hooks failed', error);
       }),
     );
   }
@@ -602,7 +602,7 @@ export class NextBase<C extends Collections = Collections> {
     if (keys.length === 0) return;
     this.#waitUntil(
       this.#storage.delete(keys).catch((error: unknown) => {
-        this.#logger.failure("storage", "deleting stored files failed", error);
+        this.#logger.failure('storage', 'deleting stored files failed', error);
       }),
     );
   }
@@ -619,7 +619,7 @@ export class NextBase<C extends Collections = Collections> {
     try {
       this.#logRequest(request, response.status, started, trace);
     } catch (error) {
-      console.error("[nextbase] logging a request failed:", error);
+      console.error('[nextbase] logging a request failed:', error);
     }
     return response;
   };
@@ -702,7 +702,7 @@ export class NextBase<C extends Collections = Collections> {
     if (!route.joinsTransaction) {
       return new ApiError(
         400,
-        "In an on hook, e.nextbase can only list, view, create, update and delete records, or send a batch.",
+        'In an on hook, e.nextbase can only list, view, create, update and delete records, or send a batch.',
       ).toResponse();
     }
     const effects = new Effects();
@@ -762,24 +762,24 @@ export class NextBase<C extends Collections = Collections> {
     const { pathname } = new URL(request.url);
     const basePath = this.#basePath;
     if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) {
-      return fail(new ApiError(404, "Not found."));
+      return fail(new ApiError(404, 'Not found.'));
     }
-    const route = pathname.slice(basePath.length) || "/";
+    const route = pathname.slice(basePath.length) || '/';
     trace.route = route;
     // Next.js answers HEAD with the GET handler and drops the body.
-    const verb = request.method === "HEAD" ? "GET" : request.method;
+    const verb = request.method === 'HEAD' ? 'GET' : request.method;
 
-    if (verb === "GET" && route === "/health") {
-      return api(Response.json({ status: "ok" } satisfies HealthResponse));
+    if (verb === 'GET' && route === '/health') {
+      return api(Response.json({ status: 'ok' } satisfies HealthResponse));
     }
     // No redirect to `/_/`: Next.js strips trailing slashes, so it would loop.
-    if (verb === "GET" && (route === "/_" || route === "/_/")) {
+    if (verb === 'GET' && (route === '/_' || route === '/_/')) {
       return new Response(adminHtml, {
         headers: {
-          "content-type": "text/html; charset=utf-8",
-          "x-frame-options": "DENY",
-          "x-content-type-options": "nosniff",
-          "referrer-policy": "same-origin",
+          'content-type': 'text/html; charset=utf-8',
+          'x-frame-options': 'DENY',
+          'x-content-type-options': 'nosniff',
+          'referrer-policy': 'same-origin',
         },
       });
     }
@@ -822,7 +822,7 @@ export class NextBase<C extends Collections = Collections> {
           const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.
-          if (http && verb !== "GET" && caller.viaCookie) {
+          if (http && verb !== 'GET' && caller.viaCookie) {
             checkSameOrigin(request, this.#origins);
           }
           if (transaction) {
@@ -878,13 +878,13 @@ export class NextBase<C extends Collections = Collections> {
           Object.values(SESSION_COOKIES).some((n) => c.startsWith(`${n}=`)),
         );
       if (setCookie && !setsSession) {
-        response.headers.append("set-cookie", setCookie);
+        response.headers.append('set-cookie', setCookie);
       }
       // A browser with a cookie session cannot see when it ends, since the
       // cookie is HttpOnly and an ended one is just ignored. This tells it
       // the request had no session.
       if (signedOut && !setsSession) {
-        response.headers.set(SESSION_HEADER, "none");
+        response.headers.set(SESSION_HEADER, 'none');
       }
       return api(response);
     }
@@ -893,21 +893,21 @@ export class NextBase<C extends Collections = Collections> {
     const allowed = new Set(
       ROUTES.filter((r) => r.pattern.test(route)).map((r) => r.method),
     );
-    if (route === "/health" || route === "/_" || route === "/_/") {
-      allowed.add("GET");
+    if (route === '/health' || route === '/_' || route === '/_/') {
+      allowed.add('GET');
     }
     if (allowed.size > 0) {
-      if (allowed.has("GET")) allowed.add("HEAD");
+      if (allowed.has('GET')) allowed.add('HEAD');
       return fail(
         new ApiError(
           405,
           `${request.method} is not allowed here.`,
           {},
-          { allow: [...allowed].join(", ") },
+          { allow: [...allowed].join(', ') },
         ),
       );
     }
-    return fail(new ApiError(404, "Not found."));
+    return fail(new ApiError(404, 'Not found.'));
   }
 }
 
@@ -927,15 +927,15 @@ interface Trace {
  * logged, so the log shows it was emptied.
  */
 function quietRoute(method: string, route: string): boolean {
-  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
     return false;
   }
   return (
-    route === "/health" ||
-    route === "/_" ||
-    route === "/_/" ||
-    route === "/logs" ||
-    route.startsWith("/logs/")
+    route === '/health' ||
+    route === '/_' ||
+    route === '/_/' ||
+    route === '/logs' ||
+    route.startsWith('/logs/')
   );
 }
 
@@ -949,11 +949,11 @@ function quietRoute(method: string, route: string): boolean {
  */
 function api(response: Response): Response {
   if (response.headers.getSetCookie().length > 0) {
-    response.headers.set("cache-control", "private, no-store");
-  } else if (!response.headers.has("cache-control")) {
-    response.headers.set("cache-control", "no-store");
+    response.headers.set('cache-control', 'private, no-store');
+  } else if (!response.headers.has('cache-control')) {
+    response.headers.set('cache-control', 'no-store');
   }
-  response.headers.set("x-content-type-options", "nosniff");
+  response.headers.set('x-content-type-options', 'nosniff');
   return response;
 }
 
@@ -961,7 +961,7 @@ function api(response: Response): Response {
 function checkHookDepth(chain: readonly string[]): void {
   if (chain.length > MAX_HOOK_DEPTH) {
     throw new Error(
-      `Writes through e.nextbase in hooks nest more than ${MAX_HOOK_DEPTH} deep: ${chain.join(" > ")}. A hook may be writing the records that fire it.`,
+      `Writes through e.nextbase in hooks nest more than ${MAX_HOOK_DEPTH} deep: ${chain.join(' > ')}. A hook may be writing the records that fire it.`,
     );
   }
 }
@@ -979,24 +979,24 @@ function failed(error: unknown, schemaRaced: boolean): ApiError {
   if (error instanceof ApiError) return error;
   // decodeURIComponent on a malformed escape such as `%E0`.
   if (error instanceof URIError)
-    return new ApiError(400, "The URL is malformed.");
+    return new ApiError(400, 'The URL is malformed.');
   if (
     schemaRaced ||
     RETRYABLE.has((error as { code?: unknown }).code as string)
   ) {
     return new ApiError(
       409,
-      "The request conflicted with a concurrent change. Retry it.",
+      'The request conflicted with a concurrent change. Retry it.',
     );
   }
-  console.error("[nextbase] request failed:", error);
+  console.error('[nextbase] request failed:', error);
   // query_canceled: statementTimeout, or a cancel from an administrator.
-  if ((error as { code?: unknown }).code === "57014") {
-    return new ApiError(500, "The request took too long and was stopped.");
+  if ((error as { code?: unknown }).code === '57014') {
+    return new ApiError(500, 'The request took too long and was stopped.');
   }
   return new ApiError(
     500,
-    "Something went wrong while processing the request.",
+    'Something went wrong while processing the request.',
   );
 }
 
@@ -1013,19 +1013,19 @@ const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set(
 
 /** Writes a session cookie's Set-Cookie header to the store; other cookies are left out. */
 function writeSessionCookie(cookies: CookieStore, header: string): void {
-  const [pair = "", ...attributes] = header.split("; ");
-  const separator = pair.indexOf("=");
+  const [pair = '', ...attributes] = header.split('; ');
+  const separator = pair.indexOf('=');
   const name = pair.slice(0, separator);
   if (!SESSION_COOKIE_NAMES.has(name)) return;
   const maxAge = Number(
-    attributes.find((a) => a.startsWith("Max-Age="))?.slice(8) ?? 0,
+    attributes.find((a) => a.startsWith('Max-Age='))?.slice(8) ?? 0,
   );
   cookies.set?.(name, pair.slice(separator + 1), {
-    path: "/",
+    path: '/',
     maxAge,
     httpOnly: true,
-    sameSite: "lax",
-    secure: attributes.includes("Secure"),
+    sameSite: 'lax',
+    secure: attributes.includes('Secure'),
   });
 }
 
@@ -1036,9 +1036,9 @@ function writeSessionCookie(cookies: CookieStore, header: string): void {
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const onAbort = (): void => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener('abort', onAbort, { once: true });
     promise.then(resolve, reject).finally(() => {
-      signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener('abort', onAbort);
     });
   });
 }
@@ -1062,7 +1062,7 @@ function keepingAlive(
     try {
       waitUntil(promise);
     } catch (error) {
-      console.error("[nextbase] waitUntil refused background work:", error);
+      console.error('[nextbase] waitUntil refused background work:', error);
     }
   };
 }

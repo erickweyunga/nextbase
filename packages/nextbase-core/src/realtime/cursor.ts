@@ -1,6 +1,6 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { Principal } from "../auth/principal.ts";
-import type { Cursor } from "./events.ts";
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import type { Principal } from '../auth/principal.ts';
+import type { Cursor } from './events.ts';
 
 /**
  * Event ids are cursors signed for one caller and one schema version:
@@ -14,8 +14,8 @@ export class CursorSigner {
 
   /** `secret` is NextBase's own, from the database. */
   constructor(secret: string) {
-    this.#key = createHmac("sha256", secret)
-      .update("nextbase realtime cursor")
+    this.#key = createHmac('sha256', secret)
+      .update('nextbase realtime cursor')
       .digest();
   }
 
@@ -50,9 +50,9 @@ export class CursorSigner {
   }
 
   #signature(body: string, principal: Principal): string {
-    return createHmac("sha256", this.#key)
+    return createHmac('sha256', this.#key)
       .update(`${body}.${binding(principal)}`)
-      .digest("base64url")
+      .digest('base64url')
       .slice(0, 22);
   }
 }
@@ -64,10 +64,10 @@ export class CursorSigner {
  */
 function binding(principal: Principal): string {
   if (principal.session && principal.record) {
-    const record = createHash("sha256")
+    const record = createHash('sha256')
       .update(JSON.stringify(principal.record))
-      .digest("base64url");
+      .digest('base64url');
     return `session:${principal.session.id}:${record}`;
   }
-  return principal.superuser ? "superuser" : "anonymous";
+  return principal.superuser ? 'superuser' : 'anonymous';
 }

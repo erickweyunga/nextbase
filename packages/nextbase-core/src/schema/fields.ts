@@ -4,10 +4,10 @@ import type {
   Field,
   FieldType,
   PasswordField,
-} from "@nextbasejs/client";
-import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import { parseDate } from "../storable.ts";
-import { type Issues, isRecord, type Path, Reader } from "./input.ts";
+} from '@nextbasejs/client';
+import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from '../random.ts';
+import { parseDate } from '../storable.ts';
+import { type Issues, isRecord, type Path, Reader } from './input.ts';
 
 /** Collection, field and index names: safe to quote, within Postgres's 63-byte limit. */
 export const NAME_PATTERN: RegExp = /^[A-Za-z][A-Za-z0-9_]{0,62}$/;
@@ -16,21 +16,21 @@ const FIELD_ID_PATTERN = /^[a-z0-9]{10}$/;
 
 // Record JSON keys and Postgres system columns. Compared lowercased.
 const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
-  "expand",
-  "collectionid",
-  "collectionname",
-  "tableoid",
-  "xmin",
-  "cmin",
-  "xmax",
-  "cmax",
-  "ctid",
-  "oid",
+  'expand',
+  'collectionid',
+  'collectionname',
+  'tableoid',
+  'xmin',
+  'cmin',
+  'xmax',
+  'cmax',
+  'ctid',
+  'oid',
 ]);
 
 // Filter keywords, which a filter reads as values rather than fields. The
 // parser matches them exactly, so `True` stays a usable name.
-const FILTER_KEYWORDS: ReadonlySet<string> = new Set(["true", "false", "null"]);
+const FILTER_KEYWORDS: ReadonlySet<string> = new Set(['true', 'false', 'null']);
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TEXT_MAX = 5000;
@@ -44,19 +44,19 @@ const MAX_SELECT_VALUE_LENGTH = 255;
 const MAX_FILES_PER_FIELD = 100;
 
 const FIELD_TYPES = [
-  "text",
-  "number",
-  "bool",
-  "email",
-  "phone",
-  "url",
-  "date",
-  "autodate",
-  "select",
-  "relation",
-  "file",
-  "json",
-  "password",
+  'text',
+  'number',
+  'bool',
+  'email',
+  'phone',
+  'url',
+  'date',
+  'autodate',
+  'select',
+  'relation',
+  'file',
+  'json',
+  'password',
 ] as const satisfies readonly FieldType[];
 
 export interface FieldContext {
@@ -68,7 +68,7 @@ export interface FieldContext {
 
 /** `password` exists only as an auth system field. */
 const USER_FIELD_TYPES: ReadonlySet<string> = new Set(
-  FIELD_TYPES.filter((type) => type !== "password"),
+  FIELD_TYPES.filter((type) => type !== 'password'),
 );
 
 /** The password field of an auth collection, or undefined. */
@@ -76,7 +76,7 @@ export function passwordField(
   collection: Collection,
 ): PasswordField | undefined {
   return collection.fields.find(
-    (f): f is PasswordField => f.type === "password",
+    (f): f is PasswordField => f.type === 'password',
   );
 }
 
@@ -94,16 +94,16 @@ export function randomPassword(collection: Collection): string {
 /** Whether a field is stored as a Postgres array column. */
 export function isMultiple(field: Field): boolean {
   return (
-    (field.type === "select" ||
-      field.type === "relation" ||
-      field.type === "file") &&
+    (field.type === 'select' ||
+      field.type === 'relation' ||
+      field.type === 'file') &&
     field.maxSelect > 1
   );
 }
 
 export function fieldNameProblem(name: string): string | undefined {
   if (!NAME_PATTERN.test(name)) {
-    return "Must start with a letter and contain only letters, digits and underscores, up to 63 characters.";
+    return 'Must start with a letter and contain only letters, digits and underscores, up to 63 characters.';
   }
   if (
     RESERVED_FIELD_NAMES.has(name.toLowerCase()) ||
@@ -120,8 +120,8 @@ function checkFieldName(name: string, path: Path, issues: Issues): void {
   issues.add(
     path,
     NAME_PATTERN.test(name)
-      ? "validation_reserved_name"
-      : "validation_invalid_name",
+      ? 'validation_reserved_name'
+      : 'validation_invalid_name',
     problem,
   );
 }
@@ -134,167 +134,172 @@ export function parseField(
   context: FieldContext,
 ): Field | undefined {
   if (!isRecord(input)) {
-    issues.add(path, "validation_invalid_type", "Must be an object.");
+    issues.add(path, 'validation_invalid_type', 'Must be an object.');
     return undefined;
   }
   const r = new Reader(input, path, issues);
   const { existing } = context;
 
-  const type = r.string("type", "");
+  const type = r.string('type', '');
   if (!USER_FIELD_TYPES.has(type)) {
     r.fail(
-      "type",
-      "validation_invalid_value",
-      `Must be one of: ${[...USER_FIELD_TYPES].join(", ")}.`,
+      'type',
+      'validation_invalid_value',
+      `Must be one of: ${[...USER_FIELD_TYPES].join(', ')}.`,
     );
     return undefined;
   }
   if (existing && existing.type !== type) {
     r.fail(
-      "type",
-      "validation_type_change",
+      'type',
+      'validation_type_change',
       "A field's type cannot change. Remove the field and add a new one instead.",
     );
     return undefined;
   }
 
-  let id = r.string("id", "");
-  if (id === "") {
+  let id = r.string('id', '');
+  if (id === '') {
     id = randomString(10, LOWER_ALPHANUMERIC);
   } else if (!existing && !FIELD_ID_PATTERN.test(id)) {
     r.fail(
-      "id",
-      "validation_invalid_value",
-      "Must be 10 lowercase letters or digits.",
+      'id',
+      'validation_invalid_value',
+      'Must be 10 lowercase letters or digits.',
     );
   }
 
-  const name = r.string("name", "");
-  checkFieldName(name, [...path, "name"], issues);
+  const name = r.string('name', '');
+  checkFieldName(name, [...path, 'name'], issues);
 
   const base = {
     id,
     name,
     system: false,
-    required: r.boolean("required", false),
-    hidden: r.boolean("hidden", false),
+    required: r.boolean('required', false),
+    hidden: r.boolean('hidden', false),
   };
 
-  switch (type as Exclude<FieldType, "password">) {
-    case "text": {
-      const min = r.integer("min", 0, 0, MAX_SAFE);
-      const max = r.integer("max", DEFAULT_TEXT_MAX, 1, MAX_SAFE);
+  const fieldType = type as Exclude<FieldType, 'password'>;
+  switch (fieldType) {
+    case 'text': {
+      const min = r.integer('min', 0, 0, MAX_SAFE);
+      const max = r.integer('max', DEFAULT_TEXT_MAX, 1, MAX_SAFE);
       if (min > max)
-        r.fail("min", "validation_out_of_range", "Must not exceed max.");
-      const pattern = r.string("pattern", "");
-      if (pattern !== "") checkPattern(pattern, r);
-      return { ...base, type: "text", min, max, pattern, primaryKey: false };
+        r.fail('min', 'validation_out_of_range', 'Must not exceed max.');
+      const pattern = r.string('pattern', '');
+      if (pattern !== '') checkPattern(pattern, r);
+      return { ...base, type: 'text', min, max, pattern, primaryKey: false };
     }
-    case "number": {
-      const min = r.numberOrNull("min", null);
-      const max = r.numberOrNull("max", null);
+    case 'number': {
+      const min = r.numberOrNull('min', null);
+      const max = r.numberOrNull('max', null);
       if (min !== null && max !== null && min > max) {
-        r.fail("min", "validation_out_of_range", "Must not exceed max.");
+        r.fail('min', 'validation_out_of_range', 'Must not exceed max.');
       }
       return {
         ...base,
-        type: "number",
+        type: 'number',
         min,
         max,
-        onlyInt: r.boolean("onlyInt", false),
+        onlyInt: r.boolean('onlyInt', false),
       };
     }
-    case "bool":
-      return { ...base, type: "bool" };
-    case "email":
-      return { ...base, type: "email", ...parseDomains(r) };
-    case "phone":
-      return { ...base, type: "phone" };
-    case "url":
-      return { ...base, type: "url", ...parseDomains(r) };
-    case "date": {
-      const min = parseTimestamp(r, "min");
-      const max = parseTimestamp(r, "max");
-      if (min !== "" && max !== "" && Date.parse(min) > Date.parse(max)) {
-        r.fail("min", "validation_out_of_range", "Must not be after max.");
+    case 'bool':
+      return { ...base, type: 'bool' };
+    case 'email':
+      return { ...base, type: 'email', ...parseDomains(r) };
+    case 'phone':
+      return { ...base, type: 'phone' };
+    case 'url':
+      return { ...base, type: 'url', ...parseDomains(r) };
+    case 'date': {
+      const min = parseTimestamp(r, 'min');
+      const max = parseTimestamp(r, 'max');
+      if (min !== '' && max !== '' && Date.parse(min) > Date.parse(max)) {
+        r.fail('min', 'validation_out_of_range', 'Must not be after max.');
       }
-      return { ...base, type: "date", min, max };
+      return { ...base, type: 'date', min, max };
     }
-    case "autodate": {
-      const onCreate = r.boolean("onCreate", true);
-      const onUpdate = r.boolean("onUpdate", false);
+    case 'autodate': {
+      const onCreate = r.boolean('onCreate', true);
+      const onUpdate = r.boolean('onUpdate', false);
       if (!onCreate && !onUpdate) {
         r.fail(
-          "onCreate",
-          "validation_required",
-          "Set onCreate, onUpdate or both.",
+          'onCreate',
+          'validation_required',
+          'Set onCreate, onUpdate or both.',
         );
       }
       // The server sets the value, so a client can never leave it blank.
-      return { ...base, required: false, type: "autodate", onCreate, onUpdate };
+      return { ...base, required: false, type: 'autodate', onCreate, onUpdate };
     }
-    case "select": {
+    case 'select': {
       const values = parseSelectValues(r);
       const maxSelect = r.integer(
-        "maxSelect",
+        'maxSelect',
         1,
         1,
         Math.max(values.length, 1),
       );
-      return { ...base, type: "select", values, maxSelect };
+      return { ...base, type: 'select', values, maxSelect };
     }
-    case "relation": {
-      const collectionId = r.string("collectionId", "");
+    case 'relation': {
+      const collectionId = r.string('collectionId', '');
       if (!context.collectionIds.has(collectionId)) {
         r.fail(
-          "collectionId",
-          "validation_invalid_value",
-          "Must be the id of an existing base or auth collection.",
+          'collectionId',
+          'validation_invalid_value',
+          'Must be the id of an existing base or auth collection.',
         );
       } else if (
-        existing?.type === "relation" &&
+        existing?.type === 'relation' &&
         existing.collectionId !== collectionId
       ) {
         r.fail(
-          "collectionId",
-          "validation_type_change",
+          'collectionId',
+          'validation_type_change',
           "A relation's collection cannot change. Remove the field and add a new one instead.",
         );
       }
       return {
         ...base,
-        type: "relation",
+        type: 'relation',
         collectionId,
-        maxSelect: r.integer("maxSelect", 1, 1, MAX_SAFE),
-        cascadeDelete: r.boolean("cascadeDelete", false),
+        maxSelect: r.integer('maxSelect', 1, 1, MAX_SAFE),
+        cascadeDelete: r.boolean('cascadeDelete', false),
       };
     }
-    case "file": {
-      const mimeTypes = r.strings("mimeTypes", []);
+    case 'file': {
+      const mimeTypes = r.strings('mimeTypes', []);
       mimeTypes.forEach((mime, i) => {
         if (!/^[\w.+-]+\/[\w.+-]+$/.test(mime)) {
           issues.add(
-            [...path, "mimeTypes", i],
-            "validation_invalid_value",
-            "Must be a MIME type such as image/png.",
+            [...path, 'mimeTypes', i],
+            'validation_invalid_value',
+            'Must be a MIME type such as image/png.',
           );
         }
       });
       return {
         ...base,
-        type: "file",
-        maxSelect: r.integer("maxSelect", 1, 1, MAX_FILES_PER_FIELD),
-        maxSize: r.integer("maxSize", DEFAULT_FILE_MAX_SIZE, 1, MAX_SAFE),
+        type: 'file',
+        maxSelect: r.integer('maxSelect', 1, 1, MAX_FILES_PER_FIELD),
+        maxSize: r.integer('maxSize', DEFAULT_FILE_MAX_SIZE, 1, MAX_SAFE),
         mimeTypes,
-        protected: r.boolean("protected", false),
+        protected: r.boolean('protected', false),
       };
     }
-    case "json":
+    case 'json':
       return {
         ...base,
-        type: "json",
-        maxSize: r.integer("maxSize", DEFAULT_JSON_MAX_SIZE, 1, MAX_SAFE),
+        type: 'json',
+        maxSize: r.integer('maxSize', DEFAULT_JSON_MAX_SIZE, 1, MAX_SAFE),
       };
+    default: {
+      const unknown: never = fieldType;
+      throw new Error(`Unknown field type: ${unknown}.`);
+    }
   }
 }
 
@@ -302,29 +307,29 @@ export function parsePasswordOptions(
   r: Reader,
   field: PasswordField,
 ): PasswordField {
-  const min = r.integer("min", field.min, 1, MAX_PASSWORD_LENGTH);
-  const max = r.integer("max", field.max, 1, MAX_PASSWORD_LENGTH);
+  const min = r.integer('min', field.min, 1, MAX_PASSWORD_LENGTH);
+  const max = r.integer('max', field.max, 1, MAX_PASSWORD_LENGTH);
   if (min > max)
-    r.fail("min", "validation_out_of_range", "Must not exceed max.");
+    r.fail('min', 'validation_out_of_range', 'Must not exceed max.');
   return { ...field, min, max };
 }
 
 export function parseEmailOptions(r: Reader, field: EmailField): EmailField {
   return {
     ...field,
-    required: r.boolean("required", field.required),
+    required: r.boolean('required', field.required),
     ...parseDomains(r, field),
   };
 }
 
 function checkPattern(pattern: string, r: Reader): void {
   try {
-    new RegExp(pattern, "u");
+    new RegExp(pattern, 'u');
   } catch {
     r.fail(
-      "pattern",
-      "validation_invalid_value",
-      "Must be a valid regular expression.",
+      'pattern',
+      'validation_invalid_value',
+      'Must be a valid regular expression.',
     );
   }
 }
@@ -333,7 +338,7 @@ function parseDomains(
   r: Reader,
   fallback?: { onlyDomains: string[]; exceptDomains: string[] },
 ): { onlyDomains: string[]; exceptDomains: string[] } {
-  const read = (key: "onlyDomains" | "exceptDomains"): string[] => {
+  const read = (key: 'onlyDomains' | 'exceptDomains'): string[] => {
     const domains = r
       .strings(key, fallback?.[key] ?? [])
       .map((d) => d.toLowerCase());
@@ -345,20 +350,20 @@ function parseDomains(
       ) {
         r.issues.add(
           [...r.path, key, i],
-          "validation_invalid_value",
-          "Must be a domain such as example.com.",
+          'validation_invalid_value',
+          'Must be a domain such as example.com.',
         );
       }
     });
     return domains;
   };
-  const onlyDomains = read("onlyDomains");
-  const exceptDomains = read("exceptDomains");
+  const onlyDomains = read('onlyDomains');
+  const exceptDomains = read('exceptDomains');
   if (onlyDomains.length > 0 && exceptDomains.length > 0) {
     r.fail(
-      "exceptDomains",
-      "validation_invalid_value",
-      "Set onlyDomains or exceptDomains, not both.",
+      'exceptDomains',
+      'validation_invalid_value',
+      'Set onlyDomains or exceptDomains, not both.',
     );
   }
   return { onlyDomains, exceptDomains };
@@ -366,37 +371,37 @@ function parseDomains(
 
 // Normalizes to the ISO form the API uses. Bounds compare by time, since years
 // past 9999 or before 1 AD do not sort as text.
-function parseTimestamp(r: Reader, key: "min" | "max"): string {
-  const value = r.string(key, "");
-  if (value === "") return "";
+function parseTimestamp(r: Reader, key: 'min' | 'max'): string {
+  const value = r.string(key, '');
+  if (value === '') return '';
   const time = parseDate(value);
   if (Number.isNaN(time)) {
     r.fail(
       key,
-      "validation_invalid_value",
-      "Must be an ISO 8601 date, or empty.",
+      'validation_invalid_value',
+      'Must be an ISO 8601 date, or empty.',
     );
-    return "";
+    return '';
   }
   return new Date(time).toISOString();
 }
 
 function parseSelectValues(r: Reader): string[] {
-  const values = r.strings("values", []);
+  const values = r.strings('values', []);
   if (values.length === 0) {
-    r.fail("values", "validation_required", "Add at least one value.");
+    r.fail('values', 'validation_required', 'Add at least one value.');
   }
   const seen = new Set<string>();
   values.forEach((value, i) => {
-    const path = [...r.path, "values", i];
-    if (value === "" || value.length > MAX_SELECT_VALUE_LENGTH) {
+    const path = [...r.path, 'values', i];
+    if (value === '' || value.length > MAX_SELECT_VALUE_LENGTH) {
       r.issues.add(
         path,
-        "validation_invalid_value",
+        'validation_invalid_value',
         `Must be 1 to ${MAX_SELECT_VALUE_LENGTH} characters.`,
       );
     } else if (seen.has(value)) {
-      r.issues.add(path, "validation_not_unique", "Values must be unique.");
+      r.issues.add(path, 'validation_not_unique', 'Values must be unique.');
     }
     seen.add(value);
   });

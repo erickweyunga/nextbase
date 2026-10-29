@@ -1,30 +1,30 @@
-import type { Collection, Field } from "@nextbasejs/client";
-import type { Builder, Row } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { ApiError, writeFailed } from "../errors.ts";
+import type { Collection, Field } from '@nextbasejs/client';
+import type { Builder, Row } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { ApiError, writeFailed } from '../errors.ts';
 import {
   type FileChanges,
   fileKeys,
   fileNames,
   type NewFiles,
   prepareFileField,
-} from "../files/files.ts";
-import { normalizePhone } from "../phone.ts";
-import { ALPHANUMERIC, isId, randomString } from "../random.ts";
-import type { Schema } from "../schema/cache.ts";
-import { isMultiple, passwordField } from "../schema/fields.ts";
-import { Issues, type Path } from "../schema/input.ts";
-import { isStorableTime, parseDate, unstorableText } from "../storable.ts";
+} from '../files/files.ts';
+import { normalizePhone } from '../phone.ts';
+import { ALPHANUMERIC, isId, randomString } from '../random.ts';
+import type { Schema } from '../schema/cache.ts';
+import { isMultiple, passwordField } from '../schema/fields.ts';
+import { Issues, type Path } from '../schema/input.ts';
+import { isStorableTime, parseDate, unstorableText } from '../storable.ts';
 
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FORBIDDEN_MESSAGES: Record<string, string> = {
-  email: "Only superusers can change emails directly.",
-  emailVerified: "Only superusers can verify emails.",
-  phone: "Only superusers can change phones directly; verify one with a code.",
-  phoneVerified: "Only superusers can verify phones.",
+  email: 'Only superusers can change emails directly.',
+  emailVerified: 'Only superusers can verify emails.',
+  phone: 'Only superusers can change phones directly; verify one with a code.',
+  phoneVerified: 'Only superusers can verify phones.',
 };
-const INVALID = Symbol("invalid");
+const INVALID = Symbol('invalid');
 
 export interface WriteOptions {
   collection: Collection;
@@ -113,13 +113,13 @@ export function draftWrite(
 
   for (const field of collection.fields) {
     const { name } = field;
-    if (field.type === "autodate") {
+    if (field.type === 'autodate') {
       if (creating ? field.onCreate : field.onUpdate) {
         row[name] = values[name] = new Date();
       }
       continue;
     }
-    if (field.type === "password") {
+    if (field.type === 'password') {
       oldPassword = preparePassword(
         input,
         field,
@@ -130,32 +130,32 @@ export function draftWrite(
       );
       continue;
     }
-    if (field.type === "text" && field.primaryKey) {
+    if (field.type === 'text' && field.primaryKey) {
       const id = input.id;
       if (!creating) {
         if (id !== undefined && id !== existing?.id)
           issues.add(
-            ["id"],
-            "validation_immutable",
+            ['id'],
+            'validation_immutable',
             "A record's id cannot change.",
           );
       } else if (!isId(id)) {
         // Creates choose their id while planning, before this.
         issues.add(
-          ["id"],
-          "validation_invalid_value",
-          "Must be 15 lowercase letters or digits.",
+          ['id'],
+          'validation_invalid_value',
+          'Must be 15 lowercase letters or digits.',
         );
       } else {
         row.id = values.id = id;
       }
       continue;
     }
-    if (field.system && field.name === "tokenKey") {
+    if (field.system && field.name === 'tokenKey') {
       if (creating) row[name] = values[name] = randomString(50, ALPHANUMERIC);
       continue;
     }
-    if (field.type === "file") {
+    if (field.type === 'file') {
       const touched = Object.values(fileKeys(name)).some(
         (k) => input[k] !== undefined,
       );
@@ -163,8 +163,8 @@ export function draftWrite(
       if (!options.newFiles) {
         issues.add(
           [name],
-          "validation_unsupported",
-          "Files cannot be set here.",
+          'validation_unsupported',
+          'Files cannot be set here.',
         );
         continue;
       }
@@ -178,7 +178,7 @@ export function draftWrite(
       if (!prepared) continue;
       set(
         field,
-        isMultiple(field) ? prepared.value : (prepared.value[0] ?? ""),
+        isMultiple(field) ? prepared.value : (prepared.value[0] ?? ''),
       );
       files.added.push(...prepared.changes.added);
       files.removed.push(...prepared.changes.removed);
@@ -197,7 +197,7 @@ export function draftWrite(
       if (current === INVALID) break;
       const problem = unstorable(input[key]);
       if (problem) {
-        issues.add([name], "validation_invalid_value", problem);
+        issues.add([name], 'validation_invalid_value', problem);
         value = INVALID;
         break;
       }
@@ -211,23 +211,23 @@ export function draftWrite(
       // nobody can take someone else's address or number. A new record may
       // still set its own email, which is then unverified.
       if (
-        collection.type === "auth" &&
+        collection.type === 'auth' &&
         field.system &&
         name in FORBIDDEN_MESSAGES
       ) {
         const unchanged = creating
-          ? name === "email" || value === false || value === ""
+          ? name === 'email' || value === false || value === ''
           : value === row[name];
         if (!privileged && !unchanged && !options.vouched?.has(name)) {
           issues.add(
             [name],
-            "validation_forbidden",
+            'validation_forbidden',
             FORBIDDEN_MESSAGES[name] as string,
           );
           continue;
         }
         if (
-          (name === "email" || name === "phone") &&
+          (name === 'email' || name === 'phone') &&
           !creating &&
           value !== row[name]
         ) {
@@ -241,24 +241,24 @@ export function draftWrite(
   for (const field of collection.fields) {
     if (
       !field.required ||
-      field.type === "autodate" ||
-      (field.type === "text" && field.primaryKey)
+      field.type === 'autodate' ||
+      (field.type === 'text' && field.primaryKey)
     )
       continue;
     // With phone sign-in, a record may have a phone instead of an email.
     const phoneInstead =
-      collection.type === "auth" &&
+      collection.type === 'auth' &&
       collection.phoneSignIn &&
       field.system &&
-      field.name === "email" &&
+      field.name === 'email' &&
       !isBlank(row.phone);
     if (phoneInstead) continue;
     if (
-      field.type === "password"
+      field.type === 'password'
         ? creating && isBlank(row[field.name])
         : isBlank(row[field.name])
     ) {
-      issues.add([field.name], "validation_required", "Cannot be blank.");
+      issues.add([field.name], 'validation_required', 'Cannot be blank.');
     }
   }
   // Rules see what was submitted, never secrets derived from it.
@@ -293,9 +293,9 @@ export function finishWrite({
     throw new ApiError(400, writeFailed(creating), issues.data);
   }
   const password = passwordField(collection);
-  if (password && typeof values[password.name] === "string") {
+  if (password && typeof values[password.name] === 'string') {
     if (options.passwordHash === undefined) {
-      throw new Error("A write that sets a password needs its hash.");
+      throw new Error('A write that sets a password needs its hash.');
     }
     row[password.name] = values[password.name] = options.passwordHash;
   }
@@ -305,16 +305,16 @@ export function finishWrite({
 function blankValue(field: Field): unknown {
   if (isMultiple(field)) return [];
   switch (field.type) {
-    case "number":
+    case 'number':
       return 0;
-    case "bool":
+    case 'bool':
       return false;
-    case "date":
-    case "json":
-    case "relation":
+    case 'date':
+    case 'json':
+    case 'relation':
       return null;
     default:
-      return "";
+      return '';
   }
 }
 
@@ -327,7 +327,7 @@ function blankRow(collection: Collection): Record<string, unknown> {
 function isBlank(value: unknown): boolean {
   return (
     value === null ||
-    value === "" ||
+    value === '' ||
     value === 0 ||
     value === false ||
     (Array.isArray(value) && value.length === 0)
@@ -339,16 +339,16 @@ type Modifier = (current: unknown, operand: unknown, issues: Issues) => unknown;
 function modifierKeys(field: Field): [string, Modifier][] {
   const { name } = field;
   const fail = (issues: Issues, message: string): typeof INVALID => {
-    issues.add([name], "validation_invalid_value", message);
+    issues.add([name], 'validation_invalid_value', message);
     return INVALID;
   };
-  if (field.type === "number") {
+  if (field.type === 'number') {
     const step =
       (sign: number): Modifier =>
       (current, operand, issues) =>
-        typeof operand === "number" && Number.isFinite(operand)
+        typeof operand === 'number' && Number.isFinite(operand)
           ? (current as number) + sign * operand
-          : fail(issues, "Must be a number.");
+          : fail(issues, 'Must be a number.');
     return [
       [`${name}+`, step(1)],
       [`${name}-`, step(-1)],
@@ -360,9 +360,9 @@ function modifierKeys(field: Field): [string, Modifier][] {
     issues: Issues,
   ): string[] | typeof INVALID => {
     const items = Array.isArray(operand) ? operand : [operand];
-    return items.every((v) => typeof v === "string")
+    return items.every((v) => typeof v === 'string')
       ? (items as string[])
-      : fail(issues, "Must be a string or an array of strings.");
+      : fail(issues, 'Must be a string or an array of strings.');
   };
   return [
     [
@@ -393,77 +393,77 @@ function modifierKeys(field: Field): [string, Modifier][] {
 
 function normalize(field: Field, raw: unknown, issues: Issues): unknown {
   const fail = (message: string): typeof INVALID => {
-    issues.add([field.name], "validation_invalid_type", message);
+    issues.add([field.name], 'validation_invalid_type', message);
     return INVALID;
   };
   const problem = unstorable(raw);
   if (problem) {
-    issues.add([field.name], "validation_invalid_value", problem);
+    issues.add([field.name], 'validation_invalid_value', problem);
     return INVALID;
   }
   if (isMultiple(field)) {
-    if (raw === null || raw === "") return [];
+    if (raw === null || raw === '') return [];
     const items = Array.isArray(raw) ? raw : [raw];
-    return items.every((v) => typeof v === "string")
+    return items.every((v) => typeof v === 'string')
       ? items
-      : fail("Must be an array of strings.");
+      : fail('Must be an array of strings.');
   }
   switch (field.type) {
-    case "phone": {
-      if (raw === null || raw === "") return "";
-      if (typeof raw !== "string") return fail("Must be a string.");
+    case 'phone': {
+      if (raw === null || raw === '') return '';
+      if (typeof raw !== 'string') return fail('Must be a string.');
       const phone = normalizePhone(raw);
       if (phone !== undefined) return phone;
       issues.add(
         [field.name],
-        "validation_invalid_phone",
-        "Must be a valid phone number in international format, such as +255712345678.",
+        'validation_invalid_phone',
+        'Must be a valid phone number in international format, such as +255712345678.',
       );
       return INVALID;
     }
-    case "text":
-    case "email":
-    case "url":
-    case "select":
-      if (raw === null) return "";
-      if (typeof raw === "string")
-        return field.type === "email" ? raw.trim() : raw;
+    case 'text':
+    case 'email':
+    case 'url':
+    case 'select':
+      if (raw === null) return '';
+      if (typeof raw === 'string')
+        return field.type === 'email' ? raw.trim() : raw;
       if (
-        field.type === "text" &&
-        (typeof raw === "number" || typeof raw === "boolean")
+        field.type === 'text' &&
+        (typeof raw === 'number' || typeof raw === 'boolean')
       )
         return String(raw);
-      return fail("Must be a string.");
-    case "relation":
-      if (raw === null || raw === "") return null;
-      return typeof raw === "string" ? raw : fail("Must be a record id.");
-    case "number":
-      if (raw === null || raw === "") return 0;
-      if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+      return fail('Must be a string.');
+    case 'relation':
+      if (raw === null || raw === '') return null;
+      return typeof raw === 'string' ? raw : fail('Must be a record id.');
+    case 'number':
+      if (raw === null || raw === '') return 0;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
       if (
-        typeof raw === "string" &&
-        raw.trim() !== "" &&
+        typeof raw === 'string' &&
+        raw.trim() !== '' &&
         Number.isFinite(Number(raw))
       )
         return Number(raw);
-      return fail("Must be a number.");
-    case "bool":
+      return fail('Must be a number.');
+    case 'bool':
       if (raw === null) return false;
-      if (typeof raw === "boolean") return raw;
-      if (raw === "true" || raw === "1") return true;
-      if (raw === "false" || raw === "0" || raw === "") return false;
-      return fail("Must be a boolean.");
-    case "date": {
-      if (raw === null || raw === "") return null;
-      const time = typeof raw === "string" ? parseDate(raw) : Number.NaN;
+      if (typeof raw === 'boolean') return raw;
+      if (raw === 'true' || raw === '1') return true;
+      if (raw === 'false' || raw === '0' || raw === '') return false;
+      return fail('Must be a boolean.');
+    case 'date': {
+      if (raw === null || raw === '') return null;
+      const time = typeof raw === 'string' ? parseDate(raw) : Number.NaN;
       return isStorableTime(time)
         ? new Date(time)
-        : fail("Must be an ISO 8601 date from 4713 BC to 275760 AD.");
+        : fail('Must be an ISO 8601 date from 4713 BC to 275760 AD.');
     }
-    case "json":
+    case 'json':
       return raw;
     default:
-      return fail("Cannot be set.");
+      return fail('Cannot be set.');
   }
 }
 
@@ -476,10 +476,10 @@ function unstorable(value: unknown): string | undefined {
   const stack: [unknown, number][] = [[value, 0]];
   for (let next = stack.pop(); next; next = stack.pop()) {
     const [item, depth] = next;
-    if (typeof item === "string") {
+    if (typeof item === 'string') {
       const problem = unstorableText(item);
       if (problem) return problem;
-    } else if (typeof item === "object" && item !== null) {
+    } else if (typeof item === 'object' && item !== null) {
       if (depth >= MAX_JSON_DEPTH)
         return `Cannot be nested more than ${MAX_JSON_DEPTH} levels deep.`;
       for (const [key, child] of Object.entries(item)) {
@@ -498,126 +498,126 @@ function validate(field: Field, value: unknown, issues: Issues): boolean {
     return false;
   };
   switch (field.type) {
-    case "text": {
+    case 'text': {
       const text = value as string;
-      if (text === "") return true;
+      if (text === '') return true;
       const length = [...text].length;
       if (length < field.min || length > field.max) {
         return fail(
-          "validation_length_out_of_range",
+          'validation_length_out_of_range',
           `Must be ${field.min} to ${field.max} characters.`,
         );
       }
-      if (field.pattern !== "" && !new RegExp(field.pattern, "u").test(text)) {
+      if (field.pattern !== '' && !new RegExp(field.pattern, 'u').test(text)) {
         return fail(
-          "validation_invalid_format",
-          "Does not match the required format.",
+          'validation_invalid_format',
+          'Does not match the required format.',
         );
       }
       return true;
     }
-    case "email":
-    case "url": {
+    case 'email':
+    case 'url': {
       const text = value as string;
-      if (text === "") return true;
+      if (text === '') return true;
       let domain: string;
-      if (field.type === "email") {
+      if (field.type === 'email') {
         if (text.length > 254 || !EMAIL_PATTERN.test(text))
           return fail(
-            "validation_invalid_email",
-            "Must be a valid email address.",
+            'validation_invalid_email',
+            'Must be a valid email address.',
           );
-        domain = text.slice(text.lastIndexOf("@") + 1).toLowerCase();
+        domain = text.slice(text.lastIndexOf('@') + 1).toLowerCase();
       } else {
         let url: URL;
         try {
           url = new URL(text);
         } catch {
-          return fail("validation_invalid_url", "Must be a valid URL.");
+          return fail('validation_invalid_url', 'Must be a valid URL.');
         }
-        if (url.protocol !== "http:" && url.protocol !== "https:")
+        if (url.protocol !== 'http:' && url.protocol !== 'https:')
           return fail(
-            "validation_invalid_url",
-            "Must be an http or https URL.",
+            'validation_invalid_url',
+            'Must be an http or https URL.',
           );
         domain = url.hostname.toLowerCase();
       }
       if (field.onlyDomains.length > 0 && !field.onlyDomains.includes(domain)) {
         return fail(
-          "validation_domain_not_allowed",
-          `Must use one of: ${field.onlyDomains.join(", ")}.`,
+          'validation_domain_not_allowed',
+          `Must use one of: ${field.onlyDomains.join(', ')}.`,
         );
       }
       if (field.exceptDomains.includes(domain))
         return fail(
-          "validation_domain_not_allowed",
-          "This domain is not allowed.",
+          'validation_domain_not_allowed',
+          'This domain is not allowed.',
         );
       return true;
     }
-    case "number": {
+    case 'number': {
       const n = value as number;
       // Input is finite, but `n+` and `n-` can overflow. Postgres would store
       // Infinity, which JSON cannot carry.
       if (!Number.isFinite(n))
-        return fail("validation_invalid_value", "Must be a finite number.");
+        return fail('validation_invalid_value', 'Must be a finite number.');
       if (field.onlyInt && !Number.isInteger(n))
-        return fail("validation_not_integer", "Must be an integer.");
+        return fail('validation_not_integer', 'Must be an integer.');
       if (
         (field.min !== null && n < field.min) ||
         (field.max !== null && n > field.max)
       ) {
         return fail(
-          "validation_out_of_range",
-          `Must be between ${field.min ?? "-∞"} and ${field.max ?? "∞"}.`,
+          'validation_out_of_range',
+          `Must be between ${field.min ?? '-∞'} and ${field.max ?? '∞'}.`,
         );
       }
       return true;
     }
-    case "date": {
+    case 'date': {
       const date = value as Date | null;
       if (date === null) return true;
       // By time: as text, years past 9999 or before 1 AD sort wrongly.
       const time = date.getTime();
       if (
-        (field.min !== "" && time < Date.parse(field.min)) ||
-        (field.max !== "" && time > Date.parse(field.max))
+        (field.min !== '' && time < Date.parse(field.min)) ||
+        (field.max !== '' && time > Date.parse(field.max))
       ) {
         return fail(
-          "validation_out_of_range",
-          "The date is out of the allowed range.",
+          'validation_out_of_range',
+          'The date is out of the allowed range.',
         );
       }
       return true;
     }
-    case "select": {
+    case 'select': {
       const items = isMultiple(field)
         ? (value as string[])
-        : value === ""
+        : value === ''
           ? []
           : [value as string];
       if (items.some((v) => !field.values.includes(v)))
         return fail(
-          "validation_invalid_value",
-          `Must be one of: ${field.values.join(", ")}.`,
+          'validation_invalid_value',
+          `Must be one of: ${field.values.join(', ')}.`,
         );
       return checkList(field.maxSelect, items, fail);
     }
-    case "relation": {
+    case 'relation': {
       const items = isMultiple(field)
         ? (value as string[])
         : value === null
           ? []
           : [value as string];
       if (items.some((v) => !isId(v)))
-        return fail("validation_invalid_value", "Must be record ids.");
+        return fail('validation_invalid_value', 'Must be record ids.');
       return checkList(field.maxSelect, items, fail);
     }
-    case "json": {
+    case 'json': {
       const size = new TextEncoder().encode(JSON.stringify(value)).length;
       if (size > field.maxSize)
         return fail(
-          "validation_too_large",
+          'validation_too_large',
           `Must be at most ${field.maxSize} bytes of JSON.`,
         );
       return true;
@@ -633,16 +633,16 @@ function checkList(
   fail: (code: string, message: string) => false,
 ): boolean {
   if (new Set(items).size !== items.length)
-    return fail("validation_not_unique", "Values must be unique.");
+    return fail('validation_not_unique', 'Values must be unique.');
   if (items.length > maxSelect)
-    return fail("validation_too_many", `Select at most ${maxSelect}.`);
+    return fail('validation_too_many', `Select at most ${maxSelect}.`);
   return true;
 }
 
 // Returns the oldPassword the change must still be checked against, if any.
 function preparePassword(
   input: Record<string, unknown>,
-  field: Field & { type: "password" },
+  field: Field & { type: 'password' },
   existing: Row | undefined,
   privileged: boolean,
   issues: Issues,
@@ -657,11 +657,11 @@ function preparePassword(
   }
   let check: string | undefined;
   if (existing && !privileged) {
-    if (typeof oldPassword !== "string") {
+    if (typeof oldPassword !== 'string') {
       issues.add(
-        ["oldPassword"],
-        "validation_invalid_old_password",
-        "Does not match the current password.",
+        ['oldPassword'],
+        'validation_invalid_old_password',
+        'Does not match the current password.',
       );
       return undefined;
     }
@@ -670,7 +670,7 @@ function preparePassword(
   set(field, password);
   // A new password signs everyone out: all earlier tokens stop verifying.
   if (existing)
-    set({ ...field, name: "tokenKey" }, randomString(50, ALPHANUMERIC));
+    set({ ...field, name: 'tokenKey' }, randomString(50, ALPHANUMERIC));
   return check;
 }
 
@@ -679,38 +679,38 @@ function preparePassword(
  * with a valid password can then have it hashed before its transaction.
  */
 export function newPassword(
-  field: Field & { type: "password" },
+  field: Field & { type: 'password' },
   input: Record<string, unknown>,
 ): string | undefined {
-  return typeof input.password === "string" && !passwordProblem(field, input)
+  return typeof input.password === 'string' && !passwordProblem(field, input)
     ? input.password
     : undefined;
 }
 
 function passwordProblem(
-  field: Field & { type: "password" },
+  field: Field & { type: 'password' },
   { password, passwordConfirm }: Record<string, unknown>,
 ): [Path, string, string] | undefined {
   // Counts characters as people see them, unlike `length` (emoji, accents).
-  const length = typeof password === "string" ? [...password].length : 0;
+  const length = typeof password === 'string' ? [...password].length : 0;
   if (
-    typeof password !== "string" ||
+    typeof password !== 'string' ||
     length < field.min ||
     length > field.max
   ) {
     return [
-      ["password"],
-      "validation_length_out_of_range",
+      ['password'],
+      'validation_length_out_of_range',
       `Must be ${field.min} to ${field.max} characters.`,
     ];
   }
   const problem = unstorableText(password);
-  if (problem) return [["password"], "validation_invalid_value", problem];
+  if (problem) return [['password'], 'validation_invalid_value', problem];
   if (passwordConfirm !== password) {
     return [
-      ["passwordConfirm"],
-      "validation_values_mismatch",
-      "Does not match the password.",
+      ['passwordConfirm'],
+      'validation_values_mismatch',
+      'Does not match the password.',
     ];
   }
   return undefined;
@@ -737,7 +737,7 @@ export async function checkRelations(
   for (const draft of drafts) {
     const { values } = draft.prepared;
     for (const field of collection.fields) {
-      if (field.type !== "relation" || !Object.hasOwn(values, field.name))
+      if (field.type !== 'relation' || !Object.hasOwn(values, field.name))
         continue;
       const value = values[field.name];
       const ids = Array.isArray(value)
@@ -769,8 +769,8 @@ export async function checkRelations(
     if (missing.length > 0) {
       draft.issues.add(
         [field.name],
-        "validation_missing_relation",
-        `No ${target.name} record with id ${missing.join(", ")}.`,
+        'validation_missing_relation',
+        `No ${target.name} record with id ${missing.join(', ')}.`,
       );
     }
   }

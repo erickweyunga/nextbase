@@ -1,5 +1,5 @@
-import type { NextBaseClient, SendOptions } from "./index.ts";
-import type { ListResult } from "./shared/api.ts";
+import type { NextBaseClient, SendOptions } from './index.ts';
+import type { ListResult } from './shared/api.ts';
 import type {
   AuthCollection,
   Collection,
@@ -7,16 +7,16 @@ import type {
   Index,
   TokenConfig,
   TokenType,
-} from "./shared/schema.ts";
+} from './shared/schema.ts';
 
 /**
  * A collection to create or update. Omitted settings keep their value or get a
  * default; fields without an `id` are new.
  */
 export type CollectionInput = Partial<
-  Omit<AuthCollection, "type" | "fields" | "indexes" | "tokens">
+  Omit<AuthCollection, 'type' | 'fields' | 'indexes' | 'tokens'>
 > & {
-  type?: Collection["type"];
+  type?: Collection['type'];
   fields?: Partial<Field>[];
   indexes?: Partial<Index>[];
   /** View collections only: the SELECT their records come from. */
@@ -34,7 +34,7 @@ export class CollectionService {
 
   async getFullList(options?: SendOptions): Promise<Collection[]> {
     const list = await this.#client.send<ListResult<Collection>>(
-      "/collections",
+      '/collections',
       options,
     );
     return list.items;
@@ -45,9 +45,9 @@ export class CollectionService {
   }
 
   create(body: CollectionInput, options?: SendOptions): Promise<Collection> {
-    return this.#client.send("/collections", {
+    return this.#client.send('/collections', {
       ...options,
-      method: "POST",
+      method: 'POST',
       body,
     });
   }
@@ -59,14 +59,14 @@ export class CollectionService {
   ): Promise<Collection> {
     return this.#client.send(path(idOrName), {
       ...options,
-      method: "PATCH",
+      method: 'PATCH',
       body,
     });
   }
 
   /** Deletes a collection and its records. */
   async delete(idOrName: string, options?: SendOptions): Promise<void> {
-    await this.#client.send(path(idOrName), { ...options, method: "DELETE" });
+    await this.#client.send(path(idOrName), { ...options, method: 'DELETE' });
   }
 }
 

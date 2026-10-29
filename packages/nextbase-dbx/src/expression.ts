@@ -1,6 +1,6 @@
-import type { Builder } from "./builder.ts";
-import type { Params } from "./query.ts";
-import { bindParam, mergeParams, quoteIdentifierPath } from "./sql.ts";
+import type { Builder } from './builder.ts';
+import type { Params } from './query.ts';
+import { bindParam, mergeParams, quoteIdentifierPath } from './sql.ts';
 
 /**
  * A SQL fragment for a condition or a written value. `build` adds its values to
@@ -14,9 +14,9 @@ export interface Expression {
 /** Values with a `build` method are used as SQL instead of bound. */
 export function isExpression(value: unknown): value is Expression {
   return (
-    typeof value === "object" &&
+    typeof value === 'object' &&
     value !== null &&
-    typeof (value as Expression).build === "function"
+    typeof (value as Expression).build === 'function'
   );
 }
 
@@ -54,15 +54,15 @@ class HashExp implements Expression {
         parts.push(`${quoteIdentifierPath(name)} IS NULL`);
       } else if (isExpression(value)) {
         const sql = value.build(builder, params);
-        if (sql !== "") parts.push(`(${sql})`);
+        if (sql !== '') parts.push(`(${sql})`);
       } else if (Array.isArray(value)) {
         const sql = isIn(name, ...value).build(builder, params);
-        if (sql !== "") parts.push(sql);
+        if (sql !== '') parts.push(sql);
       } else {
         parts.push(`${quoteIdentifierPath(name)}=${bindParam(params, value)}`);
       }
     }
-    return parts.join(" AND ");
+    return parts.join(' AND ');
   }
 }
 
@@ -76,17 +76,17 @@ class NotExp implements Expression {
   // An empty condition is true, so its negation matches nothing.
   build(builder: Builder, params: Params): string {
     const sql = this.#exp.build(builder, params);
-    return sql === "" ? "0=1" : `NOT (${sql})`;
+    return sql === '' ? '0=1' : `NOT (${sql})`;
   }
 }
 
 class AndOrExp implements Expression {
   readonly #exps: readonly (Expression | null | undefined)[];
-  readonly #op: "AND" | "OR";
+  readonly #op: 'AND' | 'OR';
 
   constructor(
     exps: readonly (Expression | null | undefined)[],
-    op: "AND" | "OR",
+    op: 'AND' | 'OR',
   ) {
     this.#exps = exps;
     this.#op = op;
@@ -100,11 +100,11 @@ class AndOrExp implements Expression {
     for (const exp of this.#exps) {
       if (!exp) continue;
       const sql = exp.build(builder, params);
-      if (sql !== "") parts.push(sql);
+      if (sql !== '') parts.push(sql);
       else alwaysTrue = true;
     }
-    if (alwaysTrue && this.#op === "OR") return "";
-    if (parts.length <= 1) return parts[0] ?? "";
+    if (alwaysTrue && this.#op === 'OR') return '';
+    if (parts.length <= 1) return parts[0] ?? '';
     return `(${parts.join(`) ${this.#op} (`)})`;
   }
 }
@@ -136,40 +136,40 @@ class InExp implements Expression {
         hasNull = true;
       } else if (isExpression(value)) {
         const sql = value.build(builder, params);
-        if (sql !== "") expressions.push(sql);
+        if (sql !== '') expressions.push(sql);
       } else {
         values.push(bindParam(params, value));
       }
     }
     if (!hasNull && values.length === 0 && expressions.length === 0) {
-      return this.#not ? "" : "0=1";
+      return this.#not ? '' : '0=1';
     }
 
     const parts: string[] = [];
     if (values.length === 1) {
-      parts.push(`${col}${this.#not ? "<>" : "="}${values[0]}`);
+      parts.push(`${col}${this.#not ? '<>' : '='}${values[0]}`);
     } else if (values.length > 1) {
       parts.push(
-        `${col} ${this.#not ? "NOT IN" : "IN"} (${values.join(", ")})`,
+        `${col} ${this.#not ? 'NOT IN' : 'IN'} (${values.join(', ')})`,
       );
     }
     for (const sql of expressions) {
-      parts.push(`${col} ${this.#not ? "NOT IN" : "IN"} (${sql})`);
+      parts.push(`${col} ${this.#not ? 'NOT IN' : 'IN'} (${sql})`);
     }
-    if (hasNull) parts.push(`${col} ${this.#not ? "IS NOT NULL" : "IS NULL"}`);
+    if (hasNull) parts.push(`${col} ${this.#not ? 'IS NOT NULL' : 'IS NULL'}`);
     if (parts.length === 1) return parts[0] as string;
-    return this.#not ? parts.join(" AND ") : `(${parts.join(" OR ")})`;
+    return this.#not ? parts.join(' AND ') : `(${parts.join(' OR ')})`;
   }
 }
 
 /** Escapes `\`, `%` and `_` so LIKE values match literally. */
 export const DEFAULT_LIKE_ESCAPE: readonly string[] = [
-  "\\",
-  "\\\\",
-  "%",
-  "\\%",
-  "_",
-  "\\_",
+  '\\',
+  '\\\\',
+  '%',
+  '\\%',
+  '_',
+  '\\_',
 ];
 
 /**
@@ -179,7 +179,7 @@ export const DEFAULT_LIKE_ESCAPE: readonly string[] = [
 export class LikeExp implements Expression {
   readonly #col: string;
   readonly #values: readonly string[];
-  readonly #operator: "LIKE" | "NOT LIKE";
+  readonly #operator: 'LIKE' | 'NOT LIKE';
   readonly #or: boolean;
   #caseInsensitive = false;
   #escape: readonly string[] = DEFAULT_LIKE_ESCAPE;
@@ -189,7 +189,7 @@ export class LikeExp implements Expression {
   constructor(
     col: string,
     values: readonly string[],
-    operator: "LIKE" | "NOT LIKE",
+    operator: 'LIKE' | 'NOT LIKE',
     or: boolean,
   ) {
     this.#col = col;
@@ -202,7 +202,7 @@ export class LikeExp implements Expression {
   escape(...chars: string[]): this {
     if (chars.length % 2 !== 0) {
       throw new TypeError(
-        "dbx: LikeExp.escape needs an even number of strings.",
+        'dbx: LikeExp.escape needs an even number of strings.',
       );
     }
     this.#escape = chars;
@@ -225,7 +225,7 @@ export class LikeExp implements Expression {
   build(_builder: Builder, params: Params): string {
     const col = quoteIdentifierPath(this.#col);
     const operator = this.#caseInsensitive
-      ? this.#operator.replace("LIKE", "ILIKE")
+      ? this.#operator.replace('LIKE', 'ILIKE')
       : this.#operator;
     const parts = this.#values.map((raw) => {
       let value = raw;
@@ -239,7 +239,7 @@ export class LikeExp implements Expression {
       if (this.#right) value = `${value}%`;
       return `${col} ${operator} ${bindParam(params, value)}`;
     });
-    return parts.join(this.#or ? " OR " : " AND ");
+    return parts.join(this.#or ? ' OR ' : ' AND ');
   }
 }
 
@@ -254,8 +254,8 @@ class ExistsExp implements Expression {
 
   build(builder: Builder, params: Params): string {
     const sql = this.#exp.build(builder, params);
-    if (sql === "") return this.#not ? "" : "0=1";
-    return `${this.#not ? "NOT EXISTS" : "EXISTS"} (${sql})`;
+    if (sql === '') return this.#not ? '' : '0=1';
+    return `${this.#not ? 'NOT EXISTS' : 'EXISTS'} (${sql})`;
   }
 }
 
@@ -275,7 +275,7 @@ class BetweenExp implements Expression {
   build(_builder: Builder, params: Params): string {
     const from = bindParam(params, this.#from);
     const to = bindParam(params, this.#to);
-    const between = this.#not ? "NOT BETWEEN" : "BETWEEN";
+    const between = this.#not ? 'NOT BETWEEN' : 'BETWEEN';
     return `${quoteIdentifierPath(this.#col)} ${between} ${from} AND ${to}`;
   }
 }
@@ -300,7 +300,7 @@ export function not(exp: Expression): Expression {
 
 /** Joins expressions with AND. Empty and missing expressions are skipped. */
 export function and(...exps: (Expression | null | undefined)[]): Expression {
-  return new AndOrExp(exps, "AND");
+  return new AndOrExp(exps, 'AND');
 }
 
 /**
@@ -308,7 +308,7 @@ export function and(...exps: (Expression | null | undefined)[]): Expression {
  * matches everything, so the whole OR is empty.
  */
 export function or(...exps: (Expression | null | undefined)[]): Expression {
-  return new AndOrExp(exps, "OR");
+  return new AndOrExp(exps, 'OR');
 }
 
 /**
@@ -329,22 +329,22 @@ export function notIn(col: string, ...values: unknown[]): Expression {
 
 /** `col LIKE '%value%'` for each value, joined by AND. */
 export function like(col: string, ...values: string[]): LikeExp {
-  return new LikeExp(col, values, "LIKE", false);
+  return new LikeExp(col, values, 'LIKE', false);
 }
 
 /** `col NOT LIKE '%value%'` for each value, joined by AND. */
 export function notLike(col: string, ...values: string[]): LikeExp {
-  return new LikeExp(col, values, "NOT LIKE", false);
+  return new LikeExp(col, values, 'NOT LIKE', false);
 }
 
 /** `col LIKE '%value%'` for each value, joined by OR. */
 export function orLike(col: string, ...values: string[]): LikeExp {
-  return new LikeExp(col, values, "LIKE", true);
+  return new LikeExp(col, values, 'LIKE', true);
 }
 
 /** `col NOT LIKE '%value%'` for each value, joined by OR. */
 export function orNotLike(col: string, ...values: string[]): LikeExp {
-  return new LikeExp(col, values, "NOT LIKE", true);
+  return new LikeExp(col, values, 'NOT LIKE', true);
 }
 
 /** An empty sub-query matches nothing. */

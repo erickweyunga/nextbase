@@ -1,9 +1,9 @@
-import { authSync } from "./auth-sync.ts";
-import { ClientError } from "./client-error.ts";
-import type { NextBaseClient } from "./index.ts";
-import type { ApiErrorBody, RecordModel } from "./shared/api.ts";
+import { authSync } from './auth-sync.ts';
+import { ClientError } from './client-error.ts';
+import type { NextBaseClient } from './index.ts';
+import type { ApiErrorBody, RecordModel } from './shared/api.ts';
 
-export type RealtimeAction = "create" | "update" | "delete";
+export type RealtimeAction = 'create' | 'update' | 'delete';
 
 /** A record created, updated or deleted. */
 export interface RealtimeEvent<T extends RecordModel = RecordModel> {
@@ -45,11 +45,11 @@ interface Subscription {
 /** How a stream ended. */
 type Outcome =
   /** The server ended it on purpose: reconnect at once. */
-  | "ended"
+  | 'ended'
   /** It failed, or could not start: reconnect after a wait. */
-  | "failed"
+  | 'failed'
   /** Subscriptions or the session changed, or a topic was refused: reconnect at once. */
-  | "changed";
+  | 'changed';
 
 const FIRST_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
@@ -65,7 +65,7 @@ export class RealtimeService {
   readonly #client: NextBaseClient;
   readonly #post: (init: RequestInit) => Promise<Response>;
   readonly #subscriptions = new Set<Subscription>();
-  #lastEventId = "";
+  #lastEventId = '';
   #failures = 0;
   #running = false;
   #scheduled = false;
@@ -94,12 +94,12 @@ export class RealtimeService {
     callback: (event: RealtimeEvent<T>) => void,
     options: SubscribeOptions = {},
   ): () => void {
-    if (topic === "") {
+    if (topic === '') {
       throw new TypeError('The topic must be "*" or a record id.');
     }
     const subscription: Subscription = {
       collection,
-      id: topic === "*" ? undefined : topic,
+      id: topic === '*' ? undefined : topic,
       callback: callback as (event: RealtimeEvent) => void,
       options,
       live: false,
@@ -140,16 +140,16 @@ export class RealtimeService {
         this.#changed = false;
         const started = Date.now();
         const outcome = await this.#stream();
-        if (outcome === "ended" || Date.now() - started >= HEALTHY_MS) {
+        if (outcome === 'ended' || Date.now() - started >= HEALTHY_MS) {
           this.#failures = 0;
         }
-        if (outcome !== "failed" || this.#changed) continue;
+        if (outcome !== 'failed' || this.#changed) continue;
         await this.#sleep(retryDelay(++this.#failures));
       }
     } finally {
       this.#running = false;
       // A later subscription starts after events as they come then.
-      this.#lastEventId = "";
+      this.#lastEventId = '';
       this.#failures = 0;
     }
   }
@@ -177,11 +177,11 @@ export class RealtimeService {
     const controller = new AbortController();
     this.#controller = controller;
     const headers: Record<string, string> = {
-      accept: "text/event-stream",
-      "content-type": "application/json",
+      accept: 'text/event-stream',
+      'content-type': 'application/json',
     };
     if (token) headers.authorization = `Bearer ${token}`;
-    if (this.#lastEventId) headers["last-event-id"] = this.#lastEventId;
+    if (this.#lastEventId) headers['last-event-id'] = this.#lastEventId;
     const topics = subscriptions.map(({ collection, id, options }) => ({
       collection,
       ...(id !== undefined && { id }),
@@ -191,7 +191,7 @@ export class RealtimeService {
     }));
     try {
       const response = await this.#post({
-        method: "POST",
+        method: 'POST',
         headers,
         body: JSON.stringify({ topics }),
         signal: controller.signal,
@@ -199,16 +199,16 @@ export class RealtimeService {
       // A cookie session that ended, as `send()` handles it.
       if (
         unchanged() &&
-        token === "" &&
+        token === '' &&
         record !== null &&
-        response.headers.get("nextbase-session") === "none"
+        response.headers.get('nextbase-session') === 'none'
       ) {
         store.clear();
         await response.body?.cancel();
-        return "changed";
+        return 'changed';
       }
       if (!response.ok) return await this.#refused(response, subscriptions);
-      if (!response.body) return "failed";
+      if (!response.body) return 'failed';
       // The server answers once it knows where the stream starts.
       for (const subscription of subscriptions) {
         if (subscription.live || !this.#subscriptions.has(subscription)) {
@@ -219,10 +219,10 @@ export class RealtimeService {
       }
       let ended = false;
       const parser = new EventStreamParser((event) => {
-        if (event.type === "end") {
+        if (event.type === 'end') {
           ended = true;
           const { reason } = parseJson(event.data) as { reason?: unknown };
-          if (reason === "signed_out" && unchanged() && store.isValid) {
+          if (reason === 'signed_out' && unchanged() && store.isValid) {
             store.clear();
           }
           return;
@@ -243,9 +243,9 @@ export class RealtimeService {
       } finally {
         reader.releaseLock();
       }
-      return ended ? "ended" : "failed";
+      return ended ? 'ended' : 'failed';
     } catch {
-      return controller.signal.aborted ? "changed" : "failed";
+      return controller.signal.aborted ? 'changed' : 'failed';
     } finally {
       controller.abort();
       if (this.#controller === controller) this.#controller = undefined;
@@ -256,7 +256,7 @@ export class RealtimeService {
     subscriptions: readonly Subscription[],
     event: { type: string; data: string },
   ): void {
-    if (event.type === "reset") {
+    if (event.type === 'reset') {
       for (const subscription of subscriptions) {
         if (this.#subscriptions.has(subscription)) {
           call(() => subscription.options.onReset?.());
@@ -265,9 +265,9 @@ export class RealtimeService {
       return;
     }
     if (
-      event.type !== "create" &&
-      event.type !== "update" &&
-      event.type !== "delete"
+      event.type !== 'create' &&
+      event.type !== 'update' &&
+      event.type !== 'delete'
     ) {
       return;
     }
@@ -293,7 +293,7 @@ export class RealtimeService {
     response: Response,
     subscriptions: readonly Subscription[],
   ): Promise<Outcome> {
-    const body = parseJson(await response.text().catch(() => ""));
+    const body = parseJson(await response.text().catch(() => ''));
     const error = new ClientError(
       isErrorBody(body)
         ? body
@@ -306,18 +306,18 @@ export class RealtimeService {
     const store = this.#client.authStore;
     if (response.status === 401 && store.isValid) {
       store.clear();
-      return "changed";
+      return 'changed';
     }
     if (
       response.status < 400 ||
       response.status >= 500 ||
       [401, 408, 409, 429].includes(response.status)
     ) {
-      return "failed";
+      return 'failed';
     }
     const refused = error.data.topics;
     const ended =
-      refused && typeof refused === "object"
+      refused && typeof refused === 'object'
         ? Object.keys(refused).flatMap((i) => subscriptions[Number(i)] ?? [])
         : subscriptions;
     for (const subscription of ended) {
@@ -325,7 +325,7 @@ export class RealtimeService {
         call(() => subscription.options.onError?.(error));
       }
     }
-    return "changed";
+    return 'changed';
   }
 }
 
@@ -340,7 +340,7 @@ function call(run: () => void): void {
   try {
     run();
   } catch (error) {
-    console.error("[nextbase] a realtime callback failed:", error);
+    console.error('[nextbase] a realtime callback failed:', error);
   }
 }
 
@@ -355,10 +355,10 @@ function parseJson(text: string): unknown {
 function isErrorBody(value: unknown): value is ApiErrorBody {
   return (
     value !== null &&
-    typeof value === "object" &&
-    typeof (value as ApiErrorBody).status === "number" &&
-    typeof (value as ApiErrorBody).message === "string" &&
-    typeof (value as ApiErrorBody).data === "object"
+    typeof value === 'object' &&
+    typeof (value as ApiErrorBody).status === 'number' &&
+    typeof (value as ApiErrorBody).message === 'string' &&
+    typeof (value as ApiErrorBody).data === 'object'
   );
 }
 
@@ -377,13 +377,13 @@ interface ParsedEvent {
  */
 class EventStreamParser {
   readonly #onEvent: (event: ParsedEvent) => void;
-  #line = "";
+  #line = '';
   /** The last chunk ended with CR, so a LF that starts the next ends nothing. */
   #afterCR = false;
-  #type = "";
-  #data = "";
-  #id = "";
-  lastEventId = "";
+  #type = '';
+  #data = '';
+  #id = '';
+  lastEventId = '';
 
   constructor(onEvent: (event: ParsedEvent) => void) {
     this.#onEvent = onEvent;
@@ -402,7 +402,7 @@ class EventStreamParser {
       }
       if (char !== LF && char !== CR) continue;
       const line = this.#line + text.slice(start, i);
-      this.#line = "";
+      this.#line = '';
       this.#afterCR = char === CR;
       start = i + 1;
       this.#field(line);
@@ -411,18 +411,18 @@ class EventStreamParser {
   }
 
   #field(line: string): void {
-    if (line === "") {
+    if (line === '') {
       this.#dispatch();
       return;
     }
-    if (line.startsWith(":")) return;
-    const colon = line.indexOf(":");
+    if (line.startsWith(':')) return;
+    const colon = line.indexOf(':');
     const name = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? "" : line.slice(colon + 1);
-    if (value.startsWith(" ")) value = value.slice(1);
-    if (name === "event") this.#type = value;
-    else if (name === "data") this.#data += `${value}\n`;
-    else if (name === "id" && !value.includes("\0")) this.#id = value;
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (name === 'event') this.#type = value;
+    else if (name === 'data') this.#data += `${value}\n`;
+    else if (name === 'id' && !value.includes('\0')) this.#id = value;
     // `retry` sets EventSource's reconnection time; this client keeps its
     // own backoff.
   }
@@ -431,11 +431,11 @@ class EventStreamParser {
     this.lastEventId = this.#id;
     const data = this.#data;
     const type = this.#type;
-    this.#data = "";
-    this.#type = "";
-    if (data === "") return;
+    this.#data = '';
+    this.#type = '';
+    if (data === '') return;
     this.#onEvent({
-      type: type || "message",
+      type: type || 'message',
       data: data.slice(0, -1),
       lastEventId: this.lastEventId,
     });

@@ -10,7 +10,7 @@ export {
   type LogEvent,
   type Queryable,
   type TypeParsers,
-} from "./builder.ts";
+} from './builder.ts';
 export {
   DB,
   type Pool,
@@ -19,7 +19,7 @@ export {
   TxAbortedError,
   TxDoneError,
   type TxOptions,
-} from "./db.ts";
+} from './db.ts';
 export {
   and,
   between,
@@ -39,18 +39,18 @@ export {
   or,
   orLike,
   orNotLike,
-} from "./expression.ts";
+} from './expression.ts';
 export {
   CompositePKError,
   MissingPKError,
   type ModelOptions,
   ModelQuery,
-} from "./model.ts";
+} from './model.ts';
 export {
   type ExecResult,
   NoRowsError,
   type Params,
   Query,
   type Row,
-} from "./query.ts";
-export { SelectQuery } from "./select.ts";
+} from './query.ts';
+export { SelectQuery } from './select.ts';
