@@ -95,6 +95,25 @@ export interface AuthProvider {
   displayName: string;
 }
 
+/** An entry of the server's log. */
+export interface LogModel {
+  id: string;
+  created: string;
+  /** -4 debug, 0 info, 4 warn, 8 error. */
+  level: number;
+  /** Such as `GET /api/nextbase/collections/posts/records`. */
+  message: string;
+  /** `type` says what it is: `request`, or the background work that failed. */
+  data: Record<string, unknown>;
+}
+
+/** The number of log entries in one hour. */
+export interface LogStat {
+  /** The start of the hour, in UTC. */
+  date: string;
+  total: number;
+}
+
 /** A provider account linked to an auth record. */
 export interface LinkedAccountModel {
   id: string;

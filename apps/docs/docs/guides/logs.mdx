@@ -1,0 +1,133 @@
+---
+title: Logs
+description: A log of HTTP requests and background failures, kept in your database.
+---
+
+# Logs
+
+NextBase keeps a log of the HTTP requests it answers and of the background
+work that failed, such as an after hook that threw or an email that could not
+be sent. Entries live in your database, in `nextbase._logs`, and superusers
+read them through [`/logs`](/docs/api/logs) or `nb.logs` in the SDK.
+
+Logs are on by default and kept 7 days. Change that, or turn them off:
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "@nextbasejs/core";
+
+export const nextbase = new NextBase({
+  logs: {
+    maxDays: 14, // at least 1; defaults to 7
+    minLevel: 4, // warnings and errors only; defaults to 0 (info)
+    authId: true, // the signed-in record's id; defaults to false
+    ip: true, // the client's IP, see below; defaults to false
+  },
+});
+```
+
+`logs: false` keeps no entries at all.
+
+## Levels
+
+| Level | Value | Used for |
+| ----- | ----- | -------- |
+| debug | `-4` | Nothing yet. |
+| info | `0` | Requests answered with a 2xx or 3xx. |
+| warn | `4` | Requests answered with a 4xx. |
+| error | `8` | Requests answered with a 5xx, and background failures. |
+
+Entries below `minLevel` are not kept.
+
+## Request entries
+
+Each HTTP request gets one entry. Its `message` is the method and path, such
+as `GET /api/nextbase/collections/posts/records`, and its `data`:
+
+| Field | Description |
+| ----- | ----------- |
+| `type` | `"request"`. |
+| `method` | The HTTP method. |
+| `url` | Path and query, at most 3000 characters. The values of `token`, `code` and `state` read `REDACTED`. |
+| `status` | The response's status. |
+| `execTime` | Milliseconds to the response. For a realtime stream, until it opened. |
+| `auth` | The caller's collection, such as `users` or `_superusers`, or `""` when signed out. |
+| `authId` | With `authId: true`, the caller's record id. |
+| `ip` | With `ip: true`, the client's IP, when NextBase knows it. |
+| `userAgent` | At most 2000 characters. |
+| `referer` | The referring page's origin and path, without its query. |
+| `error` | The error's message, when the request failed. For a 500, what was actually thrown. |
+| `details` | The field errors of a failed request. |
+| `stack` | The stack of what was thrown, for unexpected errors only. |
+
+An entry never holds the request's body, its cookies or its `Authorization`
+header, nor the `detail` of Postgres errors, which can quote stored values.
+
+Not logged: successful health checks, the admin page, successful reads of the
+logs themselves, and requests from `nextbase.client()` in your own server
+code, including those of hooks.
+
+## Background failures
+
+Work that runs after the response, and so cannot fail it, is logged at error
+when it fails, with `data.type` saying what it was:
+
+| `data.type` | Work |
+| ----------- | ---- |
+| `hook` | An after hook. |
+| `storage` | Deleting stored files. |
+| `mail` | Sending an email. |
+| `sms` | Sending a text. |
+| `realtime` | Deleting old realtime events. |
+
+`data.error` and `data.stack` say what went wrong. These still go to the
+server console too, as before.
+
+## Reading the log
+
+```ts
+const superuser = nextbase.client({ superuser: true });
+
+const failed = await superuser.logs.getList(1, 50, {
+  filter: "data.status >= 500",
+});
+const entry = await superuser.logs.getOne(failed.items[0].id);
+const perHour = await superuser.logs.getStats({ filter: "level >= 4" });
+```
+
+Lists are newest first unless you `sort` them, and take [filters](/docs/guides/filters)
+over `id`, `created`, `level`, `message` and any path into `data`, such as
+`data.auth = "users"` or `data.url ~ "/files/"`. See the
+[API reference](/docs/api/logs).
+
+## The client's IP
+
+With `ip: true`, an entry records the client's IP, but only where NextBase can
+trust it. A client can send any `X-Forwarded-For` it likes, so NextBase reads
+none by default, except on Vercel, whose own headers it reads there. Behind a
+proxy of your own, name the header it sets:
+
+```ts title="lib/nextbase.ts"
+export const nextbase = new NextBase({
+  logs: { ip: true },
+  clientIp: { header: "x-forwarded-for" },
+});
+```
+
+Proxies append to the header, so NextBase takes its rightmost entry. When more
+than one proxy of yours appends, skip them with `trustedHops`: with a CDN in
+front of a load balancer, `trustedHops: 1`. You can also pass a function that
+returns the IP of a request. A value that is not an IP counts as unknown, and
+an IPv4 address mapped into IPv6, such as `::ffff:203.0.113.9`, is stored as
+plain IPv4. The IP is never used to decide who is signed in.
+
+## Writing and retention
+
+Entries are written in the background, outside the request's transaction:
+those of one instance are buffered and written together, one insert per
+burst of up to 200, so logging adds no round trip to a request. Writing never
+fails a request; if it fails, the console says so. An instance holds at most
+1000 entries waiting to be written and drops more, with one warning, until
+they are.
+
+About every 10 minutes, each instance deletes the entries older than
+`maxDays`, in batches. `DELETE /logs` deletes them all at once.

@@ -946,7 +946,7 @@ describe("sessions", () => {
         },
       });
       return {
-        nextbase: new NextBase({ database: pool }),
+        nextbase: new NextBase({ database: pool, logs: false }),
         queries: () => {
           const n = count;
           count = 0;

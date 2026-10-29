@@ -79,7 +79,7 @@ describe("batches of creates", () => {
     t = await createTestDatabase();
     const counted = counting(t.pool);
     queries = counted.queries;
-    nextbase = new NextBase({ database: counted.pool });
+    nextbase = new NextBase({ database: counted.pool, logs: false });
     await nextbase.createSuperuser("admin@example.com", "admin password 123");
     const admin = nextbase.client({ superuser: true });
     await admin.collections.create({ name: "users", type: "auth" });

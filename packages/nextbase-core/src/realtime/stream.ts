@@ -11,6 +11,7 @@ import {
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { readJsonObject } from "../http.ts";
+import type { Logger } from "../logs/logger.ts";
 import {
   matchingRows,
   outputRecords,
@@ -94,6 +95,7 @@ export class Realtime {
   readonly #db: () => DB;
   readonly #schemas: SchemaCache;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #logger: Logger;
   #hub: RealtimeHub | undefined;
   #signer: Promise<CursorSigner> | undefined;
   #purgedAt = Number.NEGATIVE_INFINITY;
@@ -107,12 +109,14 @@ export class Realtime {
       database,
       schemas,
       waitUntil,
+      logger,
     }: {
       db: () => DB;
       /** The `database` option, when it is a connection string. */
       database: string | undefined;
       schemas: SchemaCache;
       waitUntil: (promise: Promise<unknown>) => void;
+      logger: Logger;
     },
   ) {
     const config: RealtimeOptions =
@@ -150,6 +154,7 @@ export class Realtime {
     this.#db = db;
     this.#schemas = schemas;
     this.#waitUntil = waitUntil;
+    this.#logger = logger;
   }
 
   /** Whether writes to the collection log realtime events. */
@@ -173,8 +178,9 @@ export class Realtime {
     this.#waitUntil(
       purgeEvents(this.#db(), timings.retentionMs / 1000).catch(
         (error: unknown) => {
-          console.error(
-            "[nextbase] deleting old realtime events failed:",
+          this.#logger.failure(
+            "realtime",
+            "deleting old realtime events failed",
             error,
           );
         },

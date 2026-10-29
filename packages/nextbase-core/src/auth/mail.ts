@@ -1,6 +1,7 @@
 import { waitUntil as vercelWaitUntil } from "@vercel/functions";
 import { checkAppUrl } from "../app-url.ts";
 import { ApiError } from "../errors.ts";
+import type { Logger } from "../logs/logger.ts";
 
 export interface MailMessage {
   from: string;
@@ -99,11 +100,13 @@ export class Mailer {
   readonly #options: MailOptions | undefined;
   readonly #appUrl: URL | undefined;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #logger: Logger;
 
   constructor(
     options: MailOptions | undefined,
     appUrl: URL | undefined,
     waitUntil: ((promise: Promise<unknown>) => void) | undefined,
+    logger: Logger,
   ) {
     this.#options = options;
     this.#appUrl =
@@ -116,6 +119,7 @@ export class Mailer {
       );
     }
     this.#waitUntil = waitUntil ?? vercelWaitUntil;
+    this.#logger = logger;
   }
 
   /** Development without mail set up logs emails instead, so flows work locally. */
@@ -161,7 +165,7 @@ export class Mailer {
       }
       await options.send({ from: options.from, to, ...content });
     })().catch((error: unknown) => {
-      console.error(`[nextbase] sending a ${kind} email failed:`, error);
+      this.#logger.failure("mail", `sending a ${kind} email failed`, error);
     });
     this.#waitUntil(work);
   }

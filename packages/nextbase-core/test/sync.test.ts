@@ -91,6 +91,7 @@ describe("migrate", () => {
       "0008_uploads",
       "0009_expiry_indexes",
       "0010_realtime",
+      "0011_logs",
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

@@ -137,6 +137,20 @@ realtime collections commit one at a time, which caps write throughput to
 those collections at very high rates; see
 [Limits](/docs/guides/realtime#limits).
 
+## Logs
+
+NextBase keeps a [log](/docs/guides/logs) of HTTP requests and background
+failures in `nextbase._logs`, for 7 days by default. Each instance writes its
+entries in the background, a burst at a time, and deletes expired ones about
+every 10 minutes. On a busy app, keep `maxDays` short or raise `minLevel` to
+`4` to keep only warnings and errors, so the table stays small.
+
+To record client IPs with `logs: { ip: true }`, NextBase must know which
+header to trust. On Vercel it reads Vercel's own headers. Behind your own
+proxy or load balancer, set `clientIp: { header: "x-forwarded-for" }`, with
+`trustedHops` for each further proxy of yours. Without a header you control,
+any client could claim any IP, so NextBase records none.
+
 ## Many instances
 
 Serverless platforms run many copies of your app. A collection or rule change

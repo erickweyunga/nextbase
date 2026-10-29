@@ -424,6 +424,26 @@ const MIGRATIONS: readonly Migration[] = [
       await exec(`INSERT INTO {{${table("_realtime_state")}}} DEFAULT VALUES`);
     },
   },
+  {
+    name: "0011_logs",
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // Request logs and background failures. The index serves the default
+      // newest-first listing and the deletes of expired entries.
+      await exec(`
+        CREATE TABLE {{${table("_logs")}}} (
+          id      text PRIMARY KEY,
+          created timestamptz NOT NULL DEFAULT now(),
+          level   smallint NOT NULL,
+          message text NOT NULL,
+          data    jsonb NOT NULL DEFAULT '{}'
+        )`);
+      await exec(
+        `CREATE INDEX "_logs_created" ON {{${table("_logs")}}} (created, id)`,
+      );
+    },
+  },
 ];
 
 /**

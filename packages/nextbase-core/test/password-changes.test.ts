@@ -93,7 +93,8 @@ describe("changing a password", () => {
       connectionTimeoutMillis: 3_000,
     });
     try {
-      const other = new NextBase({ database: small });
+      // Log writes would take connections of the small pool too.
+      const other = new NextBase({ database: small, logs: false });
       const replies = await Promise.all(
         ["ann", "bob", "cara", "dan"].map((name) =>
           change(
