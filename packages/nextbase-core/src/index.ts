@@ -261,6 +261,8 @@ export class NextBase<C extends Collections = Collections> {
   readonly #realtime: Realtime | undefined;
   readonly #logger: Logger;
   readonly #clientIp: ClientIp;
+  /** Work running after responses, such as after hooks and emails. */
+  readonly #background = new Set<Promise<unknown>>();
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -284,7 +286,10 @@ export class NextBase<C extends Collections = Collections> {
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
-    this.#waitUntil = keepingAlive(options.waitUntil ?? vercelWaitUntil);
+    this.#waitUntil = keepingAlive(
+      options.waitUntil ?? vercelWaitUntil,
+      this.#background,
+    );
     this.#logger = new Logger(options.logs, {
       db: () => this.#connection(),
       ready: () => this.migrate(),
@@ -356,12 +361,20 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Writes the log entries still waiting, and waits for a delete of expired
-   * ones that is running. Call it before ending a pool you passed in, or
-   * before the process exits, so no entry is lost. Never rejects.
+   * Waits for the work running after responses, such as after hooks, emails
+   * and file deletes, then writes the log entries still waiting, including
+   * those of that work's failures. Call it before ending a pool you passed
+   * in, or before the process exits, so no entry is lost. Never rejects.
    */
-  flush(): Promise<void> {
-    return this.#logger.flush();
+  async flush(): Promise<void> {
+    for (;;) {
+      if (this.#background.size > 0) {
+        await Promise.allSettled([...this.#background]);
+        continue;
+      }
+      await this.#logger.flush();
+      if (this.#background.size === 0) return;
+    }
   }
 
   // Lazy: `next build` evaluates route modules without a database.
@@ -914,7 +927,9 @@ interface Trace {
  * logged, so the log shows it was emptied.
  */
 function quietRoute(method: string, route: string): boolean {
-  if (method !== "GET" && method !== "HEAD") return false;
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    return false;
+  }
   return (
     route === "/health" ||
     route === "/_" ||
@@ -1035,8 +1050,15 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  */
 function keepingAlive(
   waitUntil: (promise: Promise<unknown>) => void,
+  running: Set<Promise<unknown>>,
 ): (promise: Promise<unknown>) => void {
   return (promise) => {
+    // Kept until it settles, for `flush()`.
+    running.add(promise);
+    const done = (): void => {
+      running.delete(promise);
+    };
+    promise.then(done, done);
     try {
       waitUntil(promise);
     } catch (error) {

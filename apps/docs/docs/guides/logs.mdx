@@ -129,16 +129,18 @@ plain IPv4. The IP is never used to decide who is signed in.
 
 Entries are written in the background, outside the request's transaction:
 those of one instance are buffered and written together, up to 200 per
-insert, so logging adds no round trip to a request. Each instance runs one
-insert at a time, so logging never takes more than one connection of the
-pool. Writing never fails a request; if it fails, the console says so. An
+insert, so logging adds no round trip to a request. Each instance runs its
+inserts and its deletes of expired entries one at a time, so logging never
+takes more than one connection of the pool. Writing never fails a request; if it fails, the console says so. An
 instance holds at most 1000 entries waiting to be sent and drops more, with
 one warning, until they are.
 
 Entries are sent on the next tick, and `waitUntil` keeps a serverless
 function alive until they are. Elsewhere, call `nextbase.flush()` before
-ending a pool you passed in, or before the process exits, so the entries
-still waiting are written:
+ending a pool you passed in, or before the process exits. It waits for the
+work still running after responses, such as after hooks, emails and file
+deletes, then writes every entry still waiting, including those of that
+work's failures, so none is lost:
 
 ```ts
 process.on("SIGTERM", async () => {
@@ -147,7 +149,8 @@ process.on("SIGTERM", async () => {
 });
 ```
 
-`flush()` never rejects.
+`flush()` never rejects. An after hook that never finishes keeps it waiting
+too.
 
 About every 10 minutes, each instance deletes the entries older than
 `maxDays`, in batches. `DELETE /logs` deletes them all at once.

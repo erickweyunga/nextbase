@@ -598,7 +598,11 @@ describe("logs", () => {
       expect((await rows()).length).toBe(1201);
     });
 
-    it("runs one insert at a time, and keeps entries added while it runs", async () => {
+    it("runs one query at a time, and keeps entries added while it runs", async () => {
+      // Every write also deletes expired entries.
+      const purgeMs = logTimings.purgeMs;
+      logTimings.purgeMs = 0;
+      let deletes = 0;
       let running = 0;
       let most = 0;
       let release: () => void = () => {};
@@ -616,7 +620,7 @@ describe("logs", () => {
                   return Reflect.get(target, prop, target);
                 return (sql: string) => {
                   const query = target.newQuery(sql);
-                  if (!sql.startsWith("INSERT")) return query;
+                  if (sql.startsWith("DELETE")) deletes++;
                   const execute = query.execute.bind(query);
                   query.execute = async () => {
                     running++;
@@ -645,8 +649,34 @@ describe("logs", () => {
       expect(warn).not.toHaveBeenCalled();
       release();
       await log.flush();
+      logTimings.purgeMs = purgeMs;
+      expect(deletes).toBeGreaterThan(1);
       expect(most).toBe(1);
       expect((await rows()).length).toBe(1200);
+    });
+
+    it("include failures of background work that ends after flush is called", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const late = new NextBase({
+        database: t.pool,
+        waitUntil: () => {},
+        hooks: {
+          posts: {
+            async afterCreate() {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              throw new Error("late webhook");
+            },
+          },
+        },
+      });
+      await late.client({ superuser: true }).collection("posts").create({
+        title: "Late",
+      });
+      await late.flush();
+      const { rows: written } = await t.pool.query(
+        "SELECT level, data->>'error' AS error FROM nextbase._logs",
+      );
+      expect(written).toEqual([{ level: 8, error: "late webhook" }]);
     });
 
     it("are all written by flush, without waitUntil", async () => {
@@ -982,6 +1012,17 @@ describe("clientIp", () => {
     expect(read("unknown")).toBeUndefined();
     expect(read("1.2.3.4:")).toBeUndefined();
     expect(read("[1.2.3.4]:80x")).toBeUndefined();
+    // Brackets only around IPv6, a zone only after IPv6, ports up to 65535.
+    expect(read("[1.2.3.4]")).toBeUndefined();
+    expect(read("[1.2.3.4]:80")).toBeUndefined();
+    expect(read("1.2.3.4%x")).toBeUndefined();
+    expect(read("fe80::1%")).toBeUndefined();
+    expect(read("[fe80::1%]:80")).toBeUndefined();
+    expect(read("1.2.3.4:99999")).toBeUndefined();
+    expect(read("1.2.3.4:65536")).toBeUndefined();
+    expect(read("[2001:db8::1]:65536")).toBeUndefined();
+    expect(read("1.2.3.4:65535")).toBe("1.2.3.4");
+    expect(read("1.2.3.4:0")).toBe("1.2.3.4");
     expect(read("999.1.1.1")).toBeUndefined();
     expect(read("1.1.1.1, ")).toBe("1.1.1.1");
     expect(read("::ffff:10.0.0.1")).toBe("10.0.0.1");

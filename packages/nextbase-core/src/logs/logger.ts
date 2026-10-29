@@ -60,9 +60,9 @@ interface Entry {
  * Writes log entries to `_logs`, outside any transaction, so a request's own
  * writes never decide whether its entry is kept. Entries are buffered and
  * written together on the next tick, so a burst of requests costs one
- * insert, and one insert at most runs at a time per instance, so logging
- * never takes more than one connection. Writing never fails a request:
- * errors only go to the console.
+ * insert. Inserts and deletes of expired entries run one at a time per
+ * instance, so logging never takes more than one connection. Writing never
+ * fails a request: errors only go to the console.
  */
 export class Logger {
   readonly #config: Config | undefined;
@@ -75,7 +75,6 @@ export class Logger {
   #tick: Promise<void> | undefined;
   /** The write running: inserts, one after another, until the buffer is empty. */
   #writing: Promise<void> | undefined;
-  #purging: Promise<void> | undefined;
   #dropping = false;
   #purgedAt = Number.NEGATIVE_INFINITY;
   /** Microseconds of the last entry, so times never go backwards. */
@@ -150,15 +149,13 @@ export class Logger {
   }
 
   /**
-   * Resolves once every entry added so far is written, or failed to be, and
-   * a running delete of expired entries is done. Never rejects.
+   * Resolves once every entry added so far is written, or failed to be,
+   * with any delete of expired entries that follows. Never rejects.
    */
   async flush(): Promise<void> {
     for (;;) {
       if (this.#buffer.length > 0) this.#write();
-      const work = [this.#tick, this.#writing, this.#purging].filter(
-        (p) => p !== undefined,
-      );
+      const work = [this.#tick, this.#writing].filter((p) => p !== undefined);
       if (work.length === 0) return;
       await Promise.all(work);
     }
@@ -196,7 +193,8 @@ export class Logger {
         await this.#ready();
         const db = this.#db();
         await insertEntries(db, rows);
-        this.#purge(db);
+        // Awaited, so logging holds one connection at most.
+        await this.#purge(db);
       } catch (error) {
         console.error("[nextbase] writing log entries failed:", error);
       }
@@ -204,21 +202,16 @@ export class Logger {
   }
 
   /** Deletes expired entries, at most once per `purgeMs` per instance. */
-  #purge(db: DB): void {
+  async #purge(db: DB): Promise<void> {
     const config = this.#config;
     const now = Date.now();
-    if (!config || this.#purging || now - this.#purgedAt < logTimings.purgeMs) {
-      return;
-    }
+    if (!config || now - this.#purgedAt < logTimings.purgeMs) return;
     this.#purgedAt = now;
-    this.#purging = purgeLogs(db, config.maxDays)
-      .catch((error: unknown) => {
-        console.error("[nextbase] deleting expired log entries failed:", error);
-      })
-      .finally(() => {
-        this.#purging = undefined;
-      });
-    this.#waitUntil(this.#purging);
+    try {
+      await purgeLogs(db, config.maxDays);
+    } catch (error) {
+      console.error("[nextbase] deleting expired log entries failed:", error);
+    }
   }
 
   /**

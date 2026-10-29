@@ -93,22 +93,32 @@ function fromHeader(
 }
 
 // `[2001:db8::1]` or `[2001:db8::1]:443`, and `203.0.113.9:5678`.
-const BRACKETED = /^\[([^\]]+)\](?::\d{1,5})?$/;
-const V4_WITH_PORT = /^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/;
+const BRACKETED = /^\[([^\]]+)\](?::(\d{1,5}))?$/;
+const V4_WITH_PORT = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
+const MAX_PORT = 65_535;
 // The canonical form of an IPv4-mapped IPv6 address, in hex.
 const MAPPED_V4 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
 
 /**
  * A valid IP, or undefined: without a port or zone id, IPv6 compressed and
  * lowercase, and an IPv4-mapped IPv6 address as plain IPv4, so one client
- * always reads the same.
+ * always reads the same. Brackets are only allowed around IPv6, a zone id
+ * only after IPv6, and a port only from 0 to 65535.
  */
 function normalizeIp(value: string): string | undefined {
-  let ip = BRACKETED.exec(value)?.[1] ?? V4_WITH_PORT.exec(value)?.[1] ?? value;
+  const bracketed = BRACKETED.exec(value);
+  const withPort = bracketed ?? V4_WITH_PORT.exec(value);
+  const port = withPort?.[2];
+  if (port !== undefined && Number(port) > MAX_PORT) return undefined;
+  let ip = withPort?.[1] ?? value;
   const zone = ip.indexOf("%");
-  if (zone !== -1) ip = ip.slice(0, zone);
+  if (zone !== -1) {
+    if (zone === ip.length - 1) return undefined;
+    ip = ip.slice(0, zone);
+    if (isIP(ip) !== 6) return undefined;
+  }
   const version = isIP(ip);
-  if (version === 4) return ip;
+  if (version === 4 && !bracketed) return ip;
   if (version !== 6) return undefined;
   // The URL parser writes IPv6 in its canonical form, RFC 5952.
   const canonical = new URL(`http://[${ip}]`).hostname.slice(1, -1);
