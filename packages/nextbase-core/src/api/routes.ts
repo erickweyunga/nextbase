@@ -76,6 +76,7 @@ import {
   logsCollection,
 } from '../logs/store.ts';
 import { newId } from '../random.ts';
+import type { RouteTag } from '../rate-limits.ts';
 import type { Realtime } from '../realtime/stream.ts';
 import type { Hooks } from '../records/hooks.ts';
 import { serializeRecord } from '../records/serialize.ts';
@@ -157,6 +158,12 @@ export interface Route {
    * the session: the renewed cookie could only be sent once it ends.
    */
   stream?: true;
+  /**
+   * What the route does, for rate limit labels such as `*:auth`. On routes
+   * under `/collections/{collection}/` and `/files/{collection}/`, labels
+   * naming that collection apply too.
+   */
+  tags?: readonly RouteTag[];
   handler(context: Context): Promise<Response>;
 }
 
@@ -173,6 +180,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'GET',
     pattern: records,
+    tags: ['list'],
     transaction: true,
     joinsTransaction: true,
     async handler(context) {
@@ -192,6 +200,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: records,
+    tags: ['create'],
     joinsTransaction: true,
     async handler(context) {
       const body = await readRecordBody(context.request);
@@ -208,6 +217,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'GET',
     pattern: record,
+    tags: ['view'],
     transaction: true,
     joinsTransaction: true,
     async handler(context) {
@@ -229,6 +239,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'PATCH',
     pattern: record,
+    tags: ['update'],
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
@@ -247,6 +258,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'DELETE',
     pattern: record,
+    tags: ['delete'],
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
@@ -264,6 +276,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: /^\/batch$/,
+    tags: ['batch'],
     joinsTransaction: true,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
@@ -328,6 +341,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: /^\/realtime$/,
+    tags: ['realtime'],
     stream: true,
     async handler(context) {
       if (!context.realtime)
@@ -430,6 +444,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/upload-url$`),
+    tags: ['file'],
     async handler({ request, params, db, schema, principal, storage, logger }) {
       const collection = schema.get(params[0] as string);
       const input = await readJsonObject(request);
@@ -441,6 +456,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: /^\/files\/token$/,
+    tags: ['file'],
     async handler({ principal }) {
       if (!principal.record || !principal.collection) {
         throw new ApiError(401, 'Sign in to get a file token.');
@@ -453,6 +469,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'GET',
     pattern: new RegExp(`^/files/${segment}/${segment}/${segment}$`),
+    tags: ['file'],
     async handler(context) {
       const { request, params, db, schema, storage } = context;
       const { collection, field, key } = await findFile(db, schema, params);
@@ -482,6 +499,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-password$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -554,6 +572,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -575,6 +594,7 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(
       `^/collections/${segment}/auth-with-oauth2/${segment}$`,
     ),
+    tags: ['auth'],
     async handler({ request, params, db, schema, principal, origins, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
       if (collection.id === SUPERUSERS) {
@@ -616,6 +636,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'GET',
     pattern: new RegExp(`^/callback/${segment}$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
@@ -762,6 +783,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/sign-up$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -801,6 +823,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, schema, principal, db } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -1205,6 +1228,7 @@ function flow(
     {
       method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      tags: ['auth'],
       async handler(context) {
         const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
@@ -1236,6 +1260,7 @@ function phoneFlow(
     {
       method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      tags: ['auth'],
       async handler(context) {
         const { request, params, schema, principal } = context;
         const collection = authCollection(schema, params[0] as string);

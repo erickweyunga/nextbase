@@ -92,6 +92,7 @@ describe('migrate', () => {
       '0009_expiry_indexes',
       '0010_realtime',
       '0011_logs',
+      '0012_rate_limits',
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

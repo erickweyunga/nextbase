@@ -1,0 +1,5 @@
+---
+"@nextbasejs/core": patch
+---
+
+NextBase rate limits HTTP requests, on by default: sign-ins, sign-ups, refreshes and email and phone flows 2 every 3 seconds, record creates 20 every 5 seconds, batches 3 a second, and every other route 300 every 10 seconds. Signed-in callers are counted per account, guests per IP from `clientIp` (IPv6 by its /64); guests whose IP is unknown are not limited, with one warning per instance. Counts are fixed windows kept in an unlogged table, `nextbase._rate_limits`, one upsert per request before any transaction, so limits hold across instances and parallel requests cannot all pass. A refused request gets a 429 with `Retry-After`, `RateLimit-Policy` and `RateLimit` headers, and is logged at warn. The new `rateLimits` option replaces the rules, each a label (`users:auth`, `*:create`, `POST /batch`, `/path` or `/prefix/`), an optional audience, `max` and `window`, sets `excludedIps` (IPs or CIDR ranges), or turns limits off with `false`. Superusers, `nextbase.client()` requests, health checks and the admin page are never limited. The limit on failed sign-ins per account still applies.

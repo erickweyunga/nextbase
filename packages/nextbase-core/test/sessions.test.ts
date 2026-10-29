@@ -89,7 +89,9 @@ describe('sessions', () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    // Tests sign in to and refresh the same accounts many times a second,
+    // past the default `*:auth` limit; rate limits have their own tests.
+    nextbase = new NextBase({ database: t.pool, rateLimits: false });
     await nextbase.createSuperuser('admin@example.com', 'admin password!');
     admin = (
       await call(
@@ -950,7 +952,13 @@ describe('sessions', () => {
         },
       });
       return {
-        nextbase: new NextBase({ database: pool, logs: false }),
+        // Counts the session check's own queries, not the request's rate
+        // limit count.
+        nextbase: new NextBase({
+          database: pool,
+          logs: false,
+          rateLimits: false,
+        }),
         queries: () => {
           const n = count;
           count = 0;

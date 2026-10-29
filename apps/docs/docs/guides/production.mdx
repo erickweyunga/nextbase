@@ -148,8 +148,8 @@ serverless hosts, call `await nextbase.flush()` before ending a pool you
 passed in or before the process exits, so entries still waiting are not
 lost.
 
-To record client IPs with `logs: { ip: true }`, NextBase must know which
-header to trust. On Vercel it reads Vercel's own headers. Behind your own
+To record client IPs with `logs: { ip: true }`, and to rate limit guests,
+NextBase must know which header to trust. On Vercel it reads Vercel's own headers. Behind your own
 proxy or load balancer, set `clientIp: { header: "x-forwarded-for" }`, with
 `trustedHops` for each further proxy of yours. Without a header you control,
 any client could claim any IP, so NextBase records none.
@@ -172,9 +172,10 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 
 - Serve the app over HTTPS. In production the session cookie is
   `__Host-nextbase_session`, which browsers only accept as `Secure`.
-- Add IP rate limiting at your platform or proxy. NextBase limits failed
-  sign-ins per account (10 every 15 minutes), but cannot see trusted client IPs
-  itself.
+- Check that guests are [rate limited](/docs/guides/rate-limits). NextBase
+  limits every caller by default, but counts guests by IP, which it only
+  knows on Vercel or with `clientIp` set to the header your proxy sets.
+  Failed sign-ins are also limited per account (10 every 15 minutes).
 - Review every collection's rules. New collections default to superuser-only.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.

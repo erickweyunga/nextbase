@@ -149,14 +149,18 @@ describe('a recipe app on the SDK', () => {
   it('pages through everything and finds single records', async () => {
     const recipes = ben.collection<Recipe>('recipes');
     const author = ben.authStore.record?.id as string;
+    // One batch, as 25 creates one after another would pass the default
+    // rate limit of 20 every 5 seconds.
+    const batch = ben.createBatch();
     for (let i = 1; i <= 25; i++) {
-      await recipes.create({
+      batch.collection('recipes').create({
         title: `Quick dish ${i}`,
         author,
         servings: i,
         tags: i % 2 ? ['quick', 'vegan'] : ['quick'],
       });
     }
+    await batch.send();
     const all = await client()
       .collection<Recipe>('recipes')
       .getFullList({

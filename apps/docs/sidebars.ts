@@ -55,7 +55,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Production',
       className: 'sidebar-icon sidebar-icon-production',
-      items: ['guides/production', 'guides/logs'],
+      items: ['guides/production', 'guides/logs', 'guides/rate-limits'],
     },
     {
       type: 'category',

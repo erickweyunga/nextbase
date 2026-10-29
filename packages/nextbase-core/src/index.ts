@@ -45,6 +45,7 @@ import {
 } from './files/storage.ts';
 import { Logger, type LogsOptions } from './logs/logger.ts';
 import { type RequestOutcome, requestEntry } from './logs/request.ts';
+import { RateLimits, type RateLimitsOptions } from './rate-limits.ts';
 import { Realtime, type RealtimeOptions } from './realtime/stream.ts';
 import {
   Hooks,
@@ -109,6 +110,7 @@ export type { ClientIpOption } from './client-ip.ts';
 export { ApiError } from './errors.ts';
 export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
 export type { LogsOptions } from './logs/logger.ts';
+export type { RateLimitRule, RateLimitsOptions } from './rate-limits.ts';
 export type { RealtimeOptions } from './realtime/stream.ts';
 export type {
   BeforeCreateEvent,
@@ -200,11 +202,19 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    */
   logs?: false | LogsOptions;
   /**
-   * Where the client's IP comes from, for logs (with `logs.ip`). Defaults to
-   * `"vercel"` on Vercel; elsewhere the IP is unknown unless you name the
-   * header your proxy sets. Never used to decide who is signed in.
+   * Where the client's IP comes from, for logs (with `logs.ip`) and rate
+   * limits. Defaults to `"vercel"` on Vercel; elsewhere the IP is unknown
+   * unless you name the header your proxy sets. Never used to decide who is
+   * signed in.
    */
   clientIp?: ClientIpOption;
+  /**
+   * Limits HTTP requests per caller, counted in the database: signed-in
+   * callers per record, guests per IP from `clientIp`. On by default, with
+   * rules for sign-ins, creates, batches and every other route; `false`
+   * turns it off.
+   */
+  rateLimits?: false | RateLimitsOptions;
 }
 
 /**
@@ -261,6 +271,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #realtime: Realtime | undefined;
   readonly #logger: Logger;
   readonly #clientIp: ClientIp;
+  readonly #rateLimits: RateLimits | undefined;
   /** Work running after responses, such as after hooks and emails. */
   readonly #background = new Set<Promise<unknown>>();
   #db: DB | undefined;
@@ -296,6 +307,13 @@ export class NextBase<C extends Collections = Collections> {
       waitUntil: this.#waitUntil,
     });
     this.#clientIp = clientIpReader(options.clientIp);
+    this.#rateLimits =
+      options.rateLimits === false
+        ? undefined
+        : new RateLimits(options.rateLimits ?? {}, {
+            logger: this.#logger,
+            waitUntil: this.#waitUntil,
+          });
     this.#mailer = new Mailer(
       options.mail,
       appUrl,
@@ -671,6 +689,27 @@ export class NextBase<C extends Collections = Collections> {
     }
   }
 
+  /**
+   * The name of the collection a tagged route is about, for rate limits
+   * that name one. The schema may be the cached one, outdated by a rename
+   * at worst until the next request reads it.
+   */
+  async #routeCollection(
+    db: DB,
+    route: Route,
+    path: string,
+    params: readonly string[],
+    schema: Schema | undefined,
+  ): Promise<string | undefined> {
+    if (!this.#rateLimits?.byCollection || !route.tags) return undefined;
+    if (!/^\/(?:collections|files)\//.test(path)) return undefined;
+    const idOrName = params[0];
+    if (idOrName === undefined) return undefined;
+    const current =
+      schema ?? this.#schema.cached ?? (await this.#schema.get(db));
+    return current.find(idOrName)?.name;
+  }
+
   /** What every route gets from this instance. */
   #services() {
     return {
@@ -816,10 +855,29 @@ export class NextBase<C extends Collections = Collections> {
             if (http) setCookie = resolved.setCookie;
             signedOut = http && !caller.record;
           }
+          const params = match.slice(1).map((p) => decodeURIComponent(p));
+          // Once the caller is known, before any transaction, so a refused
+          // request holds no connection and stays counted. In-process
+          // requests come from the app itself.
+          if (http && this.#rateLimits) {
+            await this.#rateLimits.check(db, {
+              method: verb,
+              route,
+              tags: matched.tags ?? [],
+              collection: await this.#routeCollection(
+                db,
+                matched,
+                route,
+                params,
+                schema,
+              ),
+              principal: caller,
+              ip: this.#clientIp(request),
+            });
+          }
           // In-process requests come from the app itself, not from someone
           // setting it up.
           if (http) await this.#announceSetup(db);
-          const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.
           if (http && verb !== 'GET' && caller.viaCookie) {
