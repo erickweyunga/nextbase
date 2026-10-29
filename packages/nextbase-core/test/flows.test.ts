@@ -59,7 +59,11 @@ describe("email verification, password reset and email change", () => {
       viewRule: "id = @request.auth.id",
     });
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("lists how a collection signs in", async () => {
     expect(

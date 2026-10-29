@@ -17,7 +17,13 @@ export interface LogsOptions {
 }
 
 /** What a background failure was doing. */
-export type FailureType = "hook" | "storage" | "mail" | "sms" | "realtime";
+export type FailureType =
+  | "hook"
+  | "storage"
+  | "mail"
+  | "sms"
+  | "realtime"
+  | "oauth2";
 
 /**
  * How often each instance deletes expired entries, in milliseconds. Tests
@@ -28,12 +34,12 @@ export const logTimings = { purgeMs: 600_000 };
 const LOGS = table("_logs");
 // Rows per insert: a flush of more is split.
 const BATCH = 200;
-// Entries waiting to be written at most; more are dropped.
-const MAX_PENDING = 1000;
+// Entries waiting to be sent at most; more are dropped.
+const MAX_BUFFERED = 1000;
 // Expired rows each delete removes, so no delete holds locks for long.
 const PURGE_BATCH = 10_000;
-const MAX_ERROR = 2000;
-const MAX_STACK = 8000;
+const MAX_ERROR = 1000;
+const MAX_STACK = 4000;
 
 interface Config {
   maxDays: number;
@@ -54,19 +60,26 @@ interface Entry {
  * Writes log entries to `_logs`, outside any transaction, so a request's own
  * writes never decide whether its entry is kept. Entries are buffered and
  * written together on the next tick, so a burst of requests costs one
- * insert. Writing never fails a request: errors only go to the console.
+ * insert, and one insert at most runs at a time per instance, so logging
+ * never takes more than one connection. Writing never fails a request:
+ * errors only go to the console.
  */
 export class Logger {
   readonly #config: Config | undefined;
   readonly #db: () => DB;
   readonly #ready: () => Promise<void>;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  /** Entries not sent yet. */
   #buffer: Entry[] = [];
-  #scheduled = false;
-  /** Entries buffered or being written. */
-  #pending = 0;
+  /** The next tick, when a write is due to start. */
+  #tick: Promise<void> | undefined;
+  /** The write running: inserts, one after another, until the buffer is empty. */
+  #writing: Promise<void> | undefined;
+  #purging: Promise<void> | undefined;
   #dropping = false;
   #purgedAt = Number.NEGATIVE_INFINITY;
+  /** Microseconds of the last entry, so times never go backwards. */
+  #lastMicros = 0;
 
   constructor(
     options: false | LogsOptions | undefined,
@@ -100,34 +113,24 @@ export class Logger {
   /** Buffers an entry, if logs are on and its level is kept. */
   add(level: number, message: string, data: Record<string, unknown>): void {
     if (!this.keeps(level)) return;
-    if (this.#pending >= MAX_PENDING) {
+    if (this.#buffer.length >= MAX_BUFFERED) {
       if (!this.#dropping) {
         this.#dropping = true;
         console.warn(
-          `[nextbase] more than ${MAX_PENDING} log entries are waiting to be written; new ones are dropped until they are.`,
+          `[nextbase] ${MAX_BUFFERED} log entries are waiting to be written; new ones are dropped until they are.`,
         );
       }
       return;
     }
-    this.#pending++;
     this.#buffer.push({
       id: newId(),
-      created: now(),
+      created: this.#now(),
       level,
       message: storableText(message),
       data: storable(data) as Record<string, unknown>,
     });
-    if (this.#buffer.length >= BATCH) {
-      this.#waitUntil(this.#write(this.#buffer.splice(0)));
-    } else if (!this.#scheduled) {
-      this.#scheduled = true;
-      this.#waitUntil(
-        new Promise((resolve) => setImmediate(resolve)).then(() => {
-          this.#scheduled = false;
-          return this.#write(this.#buffer.splice(0));
-        }),
-      );
-    }
+    if (this.#buffer.length >= BATCH) this.#write();
+    else this.#schedule();
   }
 
   /**
@@ -146,20 +149,57 @@ export class Logger {
     });
   }
 
-  async #write(rows: Entry[]): Promise<void> {
-    if (rows.length === 0) return;
-    try {
-      await this.#ready();
-      const db = this.#db();
-      for (let i = 0; i < rows.length; i += BATCH) {
-        await insertEntries(db, rows.slice(i, i + BATCH));
+  /**
+   * Resolves once every entry added so far is written, or failed to be, and
+   * a running delete of expired entries is done. Never rejects.
+   */
+  async flush(): Promise<void> {
+    for (;;) {
+      if (this.#buffer.length > 0) this.#write();
+      const work = [this.#tick, this.#writing, this.#purging].filter(
+        (p) => p !== undefined,
+      );
+      if (work.length === 0) return;
+      await Promise.all(work);
+    }
+  }
+
+  /** Starts a write on the next tick, so entries added meanwhile join it. */
+  #schedule(): void {
+    if (this.#tick || this.#writing) return;
+    this.#tick = new Promise<void>((resolve) => setImmediate(resolve)).then(
+      () => {
+        this.#tick = undefined;
+        this.#write();
+        return this.#writing;
+      },
+    );
+    this.#waitUntil(this.#tick);
+  }
+
+  /** Starts writing the buffer, unless a write already runs: it takes them. */
+  #write(): void {
+    if (this.#writing || this.#buffer.length === 0) return;
+    this.#writing = this.#drain().finally(() => {
+      this.#writing = undefined;
+      // Added after the last insert took the buffer.
+      if (this.#buffer.length > 0) this.#schedule();
+    });
+    this.#waitUntil(this.#writing);
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#buffer.length > 0) {
+      const rows = this.#buffer.splice(0, BATCH);
+      if (this.#buffer.length === 0) this.#dropping = false;
+      try {
+        await this.#ready();
+        const db = this.#db();
+        await insertEntries(db, rows);
+        this.#purge(db);
+      } catch (error) {
+        console.error("[nextbase] writing log entries failed:", error);
       }
-      this.#purge(db);
-    } catch (error) {
-      console.error("[nextbase] writing log entries failed:", error);
-    } finally {
-      this.#pending -= rows.length;
-      if (this.#pending === 0) this.#dropping = false;
     }
   }
 
@@ -167,13 +207,32 @@ export class Logger {
   #purge(db: DB): void {
     const config = this.#config;
     const now = Date.now();
-    if (!config || now - this.#purgedAt < logTimings.purgeMs) return;
+    if (!config || this.#purging || now - this.#purgedAt < logTimings.purgeMs) {
+      return;
+    }
     this.#purgedAt = now;
-    this.#waitUntil(
-      purgeLogs(db, config.maxDays).catch((error: unknown) => {
+    this.#purging = purgeLogs(db, config.maxDays)
+      .catch((error: unknown) => {
         console.error("[nextbase] deleting expired log entries failed:", error);
-      }),
-    );
+      })
+      .finally(() => {
+        this.#purging = undefined;
+      });
+    this.#waitUntil(this.#purging);
+  }
+
+  /**
+   * The wall time in microseconds, as timestamptz keeps it: at least a
+   * microsecond after the last entry's, so entries of one instance sort in
+   * the order they were added.
+   */
+  #now(): string {
+    const micros = Math.max(this.#lastMicros + 1, Date.now() * 1000);
+    this.#lastMicros = micros;
+    const fraction = String(micros % 1000).padStart(3, "0");
+    return new Date(Math.floor(micros / 1000))
+      .toISOString()
+      .replace("Z", `${fraction}Z`);
   }
 }
 
@@ -242,16 +301,6 @@ export function errorMessage(error: unknown): string {
   } catch {
     return "Unknown error";
   }
-}
-
-/**
- * The time in microseconds, as timestamptz keeps it, so entries of one
- * instance sort in the order they were added.
- */
-function now(): string {
-  const ms = performance.timeOrigin + performance.now();
-  const micros = String(Math.floor((ms % 1) * 1000)).padStart(3, "0");
-  return new Date(Math.floor(ms)).toISOString().replace("Z", `${micros}Z`);
 }
 
 function capitalize(text: string): string {

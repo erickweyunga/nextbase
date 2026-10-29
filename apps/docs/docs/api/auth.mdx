@@ -258,6 +258,8 @@ or, when it fails, to its `errorRedirect` with `?error=` (see
 GET /callback/{provider}
 ```
 
+A provider that is not set up answers `404`, with no redirect.
+
 ## List linked accounts
 
 The OAuth2 providers linked to a record. Only the record itself and

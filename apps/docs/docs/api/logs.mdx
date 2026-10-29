@@ -161,4 +161,5 @@ curl -X DELETE https://app.example/api/nextbase/logs \
 DELETE /logs
 ```
 
-Answers `204` once the log is empty.
+Answers `204` once the log is empty. The request is then logged itself, so
+the log shows when it was emptied.

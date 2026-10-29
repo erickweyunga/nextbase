@@ -97,7 +97,11 @@ describe("round trips per request", () => {
     token = signIn.body.token as string;
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   /**
    * A second NextBase, like another server process. Its first request is

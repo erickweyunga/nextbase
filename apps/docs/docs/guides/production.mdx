@@ -143,7 +143,10 @@ NextBase keeps a [log](/docs/guides/logs) of HTTP requests and background
 failures in `nextbase._logs`, for 7 days by default. Each instance writes its
 entries in the background, a burst at a time, and deletes expired ones about
 every 10 minutes. On a busy app, keep `maxDays` short or raise `minLevel` to
-`4` to keep only warnings and errors, so the table stays small.
+`4` to keep only warnings and errors, so the table stays small. Outside
+serverless hosts, call `await nextbase.flush()` before ending a pool you
+passed in or before the process exits, so entries still waiting are not
+lost.
 
 To record client IPs with `logs: { ip: true }`, NextBase must know which
 header to trust. On Vercel it reads Vercel's own headers. Behind your own

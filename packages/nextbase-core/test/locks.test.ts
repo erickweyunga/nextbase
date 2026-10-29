@@ -11,7 +11,11 @@ beforeAll(async () => {
   nextbase = new NextBase({ database: t.pool });
 });
 
-afterAll(() => t.close());
+afterAll(async () => {
+  // Log entries still waiting would be written to an ended pool.
+  await nextbase.flush();
+  await t.close();
+});
 
 it("updates a record while another request creates a record that references it", async () => {
   const admin = nextbase.client({ superuser: true });

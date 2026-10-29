@@ -131,7 +131,10 @@ export async function logStats(
   }));
 }
 
-/** Deletes every entry. */
+/**
+ * Deletes every entry. Not TRUNCATE: its exclusive lock would hold up every
+ * instance's log writes behind any open read of the table.
+ */
 export async function deleteLogs(db: DB): Promise<void> {
-  await db.newQuery(`TRUNCATE {{${table(LOGS)}}}`).execute();
+  await db.newQuery(`DELETE FROM {{${table(LOGS)}}}`).execute();
 }

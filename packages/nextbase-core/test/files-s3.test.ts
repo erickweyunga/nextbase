@@ -56,6 +56,7 @@ describe("file uploads to an S3-compatible bucket", () => {
     });
   });
   afterAll(async () => {
+    await nextbase.flush();
     await t.close();
     await s3.stop();
   });

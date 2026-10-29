@@ -92,14 +92,29 @@ function fromHeader(
   return entry === undefined ? undefined : normalizeIp(entry);
 }
 
-const MAPPED_V4 = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
+// `[2001:db8::1]` or `[2001:db8::1]:443`, and `203.0.113.9:5678`.
+const BRACKETED = /^\[([^\]]+)\](?::\d{1,5})?$/;
+const V4_WITH_PORT = /^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/;
+// The canonical form of an IPv4-mapped IPv6 address, in hex.
+const MAPPED_V4 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
 
-/** A valid IP, with an IPv4-mapped IPv6 address as plain IPv4; else undefined. */
+/**
+ * A valid IP, or undefined: without a port or zone id, IPv6 compressed and
+ * lowercase, and an IPv4-mapped IPv6 address as plain IPv4, so one client
+ * always reads the same.
+ */
 function normalizeIp(value: string): string | undefined {
-  const mapped = MAPPED_V4.exec(value)?.[1];
-  const ip = mapped ?? value;
+  let ip = BRACKETED.exec(value)?.[1] ?? V4_WITH_PORT.exec(value)?.[1] ?? value;
+  const zone = ip.indexOf("%");
+  if (zone !== -1) ip = ip.slice(0, zone);
   const version = isIP(ip);
   if (version === 4) return ip;
-  if (version === 6) return ip.toLowerCase();
-  return undefined;
+  if (version !== 6) return undefined;
+  // The URL parser writes IPv6 in its canonical form, RFC 5952.
+  const canonical = new URL(`http://[${ip}]`).hostname.slice(1, -1);
+  const mapped = MAPPED_V4.exec(canonical);
+  if (!mapped) return canonical;
+  const high = Number.parseInt(mapped[1] as string, 16);
+  const low = Number.parseInt(mapped[2] as string, 16);
+  return [high >> 8, high & 255, low >> 8, low & 255].join(".");
 }

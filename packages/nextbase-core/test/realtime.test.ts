@@ -400,6 +400,7 @@ describe("realtime", () => {
     await waitFor(async () => (await listeners(t)) === 0, "listeners to stop");
     await flush();
     Object.assign(timings, defaults);
+    await nextbase.flush();
     await t.close();
   });
 
@@ -1523,6 +1524,7 @@ describe("realtime client", () => {
   afterAll(async () => {
     await waitFor(async () => (await listeners(t)) === 0, "listeners to stop");
     Object.assign(timings, defaults);
+    await nextbase.flush();
     await t.close();
   });
 

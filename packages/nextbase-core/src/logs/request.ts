@@ -13,6 +13,11 @@ export interface RequestOutcome {
   failure?: ApiError | undefined;
   /** What was thrown, when it was not an ApiError and the response is a 500. */
   unexpected?: unknown;
+  /**
+   * An error a route answered without an error status, such as the code of
+   * an OAuth2 sign-in that failed and redirected back to the app.
+   */
+  noted?: string | undefined;
   authId: boolean;
   /** Undefined when the IP is unknown or not recorded. */
   ip?: string | undefined;
@@ -20,11 +25,11 @@ export interface RequestOutcome {
 
 // Query parameters that carry secrets: file tokens and OAuth2's code and state.
 const SECRET_PARAMS: ReadonlySet<string> = new Set(["token", "code", "state"]);
-const MAX_URL = 3000;
-const MAX_USER_AGENT = 2000;
-const MAX_REFERER = 2000;
-const MAX_ERROR = 2000;
-const MAX_STACK = 8000;
+const MAX_URL = 1000;
+const MAX_USER_AGENT = 512;
+const MAX_REFERER = 512;
+const MAX_ERROR = 1000;
+const MAX_STACK = 4000;
 // About what one entry's data may take; details, then the stack, go first.
 const MAX_DATA = 16 * 1024;
 
@@ -44,7 +49,7 @@ export function requestEntry(
   outcome: RequestOutcome,
 ): { level: number; message: string; data: Record<string, unknown> } {
   const url = new URL(request.url);
-  const { status, principal, failure, unexpected } = outcome;
+  const { status, principal, failure, unexpected, noted } = outcome;
   const data: Record<string, unknown> = {
     type: "request",
     method: request.method,
@@ -71,13 +76,18 @@ export function requestEntry(
   } else if (failure) {
     data.error = failure.message.slice(0, MAX_ERROR);
     if (Object.keys(failure.data).length > 0) data.details = failure.data;
+  } else if (noted !== undefined) {
+    data.error = noted.slice(0, MAX_ERROR);
   }
   for (const key of ["details", "stack"]) {
     if (JSON.stringify(data).length <= MAX_DATA) break;
     delete data[key];
   }
   return {
-    level: statusLevel(status),
+    level:
+      noted === undefined
+        ? statusLevel(status)
+        : Math.max(statusLevel(status), LOG_LEVELS.warn),
     message: `${request.method} ${url.pathname}`.slice(0, MAX_URL),
     data,
   };

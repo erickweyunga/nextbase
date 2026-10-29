@@ -258,6 +258,7 @@ describe("record hooks", () => {
     vi.restoreAllMocks();
   });
   afterAll(async () => {
+    await nextbase.flush();
     await t.close();
     await rm(dir, { recursive: true, force: true });
   });

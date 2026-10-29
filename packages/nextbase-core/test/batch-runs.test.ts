@@ -184,7 +184,11 @@ describe("batches of creates", () => {
     );
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("creates 50 records with a few queries, not a few per record", async () => {
     // Warms the schema and the setup check, which are read once per process.

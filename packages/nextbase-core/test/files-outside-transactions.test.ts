@@ -51,6 +51,7 @@ describe("files are stored before the write's transaction", () => {
   });
 
   afterAll(async () => {
+    await nextbase.flush();
     await t.close();
     await s3.stop();
   });

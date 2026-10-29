@@ -102,7 +102,11 @@ describe("view collections", () => {
       }
     }
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("lists, filters, sorts and views rows of a query, with fields derived from its columns", async () => {
     const stats = await view(

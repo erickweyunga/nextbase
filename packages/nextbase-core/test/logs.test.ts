@@ -56,15 +56,21 @@ function watched(
 describe("logs", () => {
   let t: TestDatabase;
   const pending: Promise<unknown>[] = [];
+  const instances: NextBase[] = [];
+  /** Waits for background work, such as after hooks, then the logs' writes. */
   const settle = async (): Promise<void> => {
     while (pending.length > 0) await Promise.all(pending.splice(0));
+    await Promise.all(instances.map((i) => i.flush()));
   };
-  const instance = (options: NextBaseOptions = {}): NextBase =>
-    new NextBase({
+  const instance = (options: NextBaseOptions = {}): NextBase => {
+    const created = new NextBase({
       database: t.pool,
       waitUntil: (promise) => pending.push(promise),
       ...options,
     });
+    instances.push(created);
+    return created;
+  };
   let nextbase: NextBase;
   let admin = "";
   let user = "";
@@ -167,10 +173,12 @@ describe("logs", () => {
       expect(entry?.data).not.toHaveProperty("error");
     });
 
-    it("logs signed-out callers, superusers and paths outside the API", async () => {
+    it("logs signed-out callers and superusers, but not paths outside the API", async () => {
       await call(nextbase, "GET", "/collections/posts/records");
       await call(nextbase, "GET", "/collections", { token: admin });
-      await nextbase.handle(new Request(`${origin}/elsewhere`));
+      const outside = await nextbase.handle(new Request(`${origin}/elsewhere`));
+      expect(outside.status).toBe(404);
+      await call(nextbase, "GET", "/collections/missing/records");
       const entries = await requests();
       expect(entries.map((e) => [e.data.auth, e.data.status, e.level])).toEqual(
         [
@@ -179,22 +187,26 @@ describe("logs", () => {
           ["", 404, 4],
         ],
       );
-      expect(entries[2]?.message).toBe("GET /elsewhere");
+      expect(entries[2]?.message).toBe(
+        "GET /api/nextbase/collections/missing/records",
+      );
     });
 
     it("redacts tokens, codes and states in the query", async () => {
-      await call(
+      const file = await call(
         nextbase,
         "GET",
         "/files/posts/abc/photo.png?token=FILE-SECRET&download=1&Token=X2",
       );
-      await call(
+      expect(file.status).toBe(404);
+      const back = await call(
         nextbase,
         "GET",
         "/callback/google?code=CODE-SECRET&state=STATE-SECRET&scope=email%20profile",
       );
-      const [file, callback] = await requests();
-      expect(file?.data.url).toBe(
+      expect(back.status).toBe(404);
+      const [fileEntry, callback] = await requests();
+      expect(fileEntry?.data.url).toBe(
         "/api/nextbase/files/posts/abc/photo.png?token=REDACTED&download=1&Token=REDACTED",
       );
       expect(callback?.data.url).toBe(
@@ -249,8 +261,8 @@ describe("logs", () => {
         },
       );
       const [entry] = await requests();
-      expect(String(entry?.data.url).length).toBe(3000);
-      expect(String(entry?.data.userAgent).length).toBe(2000);
+      expect(String(entry?.data.url).length).toBe(1000);
+      expect(String(entry?.data.userAgent).length).toBe(512);
     });
 
     it("records an ApiError's message and details at warn, with no stack", async () => {
@@ -390,9 +402,70 @@ describe("logs", () => {
       });
       const reply = await call(broken, "GET", "/collections/posts/records");
       expect(reply.status).toBe(200);
+      await broken.flush();
       expect(await rows()).toEqual([]);
       expect(error).toHaveBeenCalledWith(
         "[nextbase] writing log entries failed:",
+        expect.objectContaining({ message: "log table down" }),
+      );
+    });
+  });
+
+  describe("OAuth2 callbacks", () => {
+    const signingIn = (database: pg.Pool = t.pool): NextBase => {
+      const created = new NextBase({
+        database,
+        appUrl: "https://app.example",
+        oauth2: { github: { clientId: "client", clientSecret: "secret" } },
+        waitUntil: (promise) => pending.push(promise),
+      });
+      instances.push(created);
+      return created;
+    };
+
+    it("answer 404 for a provider that is not set up, without a redirect", async () => {
+      for (const app of [nextbase, signingIn()]) {
+        const reply = await call(app, "GET", "/callback/google?state=x");
+        expect(reply).toMatchObject({
+          status: 404,
+          body: { message: "OAuth2 provider not found." },
+        });
+      }
+    });
+
+    it("log a failed sign-in at warn, with its code", async () => {
+      const response = await signingIn().handle(
+        new Request(`${origin}/api/nextbase/callback/github?state=lost`),
+      );
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(
+        "https://app.example/?error=oauth2_failed",
+      );
+      expect(await requests()).toMatchObject([
+        { level: 4, data: { status: 302, error: "oauth2_failed" } },
+      ]);
+    });
+
+    it("log what broke a sign-in unexpectedly as a failure too", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { pool } = watched(t.pool, (sql) => sql.includes("_oauth2_states"));
+      const response = await signingIn(pool).handle(
+        new Request(`${origin}/api/nextbase/callback/github?state=abc`, {
+          headers: { cookie: "nextbase_oauth2=abc" },
+        }),
+      );
+      expect(response.status).toBe(302);
+      const entries = await rows();
+      expect(entries).toMatchObject([
+        {
+          level: 8,
+          message: "An OAuth2 sign-in failed",
+          data: { type: "oauth2", error: "log table down" },
+        },
+        { level: 4, data: { status: 302, error: "oauth2_failed" } },
+      ]);
+      expect(error).toHaveBeenCalledWith(
+        "[nextbase] an OAuth2 sign-in failed:",
         expect.objectContaining({ message: "log table down" }),
       );
     });
@@ -512,16 +585,106 @@ describe("logs", () => {
       expect((await rows()).length).toBe(450);
     });
 
-    it("drops entries past 1000 waiting, with one warning", async () => {
+    it("drops entries past 1000 waiting to be sent, with one warning", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const log = logger(t.pool);
       for (let i = 0; i < 1500; i++) log.add(0, "entry", {});
-      await settle();
-      expect((await rows()).length).toBe(1000);
+      await log.flush();
+      // The first 200 were sent at once, so only 1000 more could wait.
+      expect((await rows()).length).toBe(1200);
       expect(warn).toHaveBeenCalledTimes(1);
-      // Once written, new entries are kept again.
+      // Once sent, new entries are kept again.
       log.add(0, "after", {});
-      expect((await rows()).length).toBe(1001);
+      expect((await rows()).length).toBe(1201);
+    });
+
+    it("runs one insert at a time, and keeps entries added while it runs", async () => {
+      let running = 0;
+      let most = 0;
+      let release: () => void = () => {};
+      const slow = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const db = new DB(t.pool, { types: TYPES });
+      const log = new Logger(
+        {},
+        {
+          db: () =>
+            new Proxy(db, {
+              get(target, prop) {
+                if (prop !== "newQuery")
+                  return Reflect.get(target, prop, target);
+                return (sql: string) => {
+                  const query = target.newQuery(sql);
+                  if (!sql.startsWith("INSERT")) return query;
+                  const execute = query.execute.bind(query);
+                  query.execute = async () => {
+                    running++;
+                    most = Math.max(most, running);
+                    await slow;
+                    try {
+                      return await execute();
+                    } finally {
+                      running--;
+                    }
+                  };
+                  return query;
+                };
+              },
+            }),
+          ready: async () => {},
+          waitUntil: () => {},
+        },
+      );
+      for (let i = 0; i < 900; i++) log.add(0, "entry", {});
+      await new Promise((resolve) => setImmediate(resolve));
+      // 200 are being sent and 700 wait: 300 more still fit, since only
+      // unsent entries count.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      for (let i = 0; i < 300; i++) log.add(0, "later", {});
+      expect(warn).not.toHaveBeenCalled();
+      release();
+      await log.flush();
+      expect(most).toBe(1);
+      expect((await rows()).length).toBe(1200);
+    });
+
+    it("are all written by flush, without waitUntil", async () => {
+      const plain = new NextBase({ database: t.pool, waitUntil: () => {} });
+      await call(plain, "GET", "/collections/posts/records");
+      await plain.flush();
+      const { rows: written } = await t.pool.query(
+        "SELECT message FROM nextbase._logs",
+      );
+      expect(written).toEqual([
+        { message: "GET /api/nextbase/collections/posts/records" },
+      ]);
+      // Nothing waits, so it resolves at once.
+      await plain.flush();
+    });
+
+    it("time entries by the wall clock, never going backwards", async () => {
+      const log = logger(t.pool);
+      const start = Date.now();
+      let clock = start;
+      vi.spyOn(Date, "now").mockImplementation(() => clock);
+      log.add(0, "first", {});
+      clock = start - 60_000;
+      log.add(0, "second", {});
+      log.add(0, "third", {});
+      vi.mocked(Date.now).mockRestore();
+      await log.flush();
+      const { rows: times } = await t.pool.query<{
+        message: string;
+        micros: string;
+      }>(
+        "SELECT message, (extract(epoch FROM created) * 1000000)::bigint::text AS micros FROM nextbase._logs ORDER BY created",
+      );
+      expect(times.map((r) => r.message)).toEqual(["first", "second", "third"]);
+      const [a, b, c] = times.map((r) => BigInt(r.micros));
+      expect(a).toBe(BigInt(start) * 1000n);
+      expect(b).toBe((a as bigint) + 1n);
+      expect(c).toBe((a as bigint) + 2n);
     });
 
     it("stores text Postgres would refuse, instead of failing the insert", async () => {
@@ -723,12 +886,35 @@ describe("logs", () => {
       expect(bad.status).toBe(400);
     });
 
-    it("delete every entry", async () => {
+    it("delete every entry, and log that they did", async () => {
       expect(
         (await call(nextbase, "DELETE", "/logs", { token: admin })).status,
       ).toBe(204);
-      await settle();
-      expect(await rows()).toEqual([]);
+      expect(await rows()).toMatchObject([
+        {
+          message: "DELETE /api/nextbase/logs",
+          data: { status: 204, auth: "_superusers" },
+        },
+      ]);
+    });
+
+    it("delete without waiting for readers of the log", async () => {
+      // TRUNCATE would wait for this transaction's lock to go.
+      const reader = await t.pool.connect();
+      try {
+        await reader.query("BEGIN");
+        await reader.query("SELECT count(*) FROM nextbase._logs");
+        const reply = await Promise.race([
+          call(nextbase, "DELETE", "/logs", { token: admin }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("the delete waited")), 5_000),
+          ),
+        ]);
+        expect(reply.status).toBe(204);
+      } finally {
+        await reader.query("ROLLBACK");
+        reader.release();
+      }
     });
 
     it("are not in the schema or the records API", async () => {
@@ -794,12 +980,30 @@ describe("clientIp", () => {
     const read = (value: string) =>
       clientIpReader({ header: "x-ip" })(request([["x-ip", value]]));
     expect(read("unknown")).toBeUndefined();
-    expect(read("1.2.3.4:80")).toBeUndefined();
+    expect(read("1.2.3.4:")).toBeUndefined();
+    expect(read("[1.2.3.4]:80x")).toBeUndefined();
     expect(read("999.1.1.1")).toBeUndefined();
     expect(read("1.1.1.1, ")).toBe("1.1.1.1");
     expect(read("::ffff:10.0.0.1")).toBe("10.0.0.1");
     expect(read("::FFFF:10.0.0.1")).toBe("10.0.0.1");
     expect(read("2001:DB8::1")).toBe("2001:db8::1");
+    expect(read("2001:0db8:0000:0000:0000:0000:0000:0001")).toBe("2001:db8::1");
+  });
+
+  it("drops ports and zone ids, and unwraps every IPv4-mapped form", () => {
+    const read = (value: string) =>
+      clientIpReader({ header: "x-ip" })(request([["x-ip", value]]));
+    expect(read("1.2.3.4:5678")).toBe("1.2.3.4");
+    expect(read("[2001:db8::1]:443")).toBe("2001:db8::1");
+    expect(read("[2001:DB8:0::1]")).toBe("2001:db8::1");
+    expect(read("fe80::1%eth0")).toBe("fe80::1");
+    expect(read("[fe80::1%25eth0]:80")).toBe("fe80::1");
+    expect(read("0:0:0:0:0:ffff:1.2.3.4")).toBe("1.2.3.4");
+    expect(read("::ffff:c000:280")).toBe("192.0.2.128");
+    expect(read("[::ffff:1.2.3.4]:443")).toBe("1.2.3.4");
+    // Not mapped: kept as IPv6.
+    expect(read("::1")).toBe("::1");
+    expect(read("64:ff9b::1.2.3.4")).toBe("64:ff9b::102:304");
     expect(clientIpReader({ header: "x-ip" })(request([]))).toBeUndefined();
   });
 

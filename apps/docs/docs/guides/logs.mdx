@@ -47,24 +47,28 @@ as `GET /api/nextbase/collections/posts/records`, and its `data`:
 | ----- | ----------- |
 | `type` | `"request"`. |
 | `method` | The HTTP method. |
-| `url` | Path and query, at most 3000 characters. The values of `token`, `code` and `state` read `REDACTED`. |
+| `url` | Path and query, at most 1000 characters. The values of `token`, `code` and `state` read `REDACTED`. |
 | `status` | The response's status. |
 | `execTime` | Milliseconds to the response. For a realtime stream, until it opened. |
 | `auth` | The caller's collection, such as `users` or `_superusers`, or `""` when signed out. |
 | `authId` | With `authId: true`, the caller's record id. |
 | `ip` | With `ip: true`, the client's IP, when NextBase knows it. |
-| `userAgent` | At most 2000 characters. |
-| `referer` | The referring page's origin and path, without its query. |
-| `error` | The error's message, when the request failed. For a 500, what was actually thrown. |
+| `userAgent` | At most 512 characters. |
+| `referer` | The referring page's origin and path, without its query, at most 512 characters. |
+| `error` | The error's message, when the request failed, at most 1000 characters. For a 500, what was actually thrown. For an OAuth2 sign-in that failed and redirected back to the app, its error code, such as `oauth2_failed`, at warn. |
 | `details` | The field errors of a failed request. |
-| `stack` | The stack of what was thrown, for unexpected errors only. |
+| `stack` | The stack of what was thrown, for unexpected errors only, at most 4000 characters. |
 
 An entry never holds the request's body, its cookies or its `Authorization`
 header, nor the `detail` of Postgres errors, which can quote stored values.
+Other query parameters are kept as sent, though: a list's `filter`, such as
+`email = "robin@example.com"`, can hold emails or other personal data your
+app puts in its URLs.
 
 Not logged: successful health checks, the admin page, successful reads of the
-logs themselves, and requests from `nextbase.client()` in your own server
-code, including those of hooks.
+logs themselves, requests to paths outside `basePath`, and requests from
+`nextbase.client()` in your own server code, including those of hooks.
+Deleting the logs is logged, so the log shows when it was emptied.
 
 ## Background failures
 
@@ -78,6 +82,7 @@ when it fails, with `data.type` saying what it was:
 | `mail` | Sending an email. |
 | `sms` | Sending a text. |
 | `realtime` | Deleting old realtime events. |
+| `oauth2` | An OAuth2 sign-in that failed unexpectedly, besides its request's entry. |
 
 `data.error` and `data.stack` say what went wrong. These still go to the
 server console too, as before.
@@ -123,11 +128,26 @@ plain IPv4. The IP is never used to decide who is signed in.
 ## Writing and retention
 
 Entries are written in the background, outside the request's transaction:
-those of one instance are buffered and written together, one insert per
-burst of up to 200, so logging adds no round trip to a request. Writing never
-fails a request; if it fails, the console says so. An instance holds at most
-1000 entries waiting to be written and drops more, with one warning, until
-they are.
+those of one instance are buffered and written together, up to 200 per
+insert, so logging adds no round trip to a request. Each instance runs one
+insert at a time, so logging never takes more than one connection of the
+pool. Writing never fails a request; if it fails, the console says so. An
+instance holds at most 1000 entries waiting to be sent and drops more, with
+one warning, until they are.
+
+Entries are sent on the next tick, and `waitUntil` keeps a serverless
+function alive until they are. Elsewhere, call `nextbase.flush()` before
+ending a pool you passed in, or before the process exits, so the entries
+still waiting are written:
+
+```ts
+process.on("SIGTERM", async () => {
+  await nextbase.flush();
+  process.exit(0);
+});
+```
+
+`flush()` never rejects.
 
 About every 10 minutes, each instance deletes the entries older than
 `maxDays`, in batches. `DELETE /logs` deletes them all at once.

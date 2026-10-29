@@ -355,6 +355,15 @@ export class NextBase<C extends Collections = Collections> {
     return this.#migrated;
   }
 
+  /**
+   * Writes the log entries still waiting, and waits for a delete of expired
+   * ones that is running. Call it before ending a pool you passed in, or
+   * before the process exits, so no entry is lost. Never rejects.
+   */
+  flush(): Promise<void> {
+    return this.#logger.flush();
+  }
+
   // Lazy: `next build` evaluates route modules without a database.
   #connection(): DB {
     if (this.#db) return this.#db;
@@ -615,15 +624,17 @@ export class NextBase<C extends Collections = Collections> {
   ): void {
     const config = this.#logger.config;
     if (!config) return;
-    if (status < 400 && trace.route !== undefined && quietRoute(trace.route)) {
-      return;
-    }
+    // Requests outside basePath are not NextBase's: anyone could fill the
+    // log with them.
+    if (trace.route === undefined) return;
+    if (status < 400 && quietRoute(request.method, trace.route)) return;
     const outcome: RequestOutcome = {
       status,
       execTime: Math.round((performance.now() - started) * 100) / 100,
       principal: trace.principal,
       failure: trace.failure,
       unexpected: trace.unexpected,
+      noted: trace.noted,
       authId: config.authId,
       ip: config.ip ? this.#clientIp(request) : undefined,
     };
@@ -696,6 +707,7 @@ export class NextBase<C extends Collections = Collections> {
           tx,
           effects,
           hookChain: join.chain,
+          noteError: () => {},
         }),
       );
       join.effects.absorb(effects);
@@ -816,6 +828,9 @@ export class NextBase<C extends Collections = Collections> {
             ...(tx && { tx }),
             effects,
             hookChain: chain,
+            noteError: (error) => {
+              trace.noted = error;
+            },
           });
           await tx?.commit();
           effects.commit();
@@ -890,10 +905,16 @@ interface Trace {
   principal?: Principal;
   failure?: ApiError;
   unexpected?: unknown;
+  /** An error the route answered without an error status. */
+  noted?: string;
 }
 
-/** Routes whose successful requests are not logged. */
-function quietRoute(route: string): boolean {
+/**
+ * Reads whose successful requests are not logged. Deleting the logs is
+ * logged, so the log shows it was emptied.
+ */
+function quietRoute(method: string, route: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return false;
   return (
     route === "/health" ||
     route === "/_" ||

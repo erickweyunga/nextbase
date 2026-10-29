@@ -102,7 +102,11 @@ describe("records API", () => {
     tokens.bob = (await login("users", "bob@example.com", "password-of-bob"))
       .body.token as string;
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   describe("create", () => {
     it("checks the create rule against the submitted record", async () => {

@@ -82,7 +82,11 @@ describe("changing a password", () => {
     tokens.eve = await signIn(nextbase, "editors", "eve@example.com");
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("does not hold a connection while checking the old password", async () => {
     // With two connections, four changes at once would each hold one and wait

@@ -129,6 +129,11 @@ interface Context {
   /** For a request sent through `e.nextbase`: the on hooks that led to it. */
   hookChain: readonly string[];
   logger: Logger;
+  /**
+   * Records an error on the request's log entry when the response does not
+   * have an error status, such as a failed OAuth2 sign-in's redirect.
+   */
+  noteError(error: string): void;
 }
 
 export interface Route {
@@ -614,6 +619,8 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
+      // Unknown, or OAuth2 is not set up: there is no app URL to return to.
+      oauth2.provider(params[0] as string);
       let redirect = "";
       let errorRedirect = "";
       const back = (error?: string): Response => {
@@ -687,8 +694,12 @@ export const ROUTES: readonly Route[] = [
         );
         return response;
       } catch (error) {
-        if (error instanceof OAuth2Error) return back(error.code);
-        console.error("[nextbase] an OAuth2 sign-in failed:", error);
+        if (error instanceof OAuth2Error) {
+          context.noteError(error.code);
+          return back(error.code);
+        }
+        context.logger.failure("oauth2", "an OAuth2 sign-in failed", error);
+        context.noteError("oauth2_failed");
         return back("oauth2_failed");
       }
     },
