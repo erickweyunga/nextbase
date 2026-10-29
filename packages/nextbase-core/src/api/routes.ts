@@ -69,6 +69,7 @@ import {
 import type { Storage } from "../files/storage.ts";
 import { readJsonObject, readRecordBody } from "../http.ts";
 import { newId } from "../random.ts";
+import type { Realtime } from "../realtime/stream.ts";
 import type { Hooks } from "../records/hooks.ts";
 import { serializeRecord } from "../records/serialize.ts";
 import {
@@ -116,6 +117,8 @@ interface Context {
   effects: Effects;
   storage: Storage;
   hooks: Hooks;
+  /** Undefined when realtime is not enabled. */
+  realtime: Realtime | undefined;
   /** For a request sent through `e.nextbase`: the on hooks that led to it. */
   hookChain: readonly string[];
 }
@@ -136,6 +139,11 @@ export interface Route {
    * transaction of an on hook, for the hook's `e.nextbase`.
    */
   joinsTransaction?: true;
+  /**
+   * The response is a stream that stays open, so the request does not renew
+   * the session: the renewed cookie could only be sent once it ends.
+   */
+  stream?: true;
   handler(context: Context): Promise<Response>;
 }
 
@@ -302,6 +310,16 @@ export const ROUTES: readonly Route[] = [
         return replies;
       });
       return Response.json(results);
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/realtime$/,
+    stream: true,
+    async handler(context) {
+      if (!context.realtime)
+        throw new ApiError(404, "Realtime is not enabled.");
+      return context.realtime.open(context);
     },
   },
   {

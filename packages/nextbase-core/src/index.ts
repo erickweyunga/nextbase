@@ -38,6 +38,7 @@ import {
   type Storage,
   type StorageOptions,
 } from "./files/storage.ts";
+import { Realtime, type RealtimeOptions } from "./realtime/stream.ts";
 import {
   Hooks,
   type Join,
@@ -99,6 +100,7 @@ export type {
 } from "./auth/sms.ts";
 export { ApiError } from "./errors.ts";
 export type { S3StorageOptions, StorageOptions } from "./files/storage.ts";
+export type { RealtimeOptions } from "./realtime/stream.ts";
 export type {
   BeforeCreateEvent,
   BeforeDeleteEvent,
@@ -177,6 +179,11 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    * transaction, or in the background after it is committed.
    */
   hooks?: RecordHooks<NoInfer<C>>;
+  /**
+   * Lets clients subscribe to records as they are created, updated and
+   * deleted: `true` for every collection, or `{ collections: [...] }`.
+   */
+  realtime?: true | RealtimeOptions<NoInfer<keyof C & string>>;
 }
 
 /**
@@ -230,6 +237,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #waitUntil: (promise: Promise<unknown>) => void;
   readonly #appUrl: URL | undefined;
   readonly #hooks: Hooks;
+  readonly #realtime: Realtime | undefined;
   #db: DB | undefined;
   #migrated: Promise<void> | undefined;
   readonly #schema = new SchemaCache();
@@ -277,10 +285,23 @@ export class NextBase<C extends Collections = Collections> {
         "statementTimeout must be a whole number of milliseconds, or 0.",
       );
     }
-    this.#hooks = new Hooks(options.hooks as RecordHooks | undefined, {
-      chained: (chain) => this.#chained(chain),
-      joined: (join) => this.#joined(join),
-    });
+    this.#realtime = options.realtime
+      ? new Realtime(options.realtime as true | RealtimeOptions, {
+          db: () => this.#connection(),
+          database:
+            typeof options.database === "string" ? options.database : undefined,
+          schemas: this.#schema,
+          waitUntil: this.#waitUntil,
+        })
+      : undefined;
+    this.#hooks = new Hooks(
+      options.hooks as RecordHooks | undefined,
+      {
+        chained: (chain) => this.#chained(chain),
+        joined: (join) => this.#joined(join),
+      },
+      this.#realtime,
+    );
   }
 
   /**
@@ -562,6 +583,7 @@ export class NextBase<C extends Collections = Collections> {
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
       hooks: this.#hooks,
+      realtime: this.#realtime,
     };
   }
 
@@ -654,7 +676,7 @@ export class NextBase<C extends Collections = Collections> {
     }
 
     for (const matched of ROUTES) {
-      const { method, pattern, transaction, handler } = matched;
+      const { method, pattern, transaction, stream, handler } = matched;
       const match = verb === method ? pattern.exec(route) : null;
       if (!match) continue;
       if (join)
@@ -674,9 +696,10 @@ export class NextBase<C extends Collections = Collections> {
             // With a token, this also reads the schema, in the same query as
             // the session. In-process requests renew a cookie session only
             // where the cookie can be written, so not in server components.
+            // A stream's response is sent before it ends, so it renews none.
             const resolved = await resolvePrincipal(request, db, this.#schema, {
-              extend: http,
-              writeCookie,
+              extend: http && !stream,
+              writeCookie: stream ? undefined : writeCookie,
             });
             schema = resolved.schema;
             caller = resolved.principal;

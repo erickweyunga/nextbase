@@ -43,7 +43,8 @@ export const nextbase = new NextBase({
 
 - **Connection poolers:** NextBase works behind PgBouncer (including its
   transaction mode) and the poolers of Neon, Supabase and RDS Proxy. Use the
-  pooled connection string on serverless platforms.
+  pooled connection string on serverless platforms. [Realtime](#realtime)
+  also needs a direct connection to listen on.
 - **The pool:** with a connection string, NextBase keeps one `pg` pool per
   string, with up to 10 connections. Idle connections close after 5 seconds,
   so a suspended serverless instance lets them go, and on Vercel they are
@@ -95,11 +96,48 @@ When an upgrade adds a system field to auth collections, such as `phone`,
 renamed to `user_<name>` first, together with its column and the rules that
 use it, and the server log says so. Its data is kept.
 
+## Realtime
+
+[Realtime](/docs/guides/realtime) listens for new events with Postgres
+`LISTEN`, which transaction poolers do not support. With a pooled connection
+string, such as Neon's `-pooler` host or Supabase's port 6543, set
+`listenUrl` to the direct one. Each instance with open streams holds one
+such connection, besides its pool.
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "@nextbasejs/core";
+
+export const nextbase = new NextBase({
+  realtime: {
+    collections: ["messages"],
+    listenUrl: process.env.DATABASE_URL_UNPOOLED,
+  },
+});
+```
+
+A realtime stream is a response that stays open. Serverless hosts cap how
+long one may run: on Vercel, 300 seconds by default, and up to 800 on Pro.
+NextBase ends each stream after `streamSeconds`, 240 by default, and the
+client reconnects at once without missing events. Keep `streamSeconds` below
+the route's `maxDuration`, for example to use longer streams:
+
+```ts title="app/api/nextbase/[...path]/route.ts"
+import { newNextHandler } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export const maxDuration = 800;
+export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
+```
+
+with `streamSeconds: 780` in the `realtime` option. An open stream keeps its
+function running, and on usage-billed hosts it is billed while open.
+
 ## Many instances
 
 Serverless platforms run many copies of your app. A collection or rule change
 made through one copy applies to every copy from its next request, and two
-changes made at the same time never interfere.
+changes made at the same time never interfere. Realtime events reach the
+streams of every copy: each write notifies all of them through Postgres.
 
 ## First superuser
 

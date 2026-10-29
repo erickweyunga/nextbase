@@ -33,6 +33,25 @@ await posts.delete(id);
 `create` and `update` return `null` when the write succeeded but the rules do
 not let the caller view the result.
 
+## Realtime
+
+```ts
+const unsubscribe = posts.subscribe(
+  "*",
+  ({ action, record }) => console.log(action, record.title),
+  { filter: nb.filter("author = {:author}", { author }), expand: "author" },
+);
+const stopWatchingOne = posts.subscribe(id, ({ record }) => console.log(record));
+
+unsubscribe();
+stopWatchingOne();
+```
+
+`subscribe` takes `"*"` for every record the list rule allows, or a record id
+for one record under the view rule, and returns the function that
+unsubscribes. All subscriptions share one stream, which reconnects and resumes
+on its own. See [Realtime](/docs/guides/realtime).
+
 ## Filters
 
 Never put user input into a filter string yourself. `nb.filter()` replaces each

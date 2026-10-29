@@ -360,6 +360,39 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: "0010_realtime",
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // Writes to realtime collections, each logged in its write's
+      // transaction. Ordered by that transaction's id, then by `seq`, its
+      // order in the transaction.
+      await exec(`
+        CREATE TABLE {{${table("_realtime_events")}}} (
+          txid          xid8 NOT NULL DEFAULT pg_current_xact_id(),
+          seq           bigserial,
+          collection_id text NOT NULL,
+          action        text NOT NULL,
+          record_id     text NOT NULL,
+          record        jsonb NOT NULL,
+          created       timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (txid, seq)
+        )`);
+      await exec(
+        `CREATE INDEX "_realtime_events_created" ON {{${table("_realtime_events")}}} (created)`,
+      );
+      // The last event deleted as too old, so readers behind it learn they
+      // may have missed events.
+      await exec(`
+        CREATE TABLE {{${table("_realtime_state")}}} (
+          id          boolean PRIMARY KEY DEFAULT true CHECK (id),
+          purged_txid xid8 NOT NULL DEFAULT '0',
+          purged_seq  bigint NOT NULL DEFAULT 0
+        )`);
+      await exec(`INSERT INTO {{${table("_realtime_state")}}} DEFAULT VALUES`);
+    },
+  },
 ];
 
 /**

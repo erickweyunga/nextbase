@@ -2,6 +2,7 @@ import { authSync } from "./auth-sync.ts";
 import { ClientError } from "./client-error.ts";
 import { hasFiles, toFormData } from "./files.ts";
 import type { NextBaseClient, SendOptions } from "./index.ts";
+import type { RealtimeEvent, SubscribeOptions } from "./realtime.ts";
 import type {
   AuthMethods,
   AuthResponse,
@@ -105,6 +106,26 @@ export class RecordService<T extends RecordModel = RecordModel> {
       });
     }
     return item;
+  }
+
+  /**
+   * Calls `callback` for each record created, updated or deleted that the
+   * caller may see: `"*"` for the collection, under its list rule and
+   * `filter`, or a record id, under its view rule. The collection must be
+   * listed in the server's `realtime` option. Returns the unsubscribe
+   * function.
+   */
+  subscribe(
+    topic: string,
+    callback: (event: RealtimeEvent<T>) => void,
+    options?: SubscribeOptions,
+  ): () => void {
+    return this.#client.realtime.subscribe(
+      this.#collection,
+      topic,
+      callback,
+      options,
+    );
   }
 
   getOne(id: string, options?: RecordOptions): Promise<T> {
