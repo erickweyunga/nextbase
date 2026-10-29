@@ -17,7 +17,11 @@ import { headCursor, readEvents, writeEvents } from "../src/realtime/events.ts";
 import { type HubStream, RealtimeHub } from "../src/realtime/hub.ts";
 import { timings } from "../src/realtime/timings.ts";
 import { call, origin } from "./http.ts";
-import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import {
+  createTestDatabase,
+  type TestDatabase,
+  testDatabaseUrl,
+} from "./postgres.ts";
 import { waitFor } from "./wait.ts";
 
 const PASSWORD = "password 123 456";
@@ -1635,10 +1639,20 @@ function injectable(pool: pg.Pool): {
 }
 
 /** Whether pg_dump and psql are installed, for the restore test. */
+/**
+ * Whether pg_dump and psql are installed, and pg_dump can dump the test
+ * server: it refuses a server of a newer major version than its own.
+ */
 function hasPgDump(): boolean {
-  return ["pg_dump", "psql"].every(
-    (tool) => spawnSync(tool, ["--version"]).status === 0,
+  const major = (text: string) => Number(/(\d+)/.exec(text)?.[1] ?? 0);
+  const dump = spawnSync("pg_dump", ["--version"], { encoding: "utf8" });
+  const server = spawnSync(
+    "psql",
+    ["-tAc", "SHOW server_version_num", testDatabaseUrl()],
+    { encoding: "utf8" },
   );
+  if (dump.status !== 0 || server.status !== 0) return false;
+  return major(dump.stdout) >= Math.floor(major(server.stdout) / 10_000);
 }
 
 /**
