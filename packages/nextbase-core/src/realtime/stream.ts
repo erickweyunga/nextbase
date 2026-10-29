@@ -1,7 +1,13 @@
 import type { Collection } from "@nextbasejs/client";
 import type { DB, Row, Tx } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
-import { bearerToken, findSession, sessionCookie } from "../auth/sessions.ts";
+import {
+  type ActiveSession,
+  bearerToken,
+  findSession,
+  findSessions,
+  sessionCookie,
+} from "../auth/sessions.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
 import { readJsonObject } from "../http.ts";
@@ -267,6 +273,7 @@ export class Realtime {
     this.#hub ??= new RealtimeHub(
       this.#listenUrl ?? (process.env.DATABASE_URL || undefined),
       this.#db,
+      (tokens) => findSessions(this.#db(), this.#schemas, tokens),
     );
     const stream = new Stream({
       context,
@@ -448,7 +455,7 @@ class Stream implements HubStream {
   readonly #context: StreamContext;
   readonly #topics: readonly Topic[];
   readonly #collectionIds: string[];
-  readonly #session: string | undefined;
+  readonly session: string | undefined;
   readonly #schemas: SchemaCache;
   readonly #signer: CursorSigner;
   readonly #hub: RealtimeHub;
@@ -463,6 +470,7 @@ class Stream implements HubStream {
   /** Events may be ready, for a stream that does not follow the hub. */
   #dirty = false;
   #following = false;
+  /** Pages from the hub, whose sessions it read. */
   readonly #pages: EventPage[] = [];
   #room: (() => void) | undefined;
   readonly #timers: ReturnType<typeof setTimeout>[] = [];
@@ -495,7 +503,7 @@ class Stream implements HubStream {
     this.#topics = topics;
     this.#collectionIds = [...new Set(topics.map((t) => t.collection.id))];
     this.#principal = context.principal;
-    this.#session = session;
+    this.session = session;
     this.#schemas = schemas;
     this.#signer = signer;
     this.#hub = hub;
@@ -532,18 +540,27 @@ class Stream implements HubStream {
     signal.addEventListener("abort", abort, { once: true });
     this.#cleanup.push(() => signal.removeEventListener("abort", abort));
     this.#cleanup.push(this.#hub.subscribe(this));
-    this.#after(streamMs, () => this.#end("timeout"));
-    this.#repeat(timings.heartbeatMs, () => this.#heartbeat());
+    this.#after(streamMs, () => this.#timed(() => this.#rotate()));
+    this.#repeat(timings.heartbeatMs, () =>
+      this.#timed(() => this.#heartbeat()),
+    );
     // Pages with events check the session too; this covers idle streams.
-    if (this.#session !== undefined) {
-      this.#repeat(timings.sessionMs, () => {
-        void this.#checkSession().catch((error: unknown) => {
-          console.error("[nextbase] realtime session check failed:", error);
-          this.#close();
-        });
-      });
+    if (this.session !== undefined) {
+      this.#repeat(timings.sessionMs, () =>
+        this.#timed(async () => {
+          if (await this.#checkSession()) this.#sendCursor();
+        }),
+      );
     }
     this.wake();
+  }
+
+  /** Runs a timer's work; one that fails closes the stream. */
+  #timed(run: () => void | Promise<void>): void {
+    void (async () => run())().catch((error: unknown) => {
+      console.error("[nextbase] realtime stream failed:", error);
+      this.#close();
+    });
   }
 
   #after(ms: number, run: () => void): void {
@@ -564,6 +581,16 @@ class Stream implements HubStream {
     if (this.#done || this.#following) return;
     this.#dirty = true;
     this.#pump();
+  }
+
+  unfollowed(): void {
+    this.#following = false;
+    // Pages it still has came before; it reads on after them.
+    this.wake();
+  }
+
+  sessionRead(active: ActiveSession | undefined): void {
+    this.#apply(active);
   }
 
   page(page: EventPage): void {
@@ -591,7 +618,7 @@ class Stream implements HubStream {
           if (!hasWork || !(await this.#waitForRoom())) break;
           const page = this.#pages.shift();
           if (page) {
-            await this.#deliver(page);
+            await this.#deliver(page, true);
           } else {
             this.#dirty = false;
             await this.#readOwn();
@@ -644,8 +671,11 @@ class Stream implements HubStream {
     this.#following = this.#hub.follow(this, this.#cursor);
   }
 
-  /** Sends what the stream may see of a page, and moves the cursor past it. */
-  async #deliver(page: EventPage): Promise<void> {
+  /**
+   * Sends what the stream may see of a page, and moves the cursor past it.
+   * The hub read the session of a page it handed over; `checked` says so.
+   */
+  async #deliver(page: EventPage, checked = false): Promise<void> {
     // Rules or collections may have changed: the client reconnects, and its
     // topics are checked again.
     if (page.schemaVersion > this.#context.schema.version) {
@@ -665,32 +695,53 @@ class Stream implements HubStream {
     if (relevant) {
       // Nothing more for a session that ended, nor rules checked with a
       // record that changed.
-      if (this.#session !== undefined && !(await this.#checkSession())) return;
-      const { db, statementTimeout } = this.#context;
+      if (this.#done) return;
+      if (!checked && !(await this.#checkSession())) return;
       let messages: string[];
+      let skipped = false;
       try {
-        // Rules that read nothing and topics that expand nothing need no
-        // query, nor a transaction.
-        messages = this.#queries(events)
-          ? await db.transaction((tx) => this.#messages(tx, events), {
-              readOnly: true,
-              ...(statementTimeout > 0 && { statementTimeout }),
-            })
-          : await this.#messages(db, events);
+        messages = await this.#messagesFor(events);
       } catch (error) {
         if (!unreadable(error)) throw error;
+        // One record that cannot be read back, such as one written before
+        // its field changed, or that today's rule cannot read, fails the
+        // whole query: each is tried alone, and only those that fail are
+        // left out.
         console.warn(
-          "[nextbase] realtime: skipped events whose records cannot be read back, such as after a field changed:",
+          "[nextbase] realtime: left out events whose records cannot be read back, such as after a field changed:",
           error,
         );
+        messages = [];
+        for (const event of events) {
+          try {
+            messages.push(...(await this.#messagesFor([event])));
+          } catch (failure) {
+            if (!unreadable(failure)) throw failure;
+            skipped = true;
+          }
+        }
+      }
+      if (this.#done) return;
+      for (const message of messages) this.#send(message);
+      if (skipped) {
         this.#cursor = last.cursor;
         this.#sendReset();
         return;
       }
-      if (this.#done) return;
-      for (const message of messages) this.#send(message);
     }
     this.#cursor = last.cursor;
+  }
+
+  /** The messages for `events`, in a transaction only when they take queries. */
+  #messagesFor(events: readonly StoredEvent[]): Promise<string[]> {
+    const { db, statementTimeout } = this.#context;
+    // Rules that read nothing and topics that expand nothing need no query,
+    // nor a transaction.
+    if (!this.#queries(events)) return this.#messages(db, events);
+    return db.transaction((tx) => this.#messages(tx, events), {
+      readOnly: true,
+      ...(statementTimeout > 0 && { statementTimeout }),
+    });
   }
 
   /** Whether the messages for `events` take queries: rules or expands. */
@@ -790,13 +841,18 @@ class Stream implements HubStream {
    * when the stream ended.
    */
   async #checkSession(): Promise<boolean> {
-    if (this.#done || this.#session === undefined) return !this.#done;
+    if (this.#done || this.session === undefined) return !this.#done;
     const { active } = await findSession(
       this.#context.db,
       this.#schemas,
-      this.#session,
+      this.session,
       { extend: false },
     );
+    return this.#apply(active);
+  }
+
+  /** `#checkSession` with the session as read. False when the stream ended. */
+  #apply(active: ActiveSession | undefined): boolean {
     if (this.#done) return false;
     if (!active || active.session.id !== this.#principal.session?.id) {
       this.#end("signed_out");
@@ -807,8 +863,6 @@ class Stream implements HubStream {
       collection: active.collection,
       record: active.record,
     };
-    // Ids are signed for the record as it is: a changed one gets a new id.
-    this.#sendCursor();
     return true;
   }
 
@@ -820,9 +874,26 @@ class Stream implements HubStream {
     );
   }
 
-  /** Keeps proxies from closing an idle stream, and moves the client's cursor on. */
-  #heartbeat(): void {
+  /**
+   * Keeps proxies from closing an idle stream, and moves the client's
+   * cursor on. Ids are signed for the signed-in record, so before sending
+   * a new one it reads the session, and the id matches the record as it
+   * is now.
+   */
+  async #heartbeat(): Promise<void> {
+    if (
+      this.session !== undefined &&
+      this.#id(this.#cursor) !== this.#sent &&
+      !(await this.#checkSession())
+    ) {
+      return;
+    }
     if (!this.#sendCursor()) this.#send(":\n\n");
+  }
+
+  /** Ends the stream after `streamSeconds`, with an id for the record as it is. */
+  async #rotate(): Promise<void> {
+    if (await this.#checkSession()) this.#end("timeout");
   }
 
   /**

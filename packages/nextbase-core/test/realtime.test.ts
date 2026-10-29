@@ -8,11 +8,13 @@ import {
   type RealtimeEvent,
   type RecordModel,
 } from "@nextbasejs/client";
+import { DB } from "@nextbasejs/dbx";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError, NextBase, type SmsMessage } from "../src/index.ts";
 import { CursorSigner } from "../src/realtime/cursor.ts";
 import { headCursor, readEvents, writeEvents } from "../src/realtime/events.ts";
+import { type HubStream, RealtimeHub } from "../src/realtime/hub.ts";
 import { timings } from "../src/realtime/timings.ts";
 import { call, origin } from "./http.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
@@ -252,6 +254,7 @@ describe("realtime", () => {
           "items",
           "lounge",
           "tagged",
+          "scores",
         ],
         listenUrl: t.url,
       },
@@ -339,6 +342,12 @@ describe("realtime", () => {
       listRule: "",
       viewRule: "",
       fields: [{ name: "title", type: "text", required: true }],
+    });
+    await admin.collections.create({
+      name: "scores",
+      listRule: "",
+      viewRule: "",
+      fields: [{ name: "active", type: "bool" }],
     });
     await admin.collections.create({
       name: "tagged",
@@ -892,6 +901,222 @@ describe("realtime", () => {
     expect(String(heavy.body.message)).toMatch(/weigh 150/);
   });
 
+  it("goes back to its own reads when the instance's read fails or falls behind", async () => {
+    const injected = injectable(t.pool);
+    const instance = new NextBase({
+      database: injected.pool,
+      realtime: { collections: ["rooms"], listenUrl: t.url },
+    });
+    const stream = await subscribe([{ collection: "rooms" }], {
+      via: instance,
+    });
+    // Caught up, the stream follows the instance's reads.
+    await admin.collection("rooms").create({ name: "followed" });
+    await received(stream, 1, (r) => r.name === "followed");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      injected.failNextSharedRead();
+      await admin.collection("rooms").create({ name: "after failure" });
+      await received(stream, 1, (r) => r.name === "after failure");
+      expect(injected.failed()).toBe(1);
+      expect(String(error.mock.calls[0]?.[0])).toMatch(/reading events failed/);
+    } finally {
+      error.mockRestore();
+    }
+
+    // The instance finds events it has not read deleted: the stream reads
+    // on by itself, finds the same and resets.
+    await admin.collection("rooms").create({ name: "followed again" });
+    await received(stream, 1, (r) => r.name === "followed again");
+    await t.pool.query(
+      `UPDATE nextbase._realtime_state s
+       SET purged_position = l.position, purged_seq = l.seq + 1
+       FROM (SELECT t.position, max(e.seq) AS seq
+             FROM nextbase._realtime_transactions t
+             JOIN nextbase._realtime_events e ON e.transaction_id = t.id
+             WHERE t.position IS NOT NULL
+             GROUP BY t.position ORDER BY t.position DESC LIMIT 1) l`,
+    );
+    await admin.collection("rooms").create({ name: "behind" });
+    await waitFor(
+      () => stream.messages.some((m) => m.type === "reset"),
+      "a reset",
+    );
+    await admin.collection("rooms").create({ name: "after reset" });
+    await received(stream, 1, (r) => r.name === "after reset");
+  });
+
+  it("reads the sessions of all streams with one query per page", async () => {
+    // The timer alone would not read them during the test.
+    timings.sessionMs = 60_000;
+    try {
+      await admin.collection("users").create({
+        email: "frank@example.com",
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      });
+      const counted = counting(t.pool);
+      const instance = new NextBase({
+        database: counted.pool,
+        realtime: { collections: ["rooms"], listenUrl: t.url },
+      });
+      const open: OpenStream[] = [];
+      const trips = async (name: string) => {
+        await admin.collection("rooms").create({ name: `warm ${name}` });
+        for (const stream of open) {
+          await received(stream, 1, (r) => r.name === `warm ${name}`);
+        }
+        counted.trips();
+        await admin.collection("rooms").create({ name });
+        for (const stream of open) {
+          await received(stream, 1, (r) => r.name === name);
+        }
+        return counted.trips();
+      };
+      open.push(
+        await subscribe([{ collection: "rooms" }], {
+          via: instance,
+          token: await signIn("frank@example.com"),
+        }),
+      );
+      const one = await trips("one session");
+      for (let i = 0; i < 4; i++) {
+        open.push(
+          await subscribe([{ collection: "rooms" }], {
+            via: instance,
+            token: await signIn("frank@example.com"),
+          }),
+        );
+      }
+      expect(await trips("five sessions")).toBe(one);
+      await Promise.all(open.map((s) => s.close()));
+    } finally {
+      timings.sessionMs = 50;
+    }
+  });
+
+  it("signs the id it ends with for the signed-in record as it is", async () => {
+    Object.assign(timings, { sessionMs: 60_000, heartbeatMs: 60_000 });
+    try {
+      const short = new NextBase({
+        database: t.pool,
+        realtime: { collections: true, listenUrl: t.url, streamSeconds: 0.3 },
+      });
+      const grace = await admin.collection("users").create({
+        email: "grace@example.com",
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      });
+      const token = await signIn("grace@example.com");
+      const stream = await subscribe([{ collection: "rooms" }], {
+        via: short,
+        token,
+      });
+      const reply = await call(
+        nextbase,
+        "PATCH",
+        `/collections/users/records/${grace?.id}`,
+        { token, body: { name: "Grace H" } },
+      );
+      expect(reply.status).toBe(200);
+      await waitFor(stream.ended, "the stream to end");
+      const resumed = await subscribe([{ collection: "rooms" }], {
+        via: short,
+        token,
+        lastEventId: stream.lastId() as string,
+      });
+      expect(resumed.messages[0]?.type).not.toBe("reset");
+      await resumed.close();
+    } finally {
+      Object.assign(timings, { sessionMs: 50, heartbeatMs: 100 });
+    }
+  });
+
+  it("leaves out only the records it cannot read back", async () => {
+    const stream = await subscribe(
+      [{ collection: "scores", filter: "active = true" }],
+      { token: tokens.admin },
+    );
+    const collection = await admin.collections.getOne("scores");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // One transaction, so one page: a good record, one whose flag cannot
+      // be read back, and another good one.
+      await t.pool.query(
+        `WITH tx AS (SELECT nextval('nextbase._realtime_transaction_ids') AS id),
+         mark AS (INSERT INTO nextbase._realtime_transactions (id) SELECT id FROM tx)
+         INSERT INTO nextbase._realtime_events (transaction_id, collection_id, action, record_id, record)
+         SELECT tx.id, $1, 'create', v.id, jsonb_build_object('id', v.id, 'active', v.active)
+         FROM tx, (VALUES ('good1', 'true'::jsonb), ('bad', '"x"'::jsonb), ('good2', 'true'::jsonb)) AS v(id, active)`,
+        [collection.id],
+      );
+      await t.pool.query("SELECT pg_notify('nextbase_realtime', '')");
+      const events = await received(stream, 2);
+      expect(events.map((e) => e.record.id)).toEqual(["good1", "good2"]);
+      await waitFor(
+        () => stream.messages.some((m) => m.type === "reset"),
+        "a reset",
+      );
+      expect(stream.ended()).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reads for a new start while a read from before a stop still runs", async () => {
+    const held = gate();
+    let heads = 0;
+    const slow = new Proxy(t.pool, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (prop !== "query" || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async (config: { text?: string }, ...rest: unknown[]) => {
+          // The first read of where the log ends hangs until let go.
+          if (
+            String(config?.text).includes("purgedPosition") &&
+            heads++ === 0
+          ) {
+            await held.promise;
+          }
+          return value.call(target, config, ...rest);
+        };
+      },
+    });
+    const pollMs = timings.pollMs;
+    // Polling would hide a read that never happens.
+    timings.pollMs = 60_000;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const quiet: HubStream = {
+      session: undefined,
+      sessionRead() {},
+      page() {},
+      wake() {},
+      unfollowed() {},
+    };
+    const hub = new RealtimeHub(
+      undefined,
+      () => new DB(slow),
+      async () => [],
+    );
+    try {
+      const first = hub.subscribe(quiet);
+      await waitFor(() => heads === 1, "the first read to hang");
+      first();
+      const unsubscribe = hub.subscribe({ ...quiet });
+      // The new start reads while the old read still hangs.
+      await waitFor(() => heads === 2, "the new start's read");
+      held.open();
+      unsubscribe();
+    } finally {
+      held.open();
+      warn.mockRestore();
+      timings.pollMs = pollMs;
+    }
+  });
+
   it("reads each page of events once for every stream", async () => {
     const counted = counting(t.pool);
     const instance = new NextBase({
@@ -1365,6 +1590,49 @@ describe("realtime client", () => {
     off();
   });
 });
+
+/**
+ * Wraps `pool` so a test can make the instance's next shared read of the
+ * event log fail, as a dropped connection would.
+ */
+function injectable(pool: pg.Pool): {
+  pool: pg.Pool;
+  failNextSharedRead: () => void;
+  failed: () => number;
+} {
+  let fail = false;
+  let failed = 0;
+  const wrap = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== "function") return value;
+        if (prop === "query") {
+          return (config: { text?: string }, ...rest: unknown[]) => {
+            // The instance's read takes every record; a stream's own read
+            // takes those of its collections.
+            if (fail && String(config?.text).includes("e.record AS record")) {
+              fail = false;
+              failed++;
+              return Promise.reject(new Error("injected failure"));
+            }
+            return value.call(target, config, ...rest);
+          };
+        }
+        if (prop === "connect") {
+          return async () => wrap(await value.apply(target));
+        }
+        return value.bind(target);
+      },
+    });
+  return {
+    pool: wrap(pool),
+    failNextSharedRead: () => {
+      fail = true;
+    },
+    failed: () => failed,
+  };
+}
 
 /** Whether pg_dump and psql are installed, for the restore test. */
 function hasPgDump(): boolean {

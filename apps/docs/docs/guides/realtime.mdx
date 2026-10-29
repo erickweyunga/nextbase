@@ -181,7 +181,10 @@ record and the collections as they were. Resuming starts over with a reset,
 rather than replaying past events, when the id was sent to someone else, when
 the signed-in record changed since (such as being given a new role), or when
 collections or rules changed. This keeps a caller from seeing old versions of
-records under rules that now let them see more.
+records under rules that now let them see more. A stream sends a newly
+signed id within 30 seconds of a change to the signed-in record, and as it
+ends, so an edit of the user's own record causes at most one reset: when the
+connection breaks before that.
 
 ## Limits
 

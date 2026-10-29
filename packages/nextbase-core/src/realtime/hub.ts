@@ -1,5 +1,6 @@
 import type { DB } from "@nextbasejs/dbx";
 import pg from "pg";
+import type { ActiveSession } from "../auth/sessions.ts";
 import {
   CHANNEL,
   type Cursor,
@@ -16,14 +17,29 @@ export const PAGE = 500;
 
 /** An open stream, as the hub sees it. */
 export interface HubStream {
+  /** The token of the stream's session, if it has one. */
+  readonly session: string | undefined;
+  /**
+   * Its session as read just before the hub hands it a page: undefined
+   * once the session ended.
+   */
+  sessionRead(active: ActiveSession | undefined): void;
   /**
    * The next page of events, read once for every stream that follows the
-   * hub. It may start before the stream's own cursor.
+   * hub, after its session was read. It may start before the stream's own
+   * cursor.
    */
   page(page: EventPage): void;
   /** Events may be ready: a stream that does not follow reads them itself. */
   wake(): void;
+  /** The hub stopped handing it pages: it reads on from its own cursor. */
+  unfollowed(): void;
 }
+
+/** Reads the sessions of several tokens with one query. */
+export type ReadSessions = (
+  tokens: readonly string[],
+) => Promise<(ActiveSession | undefined)[]>;
 
 /**
  * Wakes this instance's open streams when events may have been committed,
@@ -42,11 +58,14 @@ export interface HubStream {
 export class RealtimeHub {
   readonly #listenUrl: string | undefined;
   readonly #db: () => DB;
+  readonly #sessions: ReadSessions;
   readonly #streams = new Set<HubStream>();
   readonly #following = new Set<HubStream>();
   /** After the last event handed to followers; unset until first read. */
   #cursor: Cursor | undefined;
-  #reading = false;
+  /** The run whose read is going on, if any. */
+  #reading: number | undefined;
+  /** A read was asked for while one went on. */
   #dirty = false;
   /** Bumped on every start and stop, so work of an earlier run is dropped. */
   #run = 0;
@@ -59,9 +78,14 @@ export class RealtimeHub {
   #polled: string | undefined;
   #warned = false;
 
-  constructor(listenUrl: string | undefined, db: () => DB) {
+  constructor(
+    listenUrl: string | undefined,
+    db: () => DB,
+    sessions: ReadSessions,
+  ) {
     this.#listenUrl = listenUrl;
     this.#db = db;
+    this.#sessions = sessions;
   }
 
   /** How many streams are open on this instance. */
@@ -109,39 +133,73 @@ export class RealtimeHub {
 
   /** Reads the new pages once, for every stream that follows. */
   async #read(): Promise<void> {
-    if (this.#reading) {
+    const run = this.#run;
+    // A read of an earlier run, still going on after a stop, does not hold
+    // up this run's.
+    if (this.#reading === run) {
       this.#dirty = true;
       return;
     }
-    this.#reading = true;
-    const run = this.#run;
+    this.#reading = run;
+    this.#dirty = false;
     try {
-      do {
-        this.#dirty = false;
-        const db = this.#db();
-        this.#cursor ??= await headCursor(db);
-        for (;;) {
-          const page = await readEvents(db, this.#cursor, undefined, PAGE);
+      const db = this.#db();
+      if (this.#cursor === undefined) {
+        const head = await headCursor(db);
+        // A read from before a stop must not set the new start's cursor.
+        if (run !== this.#run) return;
+        this.#cursor ??= head;
+      }
+      for (;;) {
+        const page = await readEvents(
+          db,
+          this.#cursor as Cursor,
+          undefined,
+          PAGE,
+        );
+        if (run !== this.#run) return;
+        if (page.lost) {
+          // Too far behind, as after a long stall: start again at the
+          // head, and let each stream find out what it missed.
+          const head = await headCursor(db);
           if (run !== this.#run) return;
-          if (page.lost) {
-            // Too far behind, as after a long stall: start again at the
-            // head, and let each stream find out what it missed.
-            this.#cursor = await headCursor(db);
-            this.#unfollowAll();
-            break;
-          }
-          const last = page.events.at(-1);
-          if (!last) break;
-          for (const stream of this.#following) stream.page(page);
-          this.#cursor = last.cursor;
-          if (page.events.length < PAGE) break;
+          this.#cursor = head;
+          this.#unfollowAll();
+          return;
         }
-      } while (this.#dirty && run === this.#run);
+        const last = page.events.at(-1);
+        if (!last) return;
+        await this.#readSessions();
+        if (run !== this.#run) return;
+        for (const stream of this.#following) stream.page(page);
+        this.#cursor = last.cursor;
+        if (page.events.length < PAGE) return;
+      }
     } catch (error) {
       console.error("[nextbase] realtime: reading events failed:", error);
       if (run === this.#run) this.#unfollowAll();
     } finally {
-      this.#reading = false;
+      if (this.#reading === run) this.#reading = undefined;
+      // Asked for while this read went on, by this run or the next.
+      if (this.#dirty && this.#reading === undefined) void this.#read();
+    }
+  }
+
+  /**
+   * Reads the sessions of the streams that follow, with one query, so none
+   * gets a page after its session ended, and rules see the signed-in
+   * record as it is now.
+   */
+  async #readSessions(): Promise<void> {
+    const streams = [...this.#following].filter((s) => s.session);
+    if (streams.length === 0) return;
+    const tokens = [...new Set(streams.map((s) => s.session as string))];
+    const found = await this.#sessions(tokens);
+    const byToken = new Map(tokens.map((token, i) => [token, found[i]]));
+    for (const stream of streams) {
+      if (this.#following.has(stream)) {
+        stream.sessionRead(byToken.get(stream.session as string));
+      }
     }
   }
 
@@ -149,7 +207,7 @@ export class RealtimeHub {
   #unfollowAll(): void {
     const streams = [...this.#following];
     this.#following.clear();
-    for (const stream of streams) stream.wake();
+    for (const stream of streams) stream.unfollowed();
   }
 
   #start(): void {
@@ -185,8 +243,9 @@ export class RealtimeHub {
   async #listen(run: number, url: string): Promise<void> {
     const client = new pg.Client({
       connectionString: url,
-      // Notices a connection dropped on the way, such as by a NAT or a
-      // failover, within seconds rather than the system's default hours.
+      // Starts the system's keepalive probes after 10 seconds idle rather
+      // than its default two hours. Probes still take minutes to give up,
+      // so the health check below is what notices a dead connection.
       keepAlive: true,
       keepAliveInitialDelayMillis: 10_000,
       // The default waits forever on a database that does not answer.
