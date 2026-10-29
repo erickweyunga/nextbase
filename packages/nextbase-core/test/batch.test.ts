@@ -88,7 +88,11 @@ describe("batch API", () => {
     ann = await signUp("ann");
     bob = await signUp("bob");
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("creates an order and its items together", async () => {
     const order = newId();

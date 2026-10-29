@@ -185,7 +185,11 @@ describe("comparisons between multi-valued sides, and JSON dates, over real data
     for (const doc of docs)
       await send("POST", "/collections/docs/records", doc);
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   describe("two sides with several values", () => {
     it("?op: some pair of values matches", async () => {

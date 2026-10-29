@@ -43,7 +43,8 @@ describe("round trips per request", () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    // Log writes are background work, not the request's own round trips.
+    nextbase = new NextBase({ database: t.pool, logs: false });
     await nextbase.createSuperuser("admin@example.com", "admin password 123");
     const admin = nextbase.client({ superuser: true });
     const members = await admin.collections.create({
@@ -96,7 +97,11 @@ describe("round trips per request", () => {
     token = signIn.body.token as string;
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   /**
    * A second NextBase, like another server process. Its first request is
@@ -105,7 +110,7 @@ describe("round trips per request", () => {
    */
   const another = async () => {
     const { pool, trips } = counting(t.pool);
-    const other = new NextBase({ database: pool });
+    const other = new NextBase({ database: pool, logs: false });
     await call(other, "GET", "/collections/notes/records");
     trips();
     return { other, trips };

@@ -1,0 +1,165 @@
+---
+title: Logs
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Logs
+
+Read and clear the server's log of requests and background failures; see
+[Logs](/docs/guides/logs). Every endpoint needs a superuser: anyone else gets
+a `401` when signed out and a `403` when signed in.
+
+In the SDK examples, `superuser` is a client signed in as a superuser, or
+`nextbase.client({ superuser: true })` in server code.
+
+## List entries
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const page = await superuser.logs.getList(1, 50, {
+  filter: 'data.status >= 400 && data.auth = "users"',
+});
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl 'https://app.example/api/nextbase/logs?perPage=50&filter=data.status%20%3E%3D%20400' \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /logs
+```
+
+**Query parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `page` | number | Optional. Page number, from 1. Default `1`. |
+| `perPage` | number | Optional. Entries per page, 1 to 1000. Default `30`. |
+| `filter` | string | Optional. A [filter](/docs/guides/filters) over `id`, `created`, `level`, `message` and `data.*`, such as `data.status >= 500`. |
+| `sort` | string | Optional. `id`, `created`, `level` or `message`, `-` for descending. Default `-created`. |
+| `fields` | string | Optional. Fields to return, e.g. `id,created,data.status`. |
+| `skipTotal` | boolean | Optional. `true` skips counting; totals are then `-1`. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "page": 1,
+  "perPage": 50,
+  "totalItems": 1,
+  "totalPages": 1,
+  "items": [
+    {
+      "id": "r5t6y7u8i9o0p1a",
+      "created": "2026-01-31T14:03:12.481Z",
+      "level": 4,
+      "message": "POST /api/nextbase/collections/posts/records",
+      "data": {
+        "type": "request",
+        "method": "POST",
+        "url": "/api/nextbase/collections/posts/records",
+        "status": 400,
+        "execTime": 3.42,
+        "auth": "users",
+        "userAgent": "Mozilla/5.0 ...",
+        "referer": "https://app.example/posts/new",
+        "error": "Failed to create the record.",
+        "details": {
+          "title": { "code": "validation_required", "message": "Cannot be blank." }
+        }
+      }
+    }
+  ]
+}
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+The filter or sort is invalid.
+
+</TabItem>
+</Tabs>
+
+## View an entry
+
+```http
+GET /logs/{id}
+```
+
+Returns one entry, or a `404`. SDK: `superuser.logs.getOne(id)`.
+
+## Count entries per hour
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const stats = await superuser.logs.getStats({ filter: "level >= 8" });
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl 'https://app.example/api/nextbase/logs/stats?filter=level%20%3E%3D%208' \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /logs/stats
+```
+
+**Query parameters**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `filter` | string | Optional. Count only the entries it matches, as for a list. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+The hours that have entries, in UTC, oldest first:
+
+```json
+[
+  { "date": "2026-01-31T13:00:00.000Z", "total": 412 },
+  { "date": "2026-01-31T14:00:00.000Z", "total": 87 }
+]
+```
+
+</TabItem>
+</Tabs>
+
+## Delete every entry
+
+```sh
+curl -X DELETE https://app.example/api/nextbase/logs \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+```http
+DELETE /logs
+```
+
+Answers `204` once the log is empty. The request is then logged itself, so
+the log shows when it was emptied.

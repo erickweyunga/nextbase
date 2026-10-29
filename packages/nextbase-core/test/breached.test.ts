@@ -82,6 +82,7 @@ describe("breached password check", () => {
   });
   afterAll(async () => {
     vi.unstubAllGlobals();
+    await nextbase.flush();
     await t.close();
   });
 

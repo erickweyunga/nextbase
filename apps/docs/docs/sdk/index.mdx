@@ -54,6 +54,18 @@ on its own. Its `onReset` option is called once the subscription is live and
 whenever events may have been missed: load what you show there. See
 [Realtime](/docs/guides/realtime).
 
+## Logs
+
+Superusers only:
+
+```ts
+const errors = await nb.logs.getList(1, 50, { filter: "level >= 8" });
+const entry = await nb.logs.getOne(errors.items[0].id);
+const perHour = await nb.logs.getStats({ filter: "data.status >= 400" });
+```
+
+See [Logs](/docs/guides/logs).
+
 ## Filters
 
 Never put user input into a filter string yourself. `nb.filter()` replaces each

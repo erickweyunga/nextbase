@@ -155,7 +155,11 @@ describe("@collection, back-relations and JSON over real data", () => {
     await add("notes", { text: "ship it", project: ids.apollo });
     await add("notes", { text: "tests pass", project: ids.apollo });
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("@collection rules match one row satisfying every condition on it", async () => {
     expect(await names("ann", "projects")).toEqual(["apollo"]);

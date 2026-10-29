@@ -579,7 +579,11 @@ describe("the SDK against a real instance", () => {
       ],
     });
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   async function signUp(email: string): Promise<NextBaseClient> {
     const nb = nextbase.client();

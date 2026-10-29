@@ -5,7 +5,8 @@ import { NextBase, type Pool } from "../src/index.ts";
 const origin = "http://localhost:3000";
 
 describe("route handler", () => {
-  const { handle } = new NextBase();
+  // No database, so no log either.
+  const { handle } = new NextBase({ logs: false });
 
   it("reports health", async () => {
     const response = await handle(new Request(`${origin}/api/nextbase/health`));
@@ -37,7 +38,7 @@ describe("route handler", () => {
   });
 
   it("honours a custom base path", async () => {
-    const custom = new NextBase({ basePath: "/backend/" });
+    const custom = new NextBase({ basePath: "/backend/", logs: false });
     const response = await custom.handle(
       new Request(`${origin}/backend/health`),
     );
@@ -64,7 +65,7 @@ describe("route handler", () => {
 });
 
 describe("client", () => {
-  const { handle } = new NextBase();
+  const { handle } = new NextBase({ logs: false });
   // Calls the handler in-process: the same path server components will use.
   const client = new NextBaseClient({
     baseUrl: `${origin}/api/nextbase`,

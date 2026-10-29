@@ -9,6 +9,7 @@ import type {
 import type { Row, Tx } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 import type { Effects } from "../effects.ts";
+import type { Logger } from "../logs/logger.ts";
 import { writeEvents } from "../realtime/events.ts";
 import type { Schema } from "../schema/cache.ts";
 import { serverRecord } from "./serialize.ts";
@@ -231,13 +232,16 @@ export class Hooks {
   readonly #hooks = new Map<string, Partial<Record<HookName, AnyHook>>>();
   readonly #clients: HookClients;
   readonly #realtime: RealtimeWrites | undefined;
+  readonly #logger: Logger;
 
   constructor(
     hooks: RecordHooks | undefined,
     clients: HookClients,
+    logger: Logger,
     realtime?: RealtimeWrites,
   ) {
     this.#clients = clients;
+    this.#logger = logger;
     this.#realtime = realtime;
     for (const [name, set] of Object.entries(hooks ?? {})) {
       if (set === undefined) continue;
@@ -426,8 +430,9 @@ export class Hooks {
           try {
             await hook(run);
           } catch (error) {
-            console.error(
-              `[nextbase] after${name} hook for ${collection.name} failed:`,
+            this.#logger.failure(
+              "hook",
+              `after${name} hook for ${collection.name} failed`,
               error,
             );
           }

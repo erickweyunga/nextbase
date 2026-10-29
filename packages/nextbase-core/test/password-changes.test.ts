@@ -82,7 +82,11 @@ describe("changing a password", () => {
     tokens.eve = await signIn(nextbase, "editors", "eve@example.com");
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("does not hold a connection while checking the old password", async () => {
     // With two connections, four changes at once would each hold one and wait
@@ -93,7 +97,8 @@ describe("changing a password", () => {
       connectionTimeoutMillis: 3_000,
     });
     try {
-      const other = new NextBase({ database: small });
+      // Log writes would take connections of the small pool too.
+      const other = new NextBase({ database: small, logs: false });
       const replies = await Promise.all(
         ["ann", "bob", "cara", "dan"].map((name) =>
           change(

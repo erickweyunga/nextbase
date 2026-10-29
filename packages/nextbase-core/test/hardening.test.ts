@@ -89,7 +89,11 @@ describe("records hardening", () => {
       );
     }
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   describe("rule matrix", () => {
     const actions = ["list", "view", "create", "update", "delete"] as const;

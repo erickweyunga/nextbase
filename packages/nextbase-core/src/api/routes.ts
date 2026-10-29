@@ -68,6 +68,13 @@ import {
 } from "../files/serve.ts";
 import type { Storage } from "../files/storage.ts";
 import { readJsonObject, readRecordBody } from "../http.ts";
+import type { Logger } from "../logs/logger.ts";
+import {
+  deleteLogs,
+  logModel,
+  logStats,
+  logsCollection,
+} from "../logs/store.ts";
 import { newId } from "../random.ts";
 import type { Realtime } from "../realtime/stream.ts";
 import type { Hooks } from "../records/hooks.ts";
@@ -121,6 +128,12 @@ interface Context {
   realtime: Realtime | undefined;
   /** For a request sent through `e.nextbase`: the on hooks that led to it. */
   hookChain: readonly string[];
+  logger: Logger;
+  /**
+   * Records an error on the request's log entry when the response does not
+   * have an error status, such as a failed OAuth2 sign-in's redirect.
+   */
+  noteError(error: string): void;
 }
 
 export interface Route {
@@ -399,14 +412,15 @@ export const ROUTES: readonly Route[] = [
   {
     method: "DELETE",
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ params, db, schema, principal, storage }) {
+    async handler({ params, db, schema, principal, storage, logger }) {
       requireSuperuser(principal);
       const { id } = schema.get(params[0] as string);
       await schemaChange(() => deleteCollection(db, params[0] as string));
       // A failure only leaves unused files behind.
       await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
-        console.error(
-          "[nextbase] deleting a collection's files failed:",
+        logger.failure(
+          "storage",
+          "deleting a collection's files failed",
           error,
         );
       });
@@ -416,11 +430,11 @@ export const ROUTES: readonly Route[] = [
   {
     method: "POST",
     pattern: new RegExp(`^/collections/${segment}/upload-url$`),
-    async handler({ request, params, db, schema, principal, storage }) {
+    async handler({ request, params, db, schema, principal, storage, logger }) {
       const collection = schema.get(params[0] as string);
       const input = await readJsonObject(request);
       return Response.json(
-        await createUpload(db, storage, collection, principal, input),
+        await createUpload(db, storage, collection, principal, input, logger),
       );
     },
   },
@@ -605,6 +619,8 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
+      // Unknown, or OAuth2 is not set up: there is no app URL to return to.
+      oauth2.provider(params[0] as string);
       let redirect = "";
       let errorRedirect = "";
       const back = (error?: string): Response => {
@@ -678,8 +694,12 @@ export const ROUTES: readonly Route[] = [
         );
         return response;
       } catch (error) {
-        if (error instanceof OAuth2Error) return back(error.code);
-        console.error("[nextbase] an OAuth2 sign-in failed:", error);
+        if (error instanceof OAuth2Error) {
+          context.noteError(error.code);
+          return back(error.code);
+        }
+        context.logger.failure("oauth2", "an OAuth2 sign-in failed", error);
+        context.noteError("oauth2_failed");
         return back("oauth2_failed");
       }
     },
@@ -871,6 +891,66 @@ export const ROUTES: readonly Route[] = [
         response.headers.append("set-cookie", setSessionCookie(request));
       }
       return response;
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/logs$/,
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const list = await bounded(context, (db) =>
+        listRecords(
+          recordsContext(context, {}, { db }),
+          logsCollection(),
+          parse(context).url.searchParams,
+        ),
+      );
+      return Response.json({ ...list, items: list.items.map(logModel) });
+    },
+  },
+  // Before `/logs/{id}`, which would match it too.
+  {
+    method: "GET",
+    pattern: /^\/logs\/stats$/,
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const filter = parse(context).url.searchParams.get("filter") ?? "";
+      return Response.json(
+        await bounded(context, (db) => logStats(db, context, filter)),
+      );
+    },
+  },
+  {
+    method: "GET",
+    pattern: new RegExp(`^/logs/${segment}$`),
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const entry = await bounded(context, (db) =>
+        viewRecord(
+          recordsContext(context, {}, { db }),
+          logsCollection(),
+          context.params[0] as string,
+          parse(context).url.searchParams,
+        ),
+      ).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) {
+          throw new ApiError(404, "Log entry not found.");
+        }
+        throw error;
+      });
+      return Response.json(logModel(entry));
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/logs$/,
+    async handler({ db, principal }) {
+      requireSuperuser(principal);
+      await deleteLogs(db);
+      return new Response(null, { status: 204 });
     },
   },
 ];

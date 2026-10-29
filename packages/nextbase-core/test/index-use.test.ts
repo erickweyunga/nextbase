@@ -89,7 +89,11 @@ describe("queries the indexes can serve", () => {
     });
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("finds an account by email with the unique email index", async () => {
     sent.length = 0;

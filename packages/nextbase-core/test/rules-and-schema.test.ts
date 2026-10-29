@@ -120,7 +120,11 @@ describe("rules and schema changes", () => {
       await ok(admin("POST", "/collections/notes/records", { title }));
     }
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   describe("~ with a pattern", () => {
     it("refuses a pattern ending in a lone backslash with a 400", async () => {

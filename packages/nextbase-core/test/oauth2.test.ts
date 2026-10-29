@@ -306,6 +306,7 @@ describe("OAuth2 sign-in", () => {
   });
   afterAll(async () => {
     vi.unstubAllGlobals();
+    await nextbase.flush();
     await t.close();
   });
 

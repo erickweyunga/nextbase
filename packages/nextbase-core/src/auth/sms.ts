@@ -1,5 +1,6 @@
 import { waitUntil as vercelWaitUntil } from "@vercel/functions";
 import { ApiError } from "../errors.ts";
+import type { Logger } from "../logs/logger.ts";
 import { phoneCountry } from "../phone.ts";
 
 export interface SmsMessage {
@@ -55,16 +56,19 @@ export class Sms {
   readonly #options: SmsOptions | undefined;
   readonly #countries: ReadonlySet<string> | undefined;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #logger: Logger;
 
   constructor(
     options: SmsOptions | undefined,
     waitUntil: ((promise: Promise<unknown>) => void) | undefined,
+    logger: Logger,
   ) {
     this.#options = options;
     this.#countries =
       options?.countries &&
       new Set(options.countries.map((c) => c.toUpperCase()));
     this.#waitUntil = waitUntil ?? vercelWaitUntil;
+    this.#logger = logger;
   }
 
   /** Development without SMS set up logs texts instead. */
@@ -107,7 +111,7 @@ export class Sms {
       }
       await options.send({ to, text });
     })().catch((error: unknown) => {
-      console.error(`[nextbase] sending a ${kind} text failed:`, error);
+      this.#logger.failure("sms", `sending a ${kind} text failed`, error);
     });
     this.#waitUntil(work);
   }

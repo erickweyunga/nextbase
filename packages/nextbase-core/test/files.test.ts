@@ -93,6 +93,7 @@ describe("file uploads with local storage", () => {
     });
   });
   afterAll(async () => {
+    await nextbase.flush();
     await t.close();
     await rm(dir, { recursive: true, force: true });
   });

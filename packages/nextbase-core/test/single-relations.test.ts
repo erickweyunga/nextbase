@@ -48,7 +48,11 @@ describe("filters through a single relation", () => {
     await admin.collection("books").create({ title: "none" });
   });
 
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   // A book matches only through an author the caller may view, so `bob`
   // (hidden) and `none` (no author) match neither `=` nor `!=`.

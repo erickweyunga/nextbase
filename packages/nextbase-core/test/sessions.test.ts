@@ -114,7 +114,11 @@ describe("sessions", () => {
     });
     expect(users.status).toBe(200);
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("logs out for real: the token stops working", async () => {
     const id = await signUp("ann@example.com");
@@ -946,7 +950,7 @@ describe("sessions", () => {
         },
       });
       return {
-        nextbase: new NextBase({ database: pool }),
+        nextbase: new NextBase({ database: pool, logs: false }),
         queries: () => {
           const n = count;
           count = 0;

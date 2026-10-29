@@ -77,7 +77,11 @@ describe("phone sign-in", () => {
       updateRule: "id = @request.auth.id",
     });
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   it("lists phone sign-in for collections that enable it", async () => {
     expect((await users().listAuthMethods()).phone).toEqual({ enabled: true });
@@ -391,5 +395,6 @@ describe("phone sign-in", () => {
       "/collections/users/auth-methods",
     );
     expect(reply.body.phone).toEqual({ enabled: false });
+    await upgraded.flush();
   });
 });

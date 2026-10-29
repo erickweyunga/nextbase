@@ -6,6 +6,7 @@ import { countAttempt, type Limit, uploaderKey } from "../auth/throttle.ts";
 import { peekToken, signToken, verifyToken } from "../auth/tokens.ts";
 import { table } from "../db/system.ts";
 import { ApiError } from "../errors.ts";
+import type { Logger } from "../logs/logger.ts";
 import { ALPHANUMERIC, isId, randomString } from "../random.ts";
 import type { Schema } from "../schema/cache.ts";
 import { unstorableText } from "../storable.ts";
@@ -40,6 +41,7 @@ export async function createUpload(
   collection: Collection,
   principal: Principal,
   input: Record<string, unknown>,
+  logger: Logger,
 ): Promise<{
   token: string;
   url: string;
@@ -118,7 +120,7 @@ export async function createUpload(
     throw new ApiError(400, "Failed to start the upload.", issues);
   }
 
-  await deleteExpiredUploads(db, storage);
+  await deleteExpiredUploads(db, storage, logger);
   const id = randomString(32, ALPHANUMERIC);
   await db
     .newQuery(
@@ -150,7 +152,11 @@ export async function createUpload(
 }
 
 /** Removes uploads no record took in time; run where uploads start. */
-async function deleteExpiredUploads(db: DB, storage: Storage): Promise<void> {
+async function deleteExpiredUploads(
+  db: DB,
+  storage: Storage,
+  logger: Logger,
+): Promise<void> {
   const expired = await db
     .newQuery(
       `DELETE FROM {{${table("_uploads")}}} WHERE expires <= now() RETURNING id`,
@@ -160,7 +166,7 @@ async function deleteExpiredUploads(db: DB, storage: Storage): Promise<void> {
   await storage
     .delete(expired.map((id) => uploadKey(id as string)))
     .catch((error: unknown) => {
-      console.error("[nextbase] deleting expired uploads failed:", error);
+      logger.failure("storage", "deleting expired uploads failed", error);
     });
 }
 

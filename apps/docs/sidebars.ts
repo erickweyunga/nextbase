@@ -55,7 +55,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Production",
       className: "sidebar-icon sidebar-icon-production",
-      items: ["guides/production"],
+      items: ["guides/production", "guides/logs"],
     },
     {
       type: "category",
@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
         { type: "doc", id: "api/files", label: "Files" },
         { type: "doc", id: "api/realtime", label: "Realtime" },
         { type: "doc", id: "api/collections", label: "Collections" },
+        { type: "doc", id: "api/logs", label: "Logs" },
         { type: "doc", id: "api/setup", label: "Setup and health" },
         { type: "doc", id: "sdk/index", label: "Client SDK" },
       ],

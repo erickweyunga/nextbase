@@ -28,7 +28,11 @@ describe("HTTP API", () => {
       appUrl: "https://app.example",
     });
   });
-  afterAll(() => t.close());
+  afterAll(async () => {
+    // Log entries still waiting would be written to an ended pool.
+    await nextbase.flush();
+    await t.close();
+  });
 
   describe("first-run setup", () => {
     let setupToken = "";
