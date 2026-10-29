@@ -1,6 +1,6 @@
-import type { DB } from "@nextbasejs/dbx";
-import pg from "pg";
-import type { ActiveSession } from "../auth/sessions.ts";
+import type { DB } from '@nextbasejs/dbx';
+import pg from 'pg';
+import type { ActiveSession } from '../auth/sessions.ts';
 import {
   CHANNEL,
   type Cursor,
@@ -9,8 +9,8 @@ import {
   headCursor,
   lastPosition,
   readEvents,
-} from "./events.ts";
-import { timings } from "./timings.ts";
+} from './events.ts';
+import { timings } from './timings.ts';
 
 /** Events read per query; a reader reads on at once while pages are full. */
 export const PAGE = 500;
@@ -176,7 +176,7 @@ export class RealtimeHub {
         if (page.events.length < PAGE) return;
       }
     } catch (error) {
-      console.error("[nextbase] realtime: reading events failed:", error);
+      console.error('[nextbase] realtime: reading events failed:', error);
       if (run === this.#run) this.#unfollowAll();
     } finally {
       if (this.#reading === run) this.#reading = undefined;
@@ -218,7 +218,7 @@ export class RealtimeHub {
     this.#startPolling();
     if (this.#listenUrl === undefined) {
       this.#warn(
-        "there is no connection string to listen on, so it checks for new events every second. Set realtime.listenUrl, or use a connection string.",
+        'there is no connection string to listen on, so it checks for new events every second. Set realtime.listenUrl, or use a connection string.',
       );
       return;
     }
@@ -252,9 +252,9 @@ export class RealtimeHub {
       connectionTimeoutMillis: 10_000,
     });
     // Without a listener a failed connection would crash the process.
-    client.on("error", () => this.#lost(run, client));
-    client.on("end", () => this.#lost(run, client));
-    client.on("notification", () => {
+    client.on('error', () => this.#lost(run, client));
+    client.on('end', () => this.#lost(run, client));
+    client.on('notification', () => {
       if (run === this.#run) this.#wakeAll();
     });
     this.#client = client;
@@ -290,11 +290,11 @@ export class RealtimeHub {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error("no answer")),
+          () => reject(new Error('no answer')),
           timings.healthTimeoutMs,
         );
       });
-      Promise.race([client.query("SELECT 1"), late])
+      Promise.race([client.query('SELECT 1'), late])
         .catch(() => this.#lost(run, client))
         .finally(() => clearTimeout(timer));
     }, timings.healthMs);
@@ -338,7 +338,7 @@ export class RealtimeHub {
         })
         .catch((error: unknown) => {
           console.error(
-            "[nextbase] realtime: polling for events failed:",
+            '[nextbase] realtime: polling for events failed:',
             error,
           );
         })

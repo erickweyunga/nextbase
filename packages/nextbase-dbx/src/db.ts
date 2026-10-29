@@ -4,8 +4,8 @@ import {
   lastResult,
   type Queryable,
   type QueryResult,
-} from "./builder.ts";
-import type { Row } from "./query.ts";
+} from './builder.ts';
+import type { Row } from './query.ts';
 
 /** The part of a `pg` PoolClient that dbx calls. */
 export interface PoolClient extends Queryable {
@@ -21,10 +21,10 @@ export interface Pool extends Queryable {
 /** Modes for `BEGIN`; omitted fields use the Postgres defaults. */
 export interface TxOptions {
   isolation?:
-    | "serializable"
-    | "repeatable read"
-    | "read committed"
-    | "read uncommitted";
+    | 'serializable'
+    | 'repeatable read'
+    | 'read committed'
+    | 'read uncommitted';
   readOnly?: boolean;
   /** Only affects serializable read-only transactions. */
   deferrable?: boolean;
@@ -42,17 +42,17 @@ export interface TxOptions {
 }
 
 const ISOLATION_LEVELS: ReadonlySet<string> = new Set([
-  "serializable",
-  "repeatable read",
-  "read committed",
-  "read uncommitted",
+  'serializable',
+  'repeatable read',
+  'read committed',
+  'read uncommitted',
 ]);
 
 /** Thrown when a transaction is used after it was committed or rolled back. */
 export class TxDoneError extends Error {
   constructor() {
-    super("dbx: transaction has already been committed or rolled back.");
-    this.name = "TxDoneError";
+    super('dbx: transaction has already been committed or rolled back.');
+    this.name = 'TxDoneError';
   }
 }
 
@@ -65,10 +65,10 @@ export class TxDoneError extends Error {
 export class TxAbortedError extends Error {
   constructor(options?: ErrorOptions) {
     super(
-      "dbx: the transaction was rolled back because a statement in it failed.",
+      'dbx: the transaction was rolled back because a statement in it failed.',
       options,
     );
-    this.name = "TxAbortedError";
+    this.name = 'TxAbortedError';
   }
 }
 
@@ -94,7 +94,7 @@ export class DB extends Builder {
     if (statementTimeout !== undefined) {
       if (!Number.isSafeInteger(statementTimeout) || statementTimeout < 0) {
         throw new RangeError(
-          "dbx: statementTimeout must be a whole number of milliseconds.",
+          'dbx: statementTimeout must be a whole number of milliseconds.',
         );
       }
       statements.push(`SET LOCAL statement_timeout = ${statementTimeout}`);
@@ -106,7 +106,7 @@ export class DB extends Builder {
       // Statements without parameters are sent to Postgres together, in one
       // round trip. Postgres returns one result for each.
       const result = await client.query({
-        text: statements.join("; "),
+        text: statements.join('; '),
         values: [],
         ...(this.options.types && { types: this.options.types }),
       });
@@ -138,7 +138,7 @@ export class DB extends Builder {
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],
-            "dbx: transaction failed and could not be rolled back.",
+            'dbx: transaction failed and could not be rolled back.',
           );
         }
       }
@@ -201,7 +201,7 @@ export class Tx extends Builder {
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],
-            "dbx: nested transaction failed and could not be rolled back.",
+            'dbx: nested transaction failed and could not be rolled back.',
           );
         }
       }
@@ -220,7 +220,7 @@ export class Tx extends Builder {
       } catch (rollbackError) {
         throw new AggregateError(
           [releaseError, rollbackError],
-          "dbx: nested transaction failed and could not be rolled back.",
+          'dbx: nested transaction failed and could not be rolled back.',
         );
       }
       throw isAborted(releaseError)
@@ -232,15 +232,15 @@ export class Tx extends Builder {
 
   /** Throws TxDoneError if already finished. */
   commit(): Promise<void> {
-    return this.#finish("COMMIT");
+    return this.#finish('COMMIT');
   }
 
   /** Throws TxDoneError if already finished. */
   rollback(): Promise<void> {
-    return this.#finish("ROLLBACK");
+    return this.#finish('ROLLBACK');
   }
 
-  async #finish(command: "COMMIT" | "ROLLBACK"): Promise<void> {
+  async #finish(command: 'COMMIT' | 'ROLLBACK'): Promise<void> {
     if (this.#state.done) throw new TxDoneError();
     this.#state.done = true;
     let result: QueryResult;
@@ -256,7 +256,7 @@ export class Tx extends Builder {
     this.#client.release();
     // COMMIT of a failed transaction rolls it back without an error, and
     // says so only in its command tag.
-    if (command === "COMMIT" && result.command === "ROLLBACK") {
+    if (command === 'COMMIT' && result.command === 'ROLLBACK') {
       throw new TxAbortedError();
     }
   }
@@ -271,19 +271,19 @@ function beginSQL({ isolation, readOnly, deferrable }: TxOptions): string {
     }
     modes.push(`ISOLATION LEVEL ${isolation.toUpperCase()}`);
   }
-  if (readOnly !== undefined) modes.push(readOnly ? "READ ONLY" : "READ WRITE");
+  if (readOnly !== undefined) modes.push(readOnly ? 'READ ONLY' : 'READ WRITE');
   if (deferrable !== undefined) {
-    modes.push(deferrable ? "DEFERRABLE" : "NOT DEFERRABLE");
+    modes.push(deferrable ? 'DEFERRABLE' : 'NOT DEFERRABLE');
   }
-  return modes.length === 0 ? "BEGIN" : `BEGIN ${modes.join(", ")}`;
+  return modes.length === 0 ? 'BEGIN' : `BEGIN ${modes.join(', ')}`;
 }
 
 // SQLSTATE 25P02: commands are ignored until the transaction block ends.
 function isAborted(error: unknown): boolean {
   return (
-    typeof error === "object" &&
+    typeof error === 'object' &&
     error !== null &&
-    (error as { code?: unknown }).code === "25P02"
+    (error as { code?: unknown }).code === '25P02'
   );
 }
 

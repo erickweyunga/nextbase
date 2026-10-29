@@ -1,6 +1,6 @@
-import type { Collection, Field } from "@nextbasejs/client";
-import type { Row } from "@nextbasejs/dbx";
-import type { Principal } from "../auth/principal.ts";
+import type { Collection, Field } from '@nextbasejs/client';
+import type { Row } from '@nextbasejs/dbx';
+import type { Principal } from '../auth/principal.ts';
 
 /**
  * Drops hidden fields, unless `hidden`, turns NULL into `""` and timestamps into ISO strings.
@@ -17,7 +17,7 @@ export function serializeRecord(
     collectionName: collection.name,
   };
   const showEmail =
-    collection.type !== "auth" ||
+    collection.type !== 'auth' ||
     row.emailVisibility === true ||
     viewer.superuser ||
     (viewer.record !== undefined &&
@@ -26,7 +26,7 @@ export function serializeRecord(
 
   // Phones have no visibility setting: only the record and superusers see them.
   const showPhone =
-    collection.type !== "auth" ||
+    collection.type !== 'auth' ||
     viewer.superuser ||
     (viewer.record !== undefined &&
       viewer.collection?.id === collection.id &&
@@ -35,14 +35,14 @@ export function serializeRecord(
   for (const field of collection.fields) {
     if (field.hidden && (!hidden || secret(field))) continue;
     const value = row[field.name];
-    if (field.type === "date" || field.type === "autodate") {
-      out[field.name] = value instanceof Date ? value.toISOString() : "";
-    } else if (field.type === "relation" && value === null) {
-      out[field.name] = "";
-    } else if (field.system && field.name === "email" && !showEmail) {
-      out[field.name] = "";
-    } else if (field.system && field.name === "phone" && !showPhone) {
-      out[field.name] = "";
+    if (field.type === 'date' || field.type === 'autodate') {
+      out[field.name] = value instanceof Date ? value.toISOString() : '';
+    } else if (field.type === 'relation' && value === null) {
+      out[field.name] = '';
+    } else if (field.system && field.name === 'email' && !showEmail) {
+      out[field.name] = '';
+    } else if (field.system && field.name === 'phone' && !showPhone) {
+      out[field.name] = '';
     } else {
       out[field.name] = value;
     }
@@ -63,6 +63,6 @@ export function serverRecord(
 
 function secret(field: Field): boolean {
   return (
-    field.type === "password" || (field.system && field.name === "tokenKey")
+    field.type === 'password' || (field.system && field.name === 'tokenKey')
   );
 }

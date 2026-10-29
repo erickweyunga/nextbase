@@ -1,6 +1,6 @@
-import type { DB } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { newId } from "../random.ts";
+import type { DB } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { newId } from '../random.ts';
 
 /** Log levels, as stored: higher is more severe. */
 export const LOG_LEVELS = { debug: -4, info: 0, warn: 4, error: 8 } as const;
@@ -18,12 +18,12 @@ export interface LogsOptions {
 
 /** What a background failure was doing. */
 export type FailureType =
-  | "hook"
-  | "storage"
-  | "mail"
-  | "sms"
-  | "realtime"
-  | "oauth2";
+  | 'hook'
+  | 'storage'
+  | 'mail'
+  | 'sms'
+  | 'realtime'
+  | 'oauth2';
 
 /**
  * How often each instance deletes expired entries, in milliseconds. Tests
@@ -31,7 +31,7 @@ export type FailureType =
  */
 export const logTimings = { purgeMs: 600_000 };
 
-const LOGS = table("_logs");
+const LOGS = table('_logs');
 // Rows per insert: a flush of more is split.
 const BATCH = 200;
 // Entries waiting to be sent at most; more are dropped.
@@ -196,7 +196,7 @@ export class Logger {
         // Awaited, so logging holds one connection at most.
         await this.#purge(db);
       } catch (error) {
-        console.error("[nextbase] writing log entries failed:", error);
+        console.error('[nextbase] writing log entries failed:', error);
       }
     }
   }
@@ -210,7 +210,7 @@ export class Logger {
     try {
       await purgeLogs(db, config.maxDays);
     } catch (error) {
-      console.error("[nextbase] deleting expired log entries failed:", error);
+      console.error('[nextbase] deleting expired log entries failed:', error);
     }
   }
 
@@ -222,28 +222,28 @@ export class Logger {
   #now(): string {
     const micros = Math.max(this.#lastMicros + 1, Date.now() * 1000);
     this.#lastMicros = micros;
-    const fraction = String(micros % 1000).padStart(3, "0");
+    const fraction = String(micros % 1000).padStart(3, '0');
     return new Date(Math.floor(micros / 1000))
       .toISOString()
-      .replace("Z", `${fraction}Z`);
+      .replace('Z', `${fraction}Z`);
   }
 }
 
 function parseOptions(options: LogsOptions): Config {
-  if (options === null || typeof options !== "object") {
-    throw new TypeError("logs must be false or an object.");
+  if (options === null || typeof options !== 'object') {
+    throw new TypeError('logs must be false or an object.');
   }
   const { maxDays = 7, minLevel = LOG_LEVELS.info } = options;
-  if (typeof maxDays !== "number" || !Number.isFinite(maxDays) || maxDays < 1) {
-    throw new RangeError("logs.maxDays must be a number of days, at least 1.");
+  if (typeof maxDays !== 'number' || !Number.isFinite(maxDays) || maxDays < 1) {
+    throw new RangeError('logs.maxDays must be a number of days, at least 1.');
   }
-  if (typeof minLevel !== "number" || !Number.isFinite(minLevel)) {
+  if (typeof minLevel !== 'number' || !Number.isFinite(minLevel)) {
     throw new RangeError(
-      "logs.minLevel must be a number, such as 0 for info or 4 for warn.",
+      'logs.minLevel must be a number, such as 0 for info or 4 for warn.',
     );
   }
-  for (const key of ["authId", "ip"] as const) {
-    if (options[key] !== undefined && typeof options[key] !== "boolean") {
+  for (const key of ['authId', 'ip'] as const) {
+    if (options[key] !== undefined && typeof options[key] !== 'boolean') {
       throw new TypeError(`logs.${key} must be a boolean.`);
     }
   }
@@ -292,7 +292,7 @@ export function errorMessage(error: unknown): string {
   try {
     return String(error);
   } catch {
-    return "Unknown error";
+    return 'Unknown error';
   }
 }
 
@@ -306,19 +306,19 @@ function capitalize(text: string): string {
  * insert.
  */
 function storable(value: unknown): unknown {
-  if (typeof value === "string") {
-    return value.toWellFormed().replaceAll("\0", "�");
+  if (typeof value === 'string') {
+    return value.toWellFormed().replaceAll('\0', '�');
   }
   if (Array.isArray(value)) return value.map(storable);
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([k, v]) => [storableText(k), storable(v)]),
     );
   }
-  if (typeof value === "number" && !Number.isFinite(value)) return null;
+  if (typeof value === 'number' && !Number.isFinite(value)) return null;
   return value;
 }
 
 function storableText(text: string): string {
-  return text.toWellFormed().replaceAll("\0", "\uFFFD");
+  return text.toWellFormed().replaceAll('\0', '\uFFFD');
 }

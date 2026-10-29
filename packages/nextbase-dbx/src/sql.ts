@@ -1,6 +1,6 @@
-import type { Params } from "./query.ts";
+import type { Params } from './query.ts';
 
-export type TokenKind = "param" | "table" | "column";
+export type TokenKind = 'param' | 'table' | 'column';
 
 // `{:name}`, `{{table}}` and `[[column]]`, matched at one position.
 const TOKEN = /\{:(\w+)\}|\{\{([\w\-. ]+)\}\}|\[\[([\w\-. ]+)\]\]/y;
@@ -17,7 +17,7 @@ export function rewriteSQL(
   sql: string,
   replace: (kind: TokenKind, name: string, token: string) => string,
 ): string {
-  let out = "";
+  let out = '';
   let copied = 0;
   let i = 0;
   while (i < sql.length) {
@@ -27,30 +27,30 @@ export function rewriteSQL(
       // E'...' strings use backslash escapes.
       const escapes =
         i > 0 &&
-        (sql[i - 1] === "E" || sql[i - 1] === "e") &&
+        (sql[i - 1] === 'E' || sql[i - 1] === 'e') &&
         !(i > 1 && IDENTIFIER_CHAR.test(sql[i - 2] as string));
       i = skipQuoted(sql, i, "'", escapes);
     } else if (char === '"') {
       i = skipQuoted(sql, i, '"', false);
-    } else if (char === "-" && sql[i + 1] === "-") {
-      const end = sql.indexOf("\n", i);
+    } else if (char === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i);
       i = end === -1 ? sql.length : end;
-    } else if (char === "/" && sql[i + 1] === "*") {
+    } else if (char === '/' && sql[i + 1] === '*') {
       i = skipBlockComment(sql, i);
-    } else if (char === "$" && !inIdentifier) {
+    } else if (char === '$' && !inIdentifier) {
       DOLLAR_TAG.lastIndex = i;
       const tag = DOLLAR_TAG.exec(sql)?.[0];
       if (tag !== undefined) {
         const end = sql.indexOf(tag, i + tag.length);
         i = end === -1 ? sql.length : end + tag.length;
-      } else if (/\d/.test(sql[i + 1] ?? "")) {
+      } else if (/\d/.test(sql[i + 1] ?? '')) {
         throw new SyntaxError(
-          "dbx: positional parameters such as $1 are not supported; use {:name}.",
+          'dbx: positional parameters such as $1 are not supported; use {:name}.',
         );
       } else {
         i++;
       }
-    } else if (char === "{" || (char === "[" && !isArrayBracket(sql, i))) {
+    } else if (char === '{' || (char === '[' && !isArrayBracket(sql, i))) {
       TOKEN.lastIndex = i;
       const match = TOKEN.exec(sql);
       // A name has a letter or `_`; `[[1]]` is a nested array.
@@ -58,10 +58,10 @@ export function rewriteSQL(
         const [token, param, table, column] = match;
         const result =
           param !== undefined
-            ? replace("param", param, token)
+            ? replace('param', param, token)
             : table !== undefined
-              ? replace("table", table, token)
-              : replace("column", column as string, token);
+              ? replace('table', table, token)
+              : replace('column', column as string, token);
         out += sql.slice(copied, i) + result;
         i += token.length;
         copied = i;
@@ -83,10 +83,10 @@ function isArrayBracket(sql: string, i: number): boolean {
   if (end === 0 || !IDENTIFIER_CHAR.test(sql[end - 1] as string)) return false;
   if (end === i) return true;
   // With whitespace between, only ARRAY: in `SELECT [[id]]` it is a column.
-  const start = end - "array".length;
+  const start = end - 'array'.length;
   return (
     start >= 0 &&
-    sql.slice(start, end).toLowerCase() === "array" &&
+    sql.slice(start, end).toLowerCase() === 'array' &&
     !(start > 0 && IDENTIFIER_CHAR.test(sql[start - 1] as string))
   );
 }
@@ -101,7 +101,7 @@ function skipQuoted(
   let i = start + 1;
   while (i < sql.length) {
     const char = sql[i];
-    if (escapes && char === "\\") {
+    if (escapes && char === '\\') {
       i += 2;
     } else if (char === quote) {
       if (sql[i + 1] !== quote) return i + 1;
@@ -118,10 +118,10 @@ function skipBlockComment(sql: string, start: number): number {
   let depth = 0;
   let i = start;
   while (i < sql.length) {
-    if (sql[i] === "/" && sql[i + 1] === "*") {
+    if (sql[i] === '/' && sql[i + 1] === '*') {
       depth++;
       i += 2;
-    } else if (sql[i] === "*" && sql[i + 1] === "/") {
+    } else if (sql[i] === '*' && sql[i + 1] === '/') {
       depth--;
       i += 2;
       if (depth === 0) return i;
@@ -139,7 +139,7 @@ export function quoteIdentifier(name: string): string {
 
 /** Quotes each part of a dotted path such as `schema.table`, always. */
 export function quoteIdentifierPath(name: string): string {
-  return name.split(".").map(quoteIdentifier).join(".");
+  return name.split('.').map(quoteIdentifier).join('.');
 }
 
 // Next free `pN` per params object, so binding many values stays linear.
@@ -176,7 +176,7 @@ export function mergeParams(sql: string, own: Params, params: Params): string {
   }
   if (renames.size === 0) return sql;
   return rewriteSQL(sql, (kind, name, token) => {
-    const fresh = kind === "param" ? renames.get(name) : undefined;
+    const fresh = kind === 'param' ? renames.get(name) : undefined;
     return fresh === undefined ? token : `{:${fresh}}`;
   });
 }

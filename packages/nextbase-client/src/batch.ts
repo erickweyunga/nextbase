@@ -1,5 +1,5 @@
-import { hasFiles, withUploadedFiles } from "./files.ts";
-import type { NextBaseClient, SendOptions } from "./index.ts";
+import { hasFiles, withUploadedFiles } from './files.ts';
+import type { NextBaseClient, SendOptions } from './index.ts';
 
 /** One write's outcome: 200 with the record, or 204 when the caller may not view it. */
 export interface BatchResult {
@@ -8,7 +8,7 @@ export interface BatchResult {
 }
 
 interface BatchRequest {
-  method: "POST" | "PATCH" | "DELETE";
+  method: 'POST' | 'PATCH' | 'DELETE';
   url: string;
   body?: Record<string, unknown>;
   /** The collection, for uploading the body's files. */
@@ -51,9 +51,9 @@ export class Batch {
         }),
       });
     }
-    return this.#client.send("/batch", {
+    return this.#client.send('/batch', {
       ...options,
-      method: "POST",
+      method: 'POST',
       body: { requests },
     });
   }
@@ -75,8 +75,8 @@ export class BatchCollection {
 
   create(body: Record<string, unknown>, options?: BatchWriteOptions): Batch {
     this.#requests.push({
-      method: "POST",
-      url: this.#url("", options),
+      method: 'POST',
+      url: this.#url('', options),
       body,
       collection: this.#collection,
     });
@@ -89,7 +89,7 @@ export class BatchCollection {
     options?: BatchWriteOptions,
   ): Batch {
     this.#requests.push({
-      method: "PATCH",
+      method: 'PATCH',
       url: this.#url(`/${encodeURIComponent(id)}`, options),
       body,
       collection: this.#collection,
@@ -99,7 +99,7 @@ export class BatchCollection {
 
   delete(id: string): Batch {
     this.#requests.push({
-      method: "DELETE",
+      method: 'DELETE',
       url: this.#url(`/${encodeURIComponent(id)}`),
       collection: this.#collection,
     });
@@ -108,8 +108,8 @@ export class BatchCollection {
 
   #url(suffix: string, options: BatchWriteOptions = {}): string {
     const query = new URLSearchParams();
-    if (options.expand) query.set("expand", options.expand);
-    if (options.fields) query.set("fields", options.fields);
-    return `${this.#path}${suffix}${query.size > 0 ? `?${query}` : ""}`;
+    if (options.expand) query.set('expand', options.expand);
+    if (options.fields) query.set('fields', options.fields);
+    return `${this.#path}${suffix}${query.size > 0 ? `?${query}` : ''}`;
   }
 }

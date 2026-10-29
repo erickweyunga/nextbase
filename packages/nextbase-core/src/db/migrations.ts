@@ -1,11 +1,11 @@
-import type { Collection } from "@nextbasejs/client";
-import type { DB, Tx } from "@nextbasejs/dbx";
-import { ALPHANUMERIC, randomString } from "../random.ts";
-import { superusersCollection } from "../schema/collection.ts";
-import { loadCollections, saveCollectionRow } from "../schema/store.ts";
-import { createCollectionTable } from "../schema/sync.ts";
-import { renameRuleField } from "./rename-rule-field.ts";
-import { lockSchema, SCHEMA, table } from "./system.ts";
+import type { Collection } from '@nextbasejs/client';
+import type { DB, Tx } from '@nextbasejs/dbx';
+import { ALPHANUMERIC, randomString } from '../random.ts';
+import { superusersCollection } from '../schema/collection.ts';
+import { loadCollections, saveCollectionRow } from '../schema/store.ts';
+import { createCollectionTable } from '../schema/sync.ts';
+import { renameRuleField } from './rename-rule-field.ts';
+import { lockSchema, SCHEMA, table } from './system.ts';
 
 // Postgres 16: pg_input_is_valid and the CREATEROLE rules view roles rely on.
 const MIN_SERVER_VERSION = 160_000;
@@ -26,24 +26,24 @@ interface Migration {
 
 const MIGRATIONS: readonly Migration[] = [
   {
-    name: "0001_init",
+    name: '0001_init',
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
       await exec(`
-        CREATE TABLE {{${table("_meta")}}} (
+        CREATE TABLE {{${table('_meta')}}} (
           id             boolean PRIMARY KEY DEFAULT true CHECK (id),
           schema_version bigint NOT NULL DEFAULT 1,
           setup_secret   text NOT NULL
         )`);
       // Signs the one-time token that creates the first superuser.
       await tx
-        .insert(table("_meta"), {
+        .insert(table('_meta'), {
           setup_secret: randomString(50, ALPHANUMERIC),
         })
         .execute();
       await exec(`
-        CREATE TABLE {{${table("_collections")}}} (
+        CREATE TABLE {{${table('_collections')}}} (
           id          text PRIMARY KEY,
           type        text NOT NULL CHECK (type IN ('base', 'auth')),
           name        text NOT NULL,
@@ -60,11 +60,11 @@ const MIGRATIONS: readonly Migration[] = [
           updated     timestamptz NOT NULL DEFAULT now()
         )`);
       await exec(
-        `CREATE UNIQUE INDEX "_collections_name" ON {{${table("_collections")}}} (lower(name))`,
+        `CREATE UNIQUE INDEX "_collections_name" ON {{${table('_collections')}}} (lower(name))`,
       );
       // Failed password logins per collection and identity, for throttling.
       await exec(`
-        CREATE TABLE {{${table("_auth_attempts")}}} (
+        CREATE TABLE {{${table('_auth_attempts')}}} (
           key        text PRIMARY KEY,
           failures   integer NOT NULL,
           window_end timestamptz NOT NULL
@@ -75,14 +75,14 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
-    name: "0002_sessions",
+    name: '0002_sessions',
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
       // Tokens are stored hashed; key_hash binds a session to its record's
       // tokenKey and collection secret.
       await exec(`
-        CREATE TABLE {{${table("_sessions")}}} (
+        CREATE TABLE {{${table('_sessions')}}} (
           id            text PRIMARY KEY,
           token_hash    text NOT NULL UNIQUE,
           collection_id text NOT NULL,
@@ -93,21 +93,21 @@ const MIGRATIONS: readonly Migration[] = [
           expires       timestamptz NOT NULL
         )`);
       await exec(
-        `CREATE INDEX "_sessions_record" ON {{${table("_sessions")}}} (collection_id, record_id)`,
+        `CREATE INDEX "_sessions_record" ON {{${table('_sessions')}}} (collection_id, record_id)`,
       );
       await exec(
-        `CREATE INDEX "_sessions_expires" ON {{${table("_sessions")}}} (expires)`,
+        `CREATE INDEX "_sessions_expires" ON {{${table('_sessions')}}} (expires)`,
       );
     },
   },
   {
-    name: "0003_parse_timestamptz",
+    name: '0003_parse_timestamptz',
     async up(tx) {
       // JSON to timestamp for filters, NULL when invalid; a missing zone means
       // UTC. PL/pgSQL so the planner never folds the casts of a constant.
       await tx
         .newQuery(
-          `CREATE FUNCTION {{${table("parse_timestamptz")}}}(value text)
+          `CREATE FUNCTION {{${table('parse_timestamptz')}}}(value text)
            RETURNS timestamptz LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE AS $fn$
            BEGIN
              IF value !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]{1,6})?)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)?)?$' THEN
@@ -130,30 +130,30 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
-    name: "0004_view_collections",
+    name: '0004_view_collections',
     async up(tx) {
       await tx
         .newQuery(
-          `ALTER TABLE {{${table("_collections")}}}
+          `ALTER TABLE {{${table('_collections')}}}
              DROP CONSTRAINT "_collections_type_check",
              ADD CONSTRAINT "_collections_type_check" CHECK (type IN ('base', 'auth', 'view'))`,
         )
         .execute();
       // The role view collections run as, created with the first view.
       await tx
-        .newQuery(`ALTER TABLE {{${table("_meta")}}} ADD COLUMN view_role text`)
+        .newQuery(`ALTER TABLE {{${table('_meta')}}} ADD COLUMN view_role text`)
         .execute();
     },
   },
   {
-    name: "0005_oauth2",
+    name: '0005_oauth2',
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
       // Keyed by a hash of the state the browser holds in a cookie, so a
       // database leak cannot finish anyone's sign-in.
       await exec(`
-        CREATE TABLE {{${table("_oauth2_states")}}} (
+        CREATE TABLE {{${table('_oauth2_states')}}} (
           id             text PRIMARY KEY,
           collection_id  text NOT NULL,
           provider       text NOT NULL,
@@ -166,7 +166,7 @@ const MIGRATIONS: readonly Migration[] = [
         )`);
       // At most one per provider and record; each provider account to one record.
       await exec(`
-        CREATE TABLE {{${table("_linked_accounts")}}} (
+        CREATE TABLE {{${table('_linked_accounts')}}} (
           id            text PRIMARY KEY,
           collection_id text NOT NULL,
           record_id     text NOT NULL,
@@ -179,12 +179,12 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
-    name: "0006_phone",
+    name: '0006_phone',
     async up(tx) {
       // One live code per phone and purpose, stored hashed.
       await tx
         .newQuery(
-          `CREATE TABLE {{${table("_phone_codes")}}} (
+          `CREATE TABLE {{${table('_phone_codes')}}} (
              collection_id text NOT NULL,
              phone         text NOT NULL,
              purpose       text NOT NULL,
@@ -196,33 +196,33 @@ const MIGRATIONS: readonly Migration[] = [
            )`,
         )
         .execute();
-      await renameClashingUserFields(tx, "phone", "_phone");
-      await renameClashingUserFields(tx, "phoneVerified", "_phoneVerified");
+      await renameClashingUserFields(tx, 'phone', '_phone');
+      await renameClashingUserFields(tx, 'phoneVerified', '_phoneVerified');
       // Adds phone fields and phoneSignIn to auth collections created before them.
       const collections = await tx
         .newQuery(
-          `SELECT id, name, fields FROM {{${table("_collections")}}} WHERE type = 'auth'`,
+          `SELECT id, name, fields FROM {{${table('_collections')}}} WHERE type = 'auth'`,
         )
         .all<{ id: string; name: string; fields: { id: string }[] }>();
       let changed = false;
       for (const { id, name, fields } of collections) {
-        if (fields.some((f) => f.id === "_phone")) continue;
+        if (fields.some((f) => f.id === '_phone')) continue;
         changed = true;
         fields.splice(
-          fields.findIndex((f) => f.id === "_verified") + 1,
+          fields.findIndex((f) => f.id === '_verified') + 1,
           0,
           {
-            id: "_phone",
-            name: "phone",
-            type: "phone",
+            id: '_phone',
+            name: 'phone',
+            type: 'phone',
             system: true,
             required: false,
             hidden: false,
           } as { id: string },
           {
-            id: "_phoneVerified",
-            name: "phoneVerified",
-            type: "bool",
+            id: '_phoneVerified',
+            name: 'phoneVerified',
+            type: 'bool',
             system: true,
             required: false,
             hidden: false,
@@ -243,7 +243,7 @@ const MIGRATIONS: readonly Migration[] = [
           .execute();
         await tx
           .newQuery(
-            `UPDATE {{${table("_collections")}}}
+            `UPDATE {{${table('_collections')}}}
              SET fields = {:fields}::jsonb, options = options || '{"phoneSignIn": false}'::jsonb
              WHERE id = {:id}`,
           )
@@ -254,23 +254,23 @@ const MIGRATIONS: readonly Migration[] = [
       if (changed) {
         await tx
           .newQuery(
-            `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+            `UPDATE {{${table('_meta')}}} SET schema_version = schema_version + 1`,
           )
           .execute();
       }
     },
   },
   {
-    name: "0007_email_verified",
+    name: '0007_email_verified',
     async up(tx) {
       // `verified` becomes `emailVerified`. The id stays, so indexes survive;
       // rules referring to it are rewritten.
-      await renameClashingUserFields(tx, "emailVerified", "_verified");
+      await renameClashingUserFields(tx, 'emailVerified', '_verified');
       const collections = await loadCollections(tx);
       const auth = collections.filter(
         (c) =>
-          c.type === "auth" &&
-          c.fields.some((f) => f.id === "_verified" && f.name === "verified"),
+          c.type === 'auth' &&
+          c.fields.some((f) => f.id === '_verified' && f.name === 'verified'),
       );
       if (auth.length === 0) return;
       const rename = (rule: string | null, c: Collection): string | null =>
@@ -280,8 +280,8 @@ const MIGRATIONS: readonly Migration[] = [
               rule,
               c,
               collections,
-              "verified",
-              "emailVerified",
+              'verified',
+              'emailVerified',
               (owner) => auth.includes(owner),
             );
       for (const c of collections) {
@@ -292,11 +292,11 @@ const MIGRATIONS: readonly Migration[] = [
           createRule: rename(c.createRule, c),
           updateRule: rename(c.updateRule, c),
           deleteRule: rename(c.deleteRule, c),
-          ...(c.type === "auth" && {
+          ...(c.type === 'auth' && {
             authRule: rename(c.authRule, c),
             manageRule: rename(c.manageRule, c),
             fields: c.fields.map((f) =>
-              f.id === "_verified" ? { ...f, name: "emailVerified" } : f,
+              f.id === '_verified' ? { ...f, name: 'emailVerified' } : f,
             ),
           }),
         } as Collection;
@@ -311,19 +311,19 @@ const MIGRATIONS: readonly Migration[] = [
       }
       await tx
         .newQuery(
-          `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+          `UPDATE {{${table('_meta')}}} SET schema_version = schema_version + 1`,
         )
         .execute();
     },
   },
   {
-    name: "0008_uploads",
+    name: '0008_uploads',
     async up(tx) {
       // Direct uploads awaiting a record, each for one file field and exact
       // size, until it expires.
       await tx
         .newQuery(
-          `CREATE TABLE {{${table("_uploads")}}} (
+          `CREATE TABLE {{${table('_uploads')}}} (
              id            text PRIMARY KEY,
              collection_id text NOT NULL,
              field_id      text NOT NULL,
@@ -336,54 +336,54 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
       await tx
         .newQuery(
-          `CREATE INDEX "_uploads_expires" ON {{${table("_uploads")}}} (expires)`,
+          `CREATE INDEX "_uploads_expires" ON {{${table('_uploads')}}} (expires)`,
         )
         .execute();
     },
   },
   {
-    name: "0009_expiry_indexes",
+    name: '0009_expiry_indexes',
     async up(tx) {
       // Expired rows are deleted on every sign-in attempt, OAuth2 sign-in and
       // texted code. These indexes let each delete find them without reading
       // the whole table.
       await tx
         .newQuery(
-          `CREATE INDEX "_auth_attempts_window_end" ON {{${table("_auth_attempts")}}} (window_end)`,
+          `CREATE INDEX "_auth_attempts_window_end" ON {{${table('_auth_attempts')}}} (window_end)`,
         )
         .execute();
       await tx
         .newQuery(
-          `CREATE INDEX "_oauth2_states_expires" ON {{${table("_oauth2_states")}}} (expires)`,
+          `CREATE INDEX "_oauth2_states_expires" ON {{${table('_oauth2_states')}}} (expires)`,
         )
         .execute();
       await tx
         .newQuery(
-          `CREATE INDEX "_phone_codes_expires" ON {{${table("_phone_codes")}}} (expires)`,
+          `CREATE INDEX "_phone_codes_expires" ON {{${table('_phone_codes')}}} (expires)`,
         )
         .execute();
     },
   },
   {
-    name: "0010_realtime",
+    name: '0010_realtime',
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
       // A transaction that writes to realtime collections, with the position
       // it takes when it commits. Its events are in `_realtime_events`.
-      await exec(`CREATE SEQUENCE {{${table("_realtime_transaction_ids")}}}`);
-      await exec(`CREATE SEQUENCE {{${table("_realtime_positions")}}}`);
+      await exec(`CREATE SEQUENCE {{${table('_realtime_transaction_ids')}}}`);
+      await exec(`CREATE SEQUENCE {{${table('_realtime_positions')}}}`);
       await exec(`
-        CREATE TABLE {{${table("_realtime_transactions")}}} (
+        CREATE TABLE {{${table('_realtime_transactions')}}} (
           id        bigint PRIMARY KEY,
           position  bigint UNIQUE,
           committed timestamptz
         )`);
       await exec(
-        `CREATE INDEX "_realtime_transactions_committed" ON {{${table("_realtime_transactions")}}} (committed)`,
+        `CREATE INDEX "_realtime_transactions_committed" ON {{${table('_realtime_transactions')}}} (committed)`,
       );
       await exec(`
-        CREATE TABLE {{${table("_realtime_events")}}} (
+        CREATE TABLE {{${table('_realtime_events')}}} (
           transaction_id bigint NOT NULL,
           seq            bigserial,
           collection_id  text NOT NULL,
@@ -397,12 +397,12 @@ const MIGRATIONS: readonly Migration[] = [
       // next position only once this one is visible: positions are taken,
       // and become visible, in commit order.
       await exec(`
-        CREATE FUNCTION {{${table("_realtime_commit")}}}() RETURNS trigger
+        CREATE FUNCTION {{${table('_realtime_commit')}}}() RETURNS trigger
         LANGUAGE plpgsql SET search_path = '' AS $$
         BEGIN
           PERFORM pg_catalog.pg_advisory_xact_lock(${REALTIME_LOCK});
-          UPDATE ${table("_realtime_transactions")}
-          SET position = pg_catalog.nextval('${table("_realtime_positions")}'),
+          UPDATE ${table('_realtime_transactions')}
+          SET position = pg_catalog.nextval('${table('_realtime_positions')}'),
               committed = pg_catalog.clock_timestamp()
           WHERE id = NEW.id;
           RETURN NULL;
@@ -410,29 +410,29 @@ const MIGRATIONS: readonly Migration[] = [
         $$`);
       await exec(`
         CREATE CONSTRAINT TRIGGER "_realtime_commit"
-        AFTER INSERT ON {{${table("_realtime_transactions")}}}
+        AFTER INSERT ON {{${table('_realtime_transactions')}}}
         DEFERRABLE INITIALLY DEFERRED
-        FOR EACH ROW EXECUTE FUNCTION {{${table("_realtime_commit")}}}()`);
+        FOR EACH ROW EXECUTE FUNCTION {{${table('_realtime_commit')}}}()`);
       // The last event deleted as too old, so readers behind it learn they
       // may have missed events.
       await exec(`
-        CREATE TABLE {{${table("_realtime_state")}}} (
+        CREATE TABLE {{${table('_realtime_state')}}} (
           id              boolean PRIMARY KEY DEFAULT true CHECK (id),
           purged_position bigint NOT NULL DEFAULT 0,
           purged_seq      bigint NOT NULL DEFAULT 0
         )`);
-      await exec(`INSERT INTO {{${table("_realtime_state")}}} DEFAULT VALUES`);
+      await exec(`INSERT INTO {{${table('_realtime_state')}}} DEFAULT VALUES`);
     },
   },
   {
-    name: "0011_logs",
+    name: '0011_logs',
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
       // Request logs and background failures. The index serves the default
       // newest-first listing and the deletes of expired entries.
       await exec(`
-        CREATE TABLE {{${table("_logs")}}} (
+        CREATE TABLE {{${table('_logs')}}} (
           id      text PRIMARY KEY,
           created timestamptz NOT NULL DEFAULT now(),
           level   smallint NOT NULL,
@@ -440,7 +440,7 @@ const MIGRATIONS: readonly Migration[] = [
           data    jsonb NOT NULL DEFAULT '{}'
         )`);
       await exec(
-        `CREATE INDEX "_logs_created" ON {{${table("_logs")}}} (created, id)`,
+        `CREATE INDEX "_logs_created" ON {{${table('_logs')}}} (created, id)`,
       );
     },
   },
@@ -459,7 +459,7 @@ async function renameClashingUserFields(
   systemId: string,
 ): Promise<void> {
   const collections = await loadCollections(tx);
-  const auth = collections.filter((c) => c.type === "auth");
+  const auth = collections.filter((c) => c.type === 'auth');
   const clashes = auth.flatMap((c) =>
     c.fields
       .filter(
@@ -496,7 +496,7 @@ async function renameClashingUserFields(
           createRule: rename(c.createRule, c),
           updateRule: rename(c.updateRule, c),
           deleteRule: rename(c.deleteRule, c),
-          ...(c.type === "auth" && {
+          ...(c.type === 'auth' && {
             authRule: rename(c.authRule, c),
             manageRule: rename(c.manageRule, c),
           }),
@@ -515,7 +515,7 @@ async function renameClashingUserFields(
   }
   for (const c of renamed) {
     const own = clashes.filter((x) => x.collection.id === c.id);
-    if (c.type !== "auth" || own.length === 0) {
+    if (c.type !== 'auth' || own.length === 0) {
       await saveCollectionRow(tx, c);
       continue;
     }
@@ -529,7 +529,7 @@ async function renameClashingUserFields(
   }
   await tx
     .newQuery(
-      `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+      `UPDATE {{${table('_meta')}}} SET schema_version = schema_version + 1`,
     )
     .execute();
 }
@@ -544,7 +544,7 @@ export async function migrate(db: DB): Promise<void> {
     // CREATE SCHEMA IF NOT EXISTS needs database CREATE even if the schema
     // exists, which restricted roles lack.
     const exists = await tx
-      .newQuery("SELECT 1 FROM pg_namespace WHERE nspname = {:schema}")
+      .newQuery('SELECT 1 FROM pg_namespace WHERE nspname = {:schema}')
       .bind({ schema: SCHEMA })
       .column();
     if (exists.length === 0) {
@@ -552,19 +552,19 @@ export async function migrate(db: DB): Promise<void> {
     }
     await tx
       .newQuery(
-        `CREATE TABLE IF NOT EXISTS {{${table("_migrations")}}} (
+        `CREATE TABLE IF NOT EXISTS {{${table('_migrations')}}} (
           name    text PRIMARY KEY,
           applied timestamptz NOT NULL DEFAULT now()
         )`,
       )
       .execute();
     const applied = new Set(
-      await tx.select("name").from(table("_migrations")).column<string>(),
+      await tx.select('name').from(table('_migrations')).column<string>(),
     );
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.name)) continue;
       await migration.up(tx);
-      await tx.insert(table("_migrations"), { name: migration.name }).execute();
+      await tx.insert(table('_migrations'), { name: migration.name }).execute();
     }
   });
 }
@@ -583,13 +583,13 @@ async function checkSettings(db: DB): Promise<void> {
     );
   }
   const problems: string[] = [];
-  if (!dateStyle.startsWith("ISO"))
+  if (!dateStyle.startsWith('ISO'))
     problems.push(`DateStyle is "${dateStyle}"; set it to 'ISO, MDY'`);
-  if (standardStrings !== "on")
-    problems.push("standard_conforming_strings is off; turn it on");
+  if (standardStrings !== 'on')
+    problems.push('standard_conforming_strings is off; turn it on');
   if (problems.length > 0) {
     throw new Error(
-      `NextBase cannot use this database: ${problems.join(", and ")} (for example with ALTER DATABASE ... SET).`,
+      `NextBase cannot use this database: ${problems.join(', and ')} (for example with ALTER DATABASE ... SET).`,
     );
   }
 }
@@ -598,15 +598,15 @@ async function checkSettings(db: DB): Promise<void> {
 async function isUpToDate(db: DB): Promise<boolean> {
   try {
     const applied = await db
-      .select("name")
-      .from(table("_migrations"))
+      .select('name')
+      .from(table('_migrations'))
       .column<string>();
     const names = new Set(applied);
     return MIGRATIONS.every((m) => names.has(m.name));
   } catch (error) {
     // 42P01 undefined_table, 3F000 invalid_schema_name: a fresh database.
     const code = (error as { code?: unknown }).code;
-    if (code === "42P01" || code === "3F000") return false;
+    if (code === '42P01' || code === '3F000') return false;
     throw error;
   }
 }

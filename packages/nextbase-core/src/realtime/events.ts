@@ -1,17 +1,17 @@
-import type { Collection, Field } from "@nextbasejs/client";
-import type { Builder, Params, Row } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { decodeRecordJson } from "../db/types.ts";
-import { timestampParam } from "../storable.ts";
+import type { Collection, Field } from '@nextbasejs/client';
+import type { Builder, Params, Row } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { decodeRecordJson } from '../db/types.ts';
+import { timestampParam } from '../storable.ts';
 
 /** The channel writes notify once they commit events. */
-export const CHANNEL = "nextbase_realtime";
+export const CHANNEL = 'nextbase_realtime';
 
-export type RealtimeAction = "create" | "update" | "delete";
+export type RealtimeAction = 'create' | 'update' | 'delete';
 
-const TRANSACTIONS = table("_realtime_transactions");
-const EVENTS = table("_realtime_events");
-const STATE = table("_realtime_state");
+const TRANSACTIONS = table('_realtime_transactions');
+const EVENTS = table('_realtime_events');
+const STATE = table('_realtime_state');
 
 // Postgres takes at most 65535 parameters per statement; each event takes 2.
 const PER_STATEMENT = 30_000;
@@ -63,7 +63,7 @@ export async function writeEvents(
         `WITH "nb_tx" AS (
            SELECT COALESCE(
              NULLIF(current_setting('nextbase.realtime_tx', true), ''),
-             set_config('nextbase.realtime_tx', nextval('${table("_realtime_transaction_ids")}')::text, true)
+             set_config('nextbase.realtime_tx', nextval('${table('_realtime_transaction_ids')}')::text, true)
            )::bigint AS id
          ), "nb_mark" AS (
            INSERT INTO {{${TRANSACTIONS}}} (id) SELECT id FROM "nb_tx"
@@ -71,7 +71,7 @@ export async function writeEvents(
          ), "nb_events" AS (
            INSERT INTO {{${EVENTS}}} (transaction_id, collection_id, action, record_id, record)
            SELECT "nb_tx".id, v.c, v.a, v.r, v.j
-           FROM "nb_tx", (VALUES ${tuples.join(", ")}) AS v(c, a, r, j)
+           FROM "nb_tx", (VALUES ${tuples.join(', ')}) AS v(c, a, r, j)
          )
          SELECT pg_notify('${CHANNEL}', '')`,
       )
@@ -97,7 +97,7 @@ function snapshot(collection: Collection, record: Row): Row {
 
 function secret(field: Field): boolean {
   return (
-    field.type === "password" || (field.system && field.name === "tokenKey")
+    field.type === 'password' || (field.system && field.name === 'tokenKey')
   );
 }
 
@@ -148,12 +148,12 @@ export async function readEvents(
 ): Promise<EventPage> {
   const record =
     collectionIds === undefined
-      ? "e.record"
-      : "CASE WHEN e.collection_id = ANY({:collections}::text[]) THEN e.record END";
+      ? 'e.record'
+      : 'CASE WHEN e.collection_id = ANY({:collections}::text[]) THEN e.record END';
   const rows = await q
     .newQuery(
       `SELECT
-         (SELECT schema_version FROM {{${table("_meta")}}}) AS "schemaVersion",
+         (SELECT schema_version FROM {{${table('_meta')}}}) AS "schemaVersion",
          (SELECT (s.purged_position, s.purged_seq) > ({:position}::bigint, {:seq}::bigint)
             FROM {{${STATE}}} s) AS lost,
          e.position::text AS position, e.seq::text AS seq,
@@ -218,7 +218,7 @@ export async function headCursor(q: Builder): Promise<Cursor> {
       position: string | null;
       seq: string | null;
     }>();
-  if (!row) throw new Error("The realtime state is missing.");
+  if (!row) throw new Error('The realtime state is missing.');
   const purged = {
     position: BigInt(row.purgedPosition),
     seq: BigInt(row.purgedSeq),

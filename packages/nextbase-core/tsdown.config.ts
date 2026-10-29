@@ -1,16 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { defineConfig, type UserConfig } from "tsdown";
+import { readFile } from 'node:fs/promises';
+import { defineConfig, type UserConfig } from 'tsdown';
 
-const RAW_SUFFIX = "?raw";
+const RAW_SUFFIX = '?raw';
 
 const config: UserConfig = defineConfig({
   entry: {
-    index: "src/index.ts",
-    cli: "src/cli/index.ts",
+    index: 'src/index.ts',
+    cli: 'src/cli/index.ts',
   },
-  format: "esm",
+  format: 'esm',
   // The server and the CLI run on Node, so node: imports are built-ins.
-  platform: "node",
+  platform: 'node',
   // The package is "type": "module", so .js is already ESM; keep the paths
   // that package.json exports.
   fixedExtension: false,
@@ -20,7 +20,7 @@ const config: UserConfig = defineConfig({
     {
       // Inlines `import x from "file?raw"` as a string, matching Vite/Vitest
       // semantics. Used to embed the built admin UI into the server bundle.
-      name: "nextbase:raw",
+      name: 'nextbase:raw',
       async resolveId(source, importer) {
         if (!source.endsWith(RAW_SUFFIX)) return null;
         const resolved = await this.resolve(
@@ -37,7 +37,7 @@ const config: UserConfig = defineConfig({
         const file = id.slice(0, -RAW_SUFFIX.length);
         // Rebuild in `tsdown --watch` when the admin UI is rebuilt.
         this.addWatchFile(file);
-        const content = await readFile(file, "utf8");
+        const content = await readFile(file, 'utf8');
         return `export default ${JSON.stringify(content)};`;
       },
     },

@@ -1,9 +1,9 @@
-import type { Collection, Field } from "@nextbasejs/client";
-import type { Builder, DB } from "@nextbasejs/dbx";
-import { SCHEMA } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { loadCollections } from "./store.ts";
-import { readViewRole } from "./views.ts";
+import type { Collection, Field } from '@nextbasejs/client';
+import type { Builder, DB } from '@nextbasejs/dbx';
+import { SCHEMA } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { loadCollections } from './store.ts';
+import { readViewRole } from './views.ts';
 
 /**
  * By id, then by name. No name can equal another collection's id, but an id
@@ -43,17 +43,17 @@ export class Schema {
   backRelation(
     target: Collection,
     name: string,
-  ): { source: Collection; field: Field & { type: "relation" } } | undefined {
+  ): { source: Collection; field: Field & { type: 'relation' } } | undefined {
     for (
-      let i = name.indexOf("_via_");
+      let i = name.indexOf('_via_');
       i > 0;
-      i = name.indexOf("_via_", i + 1)
+      i = name.indexOf('_via_', i + 1)
     ) {
       const source = this.collections.find((c) => c.name === name.slice(0, i));
       const field = source?.fields.find((f) => f.name === name.slice(i + 5));
       if (
         source &&
-        field?.type === "relation" &&
+        field?.type === 'relation' &&
         field.collectionId === target.id
       ) {
         return { source, field };
@@ -64,7 +64,7 @@ export class Schema {
 
   get(idOrName: string): Collection {
     const collection = this.find(idOrName);
-    if (!collection) throw new ApiError(404, "Collection not found.");
+    if (!collection) throw new ApiError(404, 'Collection not found.');
     return collection;
   }
 }
@@ -78,7 +78,7 @@ export async function readSchemaVersion(q: Builder): Promise<number> {
 }
 
 /** Postgres errors for a missing table or column, as when a query uses names from an outdated schema. */
-export const SCHEMA_RACE: ReadonlySet<string> = new Set(["42P01", "42703"]);
+export const SCHEMA_RACE: ReadonlySet<string> = new Set(['42P01', '42703']);
 
 // Every `get` checks the version (one primary-key lookup): a stale cache would
 // enforce outdated access rules.
@@ -118,7 +118,7 @@ export class SchemaCache {
           await loadCollections(tx),
           await readViewRole(tx),
         ),
-      { isolation: "repeatable read", readOnly: true },
+      { isolation: 'repeatable read', readOnly: true },
     );
     if (!this.#schema || schema.version > this.#schema.version)
       this.#schema = schema;

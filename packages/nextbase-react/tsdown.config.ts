@@ -1,9 +1,9 @@
-import { defineConfig, type UserConfig } from "tsdown";
+import { defineConfig, type UserConfig } from 'tsdown';
 
 const config: UserConfig = defineConfig({
-  entry: { index: "src/index.ts" },
-  format: "esm",
-  platform: "neutral",
+  entry: { index: 'src/index.ts' },
+  format: 'esm',
+  platform: 'neutral',
   dts: true,
   failOnWarn: true,
   // Every export is client-only. The bundler does not keep module-level

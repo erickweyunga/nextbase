@@ -1,16 +1,16 @@
-"use client";
+'use client';
 
-import { ClientError } from "@nextbasejs/client";
-import { useNextBase } from "@nextbasejs/react";
-import { useRouter } from "next/navigation";
-import { type FormEvent, useState, useTransition } from "react";
+import { ClientError } from '@nextbasejs/client';
+import { useNextBase } from '@nextbasejs/react';
+import { useRouter } from 'next/navigation';
+import { type FormEvent, useState, useTransition } from 'react';
 
 /** Sign-in with a code texted to a phone. */
 export function PhoneSignIn({ redirect }: { redirect: string }) {
   const nb = useNextBase();
   const router = useRouter();
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -22,11 +22,11 @@ export function PhoneSignIn({ redirect }: { redirect: string }) {
         await work();
         setError(null);
       } catch (cause) {
-        setError(cause instanceof ClientError ? cause.message : "Failed.");
+        setError(cause instanceof ClientError ? cause.message : 'Failed.');
       }
     });
   };
-  const users = nb.collection("users");
+  const users = nb.collection('users');
 
   if (!sent) {
     return (

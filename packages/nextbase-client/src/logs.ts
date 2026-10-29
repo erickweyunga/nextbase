@@ -1,5 +1,5 @@
-import type { NextBaseClient, SendOptions } from "./index.ts";
-import type { ListResult, LogModel, LogStat } from "./shared/api.ts";
+import type { NextBaseClient, SendOptions } from './index.ts';
+import type { ListResult, LogModel, LogStat } from './shared/api.ts';
 
 export interface LogListOptions extends SendOptions {
   /** A filter over `id`, `created`, `level`, `message` and `data.*`. */
@@ -30,7 +30,7 @@ export class LogService {
     options: LogListOptions = {},
   ): Promise<ListResult<LogModel>> {
     const { filter, sort, skipTotal, ...rest } = options;
-    return this.#client.send("/logs", {
+    return this.#client.send('/logs', {
       ...rest,
       query: { ...rest.query, page, perPage, filter, sort, skipTotal },
     });
@@ -43,7 +43,7 @@ export class LogService {
   /** Matching entries per hour, oldest first. */
   getStats(options: LogStatsOptions = {}): Promise<LogStat[]> {
     const { filter, ...rest } = options;
-    return this.#client.send("/logs/stats", {
+    return this.#client.send('/logs/stats', {
       ...rest,
       query: { ...rest.query, filter },
     });

@@ -1,4 +1,4 @@
-import { nb } from "@/lib/nextbase";
+import { nb } from '@/lib/nextbase';
 
 export default async function Home() {
   // Reads the session cookie, so this renders per request with the same rules as the API.
@@ -12,13 +12,13 @@ export default async function Home() {
       <h1>NextBase example</h1>
       <p>
         {required
-          ? "Setup required: create the first superuser with the token in the server log."
-          : "Ready."}
+          ? 'Setup required: create the first superuser with the token in the server log.'
+          : 'Ready.'}
       </p>
       <p>
         {session
           ? `Signed in as ${String(session.record.email)}.`
-          : "Not signed in."}
+          : 'Not signed in.'}
       </p>
       <ul>
         <li>

@@ -1,4 +1,4 @@
-import type { AuthStore } from "./auth-store.ts";
+import type { AuthStore } from './auth-store.ts';
 
 /**
  * Keeps requests that overlap from saving an older state over a newer one.

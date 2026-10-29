@@ -1,19 +1,19 @@
 // The collection model of the collections API, shared by server and client.
 
 export type FieldType =
-  | "text"
-  | "number"
-  | "bool"
-  | "email"
-  | "phone"
-  | "url"
-  | "date"
-  | "autodate"
-  | "select"
-  | "relation"
-  | "file"
-  | "json"
-  | "password";
+  | 'text'
+  | 'number'
+  | 'bool'
+  | 'email'
+  | 'phone'
+  | 'url'
+  | 'date'
+  | 'autodate'
+  | 'select'
+  | 'relation'
+  | 'file'
+  | 'json'
+  | 'password';
 
 interface FieldBase<T extends FieldType> {
   /** Stable across renames. */
@@ -27,7 +27,7 @@ interface FieldBase<T extends FieldType> {
   hidden: boolean;
 }
 
-export interface TextField extends FieldBase<"text"> {
+export interface TextField extends FieldBase<'text'> {
   min: number;
   max: number;
   /** A regex the value must match, or "" for none. */
@@ -36,50 +36,50 @@ export interface TextField extends FieldBase<"text"> {
   primaryKey: boolean;
 }
 
-export interface NumberField extends FieldBase<"number"> {
+export interface NumberField extends FieldBase<'number'> {
   min: number | null;
   max: number | null;
   onlyInt: boolean;
 }
 
-export interface BoolField extends FieldBase<"bool"> {}
+export interface BoolField extends FieldBase<'bool'> {}
 
-export interface EmailField extends FieldBase<"email"> {
+export interface EmailField extends FieldBase<'email'> {
   onlyDomains: string[];
   exceptDomains: string[];
 }
 
 /** A phone number, stored in E.164 such as `+255712345678`. */
-export type PhoneField = FieldBase<"phone">;
+export type PhoneField = FieldBase<'phone'>;
 
-export interface UrlField extends FieldBase<"url"> {
+export interface UrlField extends FieldBase<'url'> {
   onlyDomains: string[];
   exceptDomains: string[];
 }
 
-export interface DateField extends FieldBase<"date"> {
+export interface DateField extends FieldBase<'date'> {
   /** Timestamps such as `2026-01-31T00:00:00Z`, or "" for no bound. */
   min: string;
   max: string;
 }
 
-export interface AutodateField extends FieldBase<"autodate"> {
+export interface AutodateField extends FieldBase<'autodate'> {
   onCreate: boolean;
   onUpdate: boolean;
 }
 
-export interface SelectField extends FieldBase<"select"> {
+export interface SelectField extends FieldBase<'select'> {
   values: string[];
   maxSelect: number;
 }
 
-export interface RelationField extends FieldBase<"relation"> {
+export interface RelationField extends FieldBase<'relation'> {
   collectionId: string;
   maxSelect: number;
   cascadeDelete: boolean;
 }
 
-export interface FileField extends FieldBase<"file"> {
+export interface FileField extends FieldBase<'file'> {
   maxSelect: number;
   /** Bytes per file. */
   maxSize: number;
@@ -89,12 +89,12 @@ export interface FileField extends FieldBase<"file"> {
   protected: boolean;
 }
 
-export interface JsonField extends FieldBase<"json"> {
+export interface JsonField extends FieldBase<'json'> {
   /** Bytes of serialized JSON. */
   maxSize: number;
 }
 
-export interface PasswordField extends FieldBase<"password"> {
+export interface PasswordField extends FieldBase<'password'> {
   min: number;
   max: number;
 }
@@ -115,11 +115,11 @@ export type Field =
   | PasswordField;
 
 export type TokenType =
-  | "auth"
-  | "verification"
-  | "passwordReset"
-  | "emailChange"
-  | "file";
+  | 'auth'
+  | 'verification'
+  | 'passwordReset'
+  | 'emailChange'
+  | 'file';
 
 export interface TokenConfig {
   /** Combined with each record's `tokenKey` to sign tokens. */
@@ -135,7 +135,7 @@ export interface Index {
   /** Field ids, so indexes survive field renames. */
   fields: string[];
   /** `btree` for equality, ranges and sorting; `trigram` for `~` on text (needs pg_trgm). */
-  type: "btree" | "trigram";
+  type: 'btree' | 'trigram';
 }
 
 /** Access rule: `null` allows only superusers, `""` anyone, otherwise a filter expression. */
@@ -156,11 +156,11 @@ interface CollectionBase {
 }
 
 export interface BaseCollection extends CollectionBase {
-  type: "base";
+  type: 'base';
 }
 
 export interface AuthCollection extends CollectionBase {
-  type: "auth";
+  type: 'auth';
   /** Extra condition to sign in or refresh, e.g. `emailVerified = true`. */
   authRule: Rule;
   /** Lets matching callers change other records' email, password and emailVerified. */
@@ -174,7 +174,7 @@ export interface AuthCollection extends CollectionBase {
 
 /** A read-only collection backed by a SQL query; fields come from its columns. */
 export interface ViewCollection extends CollectionBase {
-  type: "view";
+  type: 'view';
   /** A SELECT over collection tables with an `id` column. */
   viewQuery: string;
 }

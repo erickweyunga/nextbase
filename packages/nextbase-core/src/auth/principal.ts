@@ -1,14 +1,14 @@
-import type { AuthCollection } from "@nextbasejs/client";
-import type { DB, Row } from "@nextbasejs/dbx";
-import { ApiError } from "../errors.ts";
-import type { Schema, SchemaCache } from "../schema/cache.ts";
+import type { AuthCollection } from '@nextbasejs/client';
+import type { DB, Row } from '@nextbasejs/dbx';
+import { ApiError } from '../errors.ts';
+import type { Schema, SchemaCache } from '../schema/cache.ts';
 import {
   bearerToken,
   findSession,
   type Session,
   sessionCookie,
   setSessionCookie,
-} from "./sessions.ts";
+} from './sessions.ts';
 
 export interface Principal {
   collection?: AuthCollection;
@@ -32,7 +32,7 @@ export interface Resolved {
 
 const ANONYMOUS: Principal = { superuser: false };
 
-const SUPERUSERS = "_superusers";
+const SUPERUSERS = '_superusers';
 
 /**
  * An invalid Bearer token is a 401 so API clients notice; an invalid cookie is
@@ -70,7 +70,7 @@ export async function resolvePrincipal(
     if (cookie === undefined) {
       throw new ApiError(
         401,
-        "The authorization token is invalid or has expired.",
+        'The authorization token is invalid or has expired.',
       );
     }
     const cleared = setSessionCookie(request);
@@ -120,6 +120,6 @@ export function recordIn(
 export function requireSuperuser(principal: Principal): void {
   if (principal.superuser) return;
   if (!principal.record)
-    throw new ApiError(401, "Sign in as a superuser to do this.");
-  throw new ApiError(403, "Only superusers can do this.");
+    throw new ApiError(401, 'Sign in as a superuser to do this.');
+  throw new ApiError(403, 'Only superusers can do this.');
 }

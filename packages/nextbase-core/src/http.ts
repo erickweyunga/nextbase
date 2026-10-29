@@ -1,5 +1,5 @@
-import { ApiError } from "./errors.ts";
-import { isRecord } from "./schema/input.ts";
+import { ApiError } from './errors.ts';
+import { isRecord } from './schema/input.ts';
 
 const MAX_JSON_BODY = 1024 * 1024;
 
@@ -7,15 +7,15 @@ const MAX_JSON_BODY = 1024 * 1024;
 export async function readJsonObject(
   request: Request,
 ): Promise<Record<string, unknown>> {
-  const type = request.headers.get("content-type") ?? "";
+  const type = request.headers.get('content-type') ?? '';
   if (!/^application\/json\s*(;|$)/i.test(type)) {
     throw new ApiError(
       415,
-      "The request body must be JSON (Content-Type: application/json).",
+      'The request body must be JSON (Content-Type: application/json).',
     );
   }
-  const tooLarge = new ApiError(413, "The request body is too large.");
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_JSON_BODY)
+  const tooLarge = new ApiError(413, 'The request body is too large.');
+  if (Number(request.headers.get('content-length') ?? 0) > MAX_JSON_BODY)
     throw tooLarge;
 
   const chunks: Uint8Array[] = [];
@@ -37,10 +37,10 @@ export async function readJsonObject(
   try {
     body = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
   } catch {
-    throw new ApiError(400, "The request body is not valid JSON.");
+    throw new ApiError(400, 'The request body is not valid JSON.');
   }
   if (!isRecord(body))
-    throw new ApiError(400, "The request body must be a JSON object.");
+    throw new ApiError(400, 'The request body must be a JSON object.');
   return body;
 }
 
@@ -58,10 +58,10 @@ const MAX_MULTIPART_PARTS = 1000;
 export async function readRecordBody(
   request: Request,
 ): Promise<Record<string, unknown>> {
-  const type = request.headers.get("content-type") ?? "";
+  const type = request.headers.get('content-type') ?? '';
   if (!/^multipart\/form-data\s*;/i.test(type)) return readJsonObject(request);
-  const tooLarge = new ApiError(413, "The request body is too large.");
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_MULTIPART_BODY)
+  const tooLarge = new ApiError(413, 'The request body is too large.');
+  if (Number(request.headers.get('content-length') ?? 0) > MAX_MULTIPART_BODY)
     throw tooLarge;
   const tooManyParts = new ApiError(
     400,
@@ -87,28 +87,28 @@ export async function readRecordBody(
   let form: FormData;
   try {
     form = await new Request(request.url, {
-      method: "POST",
-      headers: { "content-type": type },
+      method: 'POST',
+      headers: { 'content-type': type },
       body: limited ?? null,
-      duplex: "half",
+      duplex: 'half',
     } as RequestInit).formData();
   } catch {
     throw (
-      refused ?? new ApiError(400, "The request body is not valid form data.")
+      refused ?? new ApiError(400, 'The request body is not valid form data.')
     );
   }
 
   const fields = new Map<string, unknown>();
   for (const [key, value] of form) {
-    if (key === "@jsonPayload") {
+    if (key === '@jsonPayload') {
       let payload: unknown;
       try {
-        payload = JSON.parse(typeof value === "string" ? value : "");
+        payload = JSON.parse(typeof value === 'string' ? value : '');
       } catch {
-        throw new ApiError(400, "@jsonPayload is not valid JSON.");
+        throw new ApiError(400, '@jsonPayload is not valid JSON.');
       }
       if (!isRecord(payload))
-        throw new ApiError(400, "@jsonPayload must be a JSON object.");
+        throw new ApiError(400, '@jsonPayload must be a JSON object.');
       for (const [name, typed] of Object.entries(payload))
         fields.set(name, typed);
       continue;
@@ -132,7 +132,7 @@ export async function readRecordBody(
 function partCounter(type: string): (chunk: Uint8Array) => number {
   const boundary = /;\s*boundary=(?:"([^"]+)"|([^\s;]+))/i.exec(type);
   const delimiter = Buffer.from(`\r\n--${boundary?.[1] ?? boundary?.[2]}`);
-  let tail = Buffer.from("\r\n");
+  let tail = Buffer.from('\r\n');
   let count = 0;
   return (chunk) => {
     if (!boundary) return 0;

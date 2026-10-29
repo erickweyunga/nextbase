@@ -1,6 +1,6 @@
-import { expect } from "vitest";
-import { Api } from "./client.ts";
-import type { Server } from "./server.ts";
+import { expect } from 'vitest';
+import { Api } from './client.ts';
+import type { Server } from './server.ts';
 
 /**
  * Creates the first superuser of a fresh server, as an operator does it: the
@@ -8,7 +8,7 @@ import type { Server } from "./server.ts";
  */
 export async function firstSuperuser(server: Server): Promise<Api> {
   const anonymous = new Api(server.api);
-  expect((await anonymous.send("GET", "/setup")).body).toEqual({
+  expect((await anonymous.send('GET', '/setup')).body).toEqual({
     required: true,
   });
   let token: string | undefined;
@@ -17,15 +17,15 @@ export async function firstSuperuser(server: Server): Promise<Api> {
     if (!token) await new Promise((r) => setTimeout(r, 100));
   }
   expect(token).toBeDefined();
-  const setup = await anonymous.send("POST", "/setup", {
+  const setup = await anonymous.send('POST', '/setup', {
     token,
-    email: "admin@example.com",
-    password: "admin password 123",
+    email: 'admin@example.com',
+    password: 'admin password 123',
   });
   expect(setup.status).toBe(200);
   return anonymous.login(
-    "_superusers",
-    "admin@example.com",
-    "admin password 123",
+    '_superusers',
+    'admin@example.com',
+    'admin password 123',
   );
 }

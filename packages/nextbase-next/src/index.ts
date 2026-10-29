@@ -1,10 +1,10 @@
-import type { NextBaseClient, RecordModel } from "@nextbasejs/client";
+import type { NextBaseClient, RecordModel } from '@nextbasejs/client';
 import type {
   NextBase,
   RouteHandler,
   ServerClientOptions,
-} from "@nextbasejs/core";
-import { cookies, headers } from "next/headers";
+} from '@nextbasejs/core';
+import { cookies, headers } from 'next/headers';
 
 /** Exports of `app/api/nextbase/[...path]/route.ts`. */
 export interface NextRouteHandlers {
@@ -43,12 +43,12 @@ export function newNextHandler<C extends Record<string, RecordModel>>(
  */
 export async function serverClient<C extends Record<string, RecordModel>>(
   nextbase: NextBase<C>,
-  options: Omit<ServerClientOptions, "cookies"> = {},
+  options: Omit<ServerClientOptions, 'cookies'> = {},
 ): Promise<NextBaseClient<C>> {
   // Next.js sets it from the connection when no proxy did.
-  const proto = (await headers()).get("x-forwarded-proto");
+  const proto = (await headers()).get('x-forwarded-proto');
   return nextbase.client({
-    ...(proto !== null && { secure: proto.split(",")[0]?.trim() === "https" }),
+    ...(proto !== null && { secure: proto.split(',')[0]?.trim() === 'https' }),
     ...options,
     cookies: await cookies(),
   });

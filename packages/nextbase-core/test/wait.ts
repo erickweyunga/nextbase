@@ -1,4 +1,4 @@
-import type pg from "pg";
+import type pg from 'pg';
 
 /**
  * Resolves once `done` returns true, checking every 10 ms. Rejects after

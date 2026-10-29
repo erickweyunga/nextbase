@@ -5,14 +5,14 @@ import type {
   RecordModel,
   TokenConfig,
   TokenType,
-} from "@nextbasejs/client";
-import type { Row, Tx } from "@nextbasejs/dbx";
-import type { Principal } from "../auth/principal.ts";
-import type { Effects } from "../effects.ts";
-import type { Logger } from "../logs/logger.ts";
-import { writeEvents } from "../realtime/events.ts";
-import type { Schema } from "../schema/cache.ts";
-import { serverRecord } from "./serialize.ts";
+} from '@nextbasejs/client';
+import type { Row, Tx } from '@nextbasejs/dbx';
+import type { Principal } from '../auth/principal.ts';
+import type { Effects } from '../effects.ts';
+import type { Logger } from '../logs/logger.ts';
+import { writeEvents } from '../realtime/events.ts';
+import type { Schema } from '../schema/cache.ts';
+import { serverRecord } from './serialize.ts';
 
 /**
  * What made a write: `request` for the records API, from HTTP, `client()` or
@@ -21,11 +21,11 @@ import { serverRecord } from "./serialize.ts";
  * by a cascading relation, or changed because a deleted record was taken out
  * of their relation.
  */
-export type HookSource = "request" | "system" | "cascade";
+export type HookSource = 'request' | 'system' | 'cascade';
 
 /** An auth collection as hooks see it: without its token secrets. */
-export type HookAuthCollection = Omit<AuthCollection, "tokens"> & {
-  tokens: Record<TokenType, Omit<TokenConfig, "secret">>;
+export type HookAuthCollection = Omit<AuthCollection, 'tokens'> & {
+  tokens: Record<TokenType, Omit<TokenConfig, 'secret'>>;
 };
 
 /**
@@ -69,7 +69,7 @@ export interface BeforeCreateEvent<T extends RecordModel = RecordModel>
   /** The body to create the record from; changes are checked as if sent. */
   input: Partial<T> & Record<string, unknown>;
   request: HookRequest;
-  source: "request" | "system";
+  source: 'request' | 'system';
 }
 
 /** An update about to be checked. */
@@ -80,7 +80,7 @@ export interface BeforeUpdateEvent<T extends RecordModel = RecordModel>
   /** The record as stored, read without a lock. */
   record: T;
   request: HookRequest;
-  source: "request" | "system";
+  source: 'request' | 'system';
 }
 
 /** A delete about to be checked. */
@@ -89,7 +89,7 @@ export interface BeforeDeleteEvent<T extends RecordModel = RecordModel>
   /** The record as stored, read without a lock. */
   record: T;
   request: HookRequest;
-  source: "request" | "system";
+  source: 'request' | 'system';
 }
 
 /** A record written: created, or deleted. */
@@ -150,26 +150,26 @@ export interface CollectionHooks<
 export type RecordHooks<
   C extends Record<string, RecordModel> = Record<string, RecordModel>,
 > = { [N in keyof C & string]?: CollectionHooks<C[N], C> } & {
-  "*"?: CollectionHooks<RecordModel, C>;
+  '*'?: CollectionHooks<RecordModel, C>;
 };
 
-type Action = "create" | "update" | "delete";
-type Stage = "before" | "on" | "after";
+type Action = 'create' | 'update' | 'delete';
+type Stage = 'before' | 'on' | 'after';
 type HookName = `${Stage}${Capitalize<Action>}`;
 
 const HOOK_NAMES: readonly HookName[] = [
-  "beforeCreate",
-  "beforeUpdate",
-  "beforeDelete",
-  "onCreate",
-  "onUpdate",
-  "onDelete",
-  "afterCreate",
-  "afterUpdate",
-  "afterDelete",
+  'beforeCreate',
+  'beforeUpdate',
+  'beforeDelete',
+  'onCreate',
+  'onUpdate',
+  'onDelete',
+  'afterCreate',
+  'afterUpdate',
+  'afterDelete',
 ];
 
-const SUPERUSERS = "_superusers";
+const SUPERUSERS = '_superusers';
 
 /** The write a hook runs for, and the request it belongs to. */
 export interface HookScope {
@@ -247,19 +247,19 @@ export class Hooks {
       if (set === undefined) continue;
       if (name === SUPERUSERS) {
         throw new TypeError(
-          "Hooks cannot be set on _superusers: setup and createSuperuser() write its records outside the records API.",
+          'Hooks cannot be set on _superusers: setup and createSuperuser() write its records outside the records API.',
         );
       }
-      if (set === null || typeof set !== "object" || Array.isArray(set)) {
+      if (set === null || typeof set !== 'object' || Array.isArray(set)) {
         throw new TypeError(`hooks.${name} must be an object of hooks.`);
       }
       for (const [hook, run] of Object.entries(set)) {
         if (!(HOOK_NAMES as readonly string[]).includes(hook)) {
           throw new TypeError(
-            `hooks.${name}.${hook} is not a hook. Hooks are ${HOOK_NAMES.join(", ")}.`,
+            `hooks.${name}.${hook} is not a hook. Hooks are ${HOOK_NAMES.join(', ')}.`,
           );
         }
-        if (run !== undefined && typeof run !== "function") {
+        if (run !== undefined && typeof run !== 'function') {
           throw new TypeError(`hooks.${name}.${hook} must be a function.`);
         }
       }
@@ -275,7 +275,7 @@ export class Hooks {
     if (collection.name === SUPERUSERS) return [];
     return [
       this.#hooks.get(collection.name)?.[name],
-      this.#hooks.get("*")?.[name],
+      this.#hooks.get('*')?.[name],
     ].filter((hook) => hook !== undefined);
   }
 
@@ -409,7 +409,7 @@ export class Hooks {
     const after = this.#find(collection, `after${name}`);
     if (on.length === 0 && after.length === 0) return;
     const effects = scope.effects;
-    if (!effects) throw new Error("Writes with record hooks need effects.");
+    if (!effects) throw new Error('Writes with record hooks need effects.');
     const event = (): Record<string, unknown> => ({
       collection: hookCollection(collection),
       principal: hookPrincipal(scope.principal),
@@ -431,7 +431,7 @@ export class Hooks {
             await hook(run);
           } catch (error) {
             this.#logger.failure(
-              "hook",
+              'hook',
               `after${name} hook for ${collection.name} failed`,
               error,
             );
@@ -481,7 +481,7 @@ function hookCollection(collection: Collection): HookCollection {
   let copy = hookCollections.get(collection);
   if (!copy) {
     const clone = structuredClone(collection) as Collection;
-    if (clone.type === "auth") {
+    if (clone.type === 'auth') {
       for (const config of Object.values(clone.tokens)) {
         delete (config as Partial<TokenConfig>).secret;
       }
@@ -493,7 +493,7 @@ function hookCollection(collection: Collection): HookCollection {
 }
 
 function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) deepFreeze(child);
     Object.freeze(value);
   }

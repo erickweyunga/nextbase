@@ -1,19 +1,19 @@
-import { type Expression, isExpression } from "./expression.ts";
-import { type ModelOptions, ModelQuery } from "./model.ts";
-import { type Params, Query } from "./query.ts";
-import { SelectQuery } from "./select.ts";
+import { type Expression, isExpression } from './expression.ts';
+import { type ModelOptions, ModelQuery } from './model.ts';
+import { type Params, Query } from './query.ts';
+import { SelectQuery } from './select.ts';
 import {
   bindParam,
   quoteIdentifier,
   quoteIdentifierPath,
   rewriteSQL,
-} from "./sql.ts";
+} from './sql.ts';
 
 export interface QueryConfig {
   text: string;
   values: unknown[];
   /** `"array"` returns each row as an array of values instead of an object. */
-  rowMode?: "array";
+  rowMode?: 'array';
   types?: TypeParsers;
 }
 
@@ -114,8 +114,8 @@ export class Builder {
     const placeholders: string[] = [];
     const numbers = new Map<string, number>();
     const text = rewriteSQL(sql, (kind, name) => {
-      if (kind === "table") return this.quoteTableName(name);
-      if (kind === "column") return this.quoteColumnName(name);
+      if (kind === 'table') return this.quoteTableName(name);
+      if (kind === 'column') return this.quoteColumnName(name);
       let number = numbers.get(name);
       if (number === undefined) {
         number = placeholders.push(name);
@@ -136,19 +136,19 @@ export class Builder {
 
   /** Handles a schema prefix. A name containing `(` or `{{` is raw SQL. */
   quoteTableName(name: string): string {
-    if (name.includes("(") || name.includes("{{")) return name;
+    if (name.includes('(') || name.includes('{{')) return name;
     return name
-      .split(".")
+      .split('.')
       .map((part) => this.quoteSimpleTableName(part))
-      .join(".");
+      .join('.');
   }
 
   /** Handles a table prefix. A name containing `(`, `{{` or `[[` is raw SQL. */
   quoteColumnName(name: string): string {
-    if (name.includes("(") || name.includes("{{") || name.includes("[[")) {
+    if (name.includes('(') || name.includes('{{') || name.includes('[[')) {
       return name;
     }
-    const dot = name.lastIndexOf(".");
+    const dot = name.lastIndexOf('.');
     if (dot === -1) return this.quoteSimpleColumnName(name);
     return `${this.quoteTableName(name.slice(0, dot))}.${this.quoteSimpleColumnName(name.slice(dot + 1))}`;
   }
@@ -159,7 +159,7 @@ export class Builder {
 
   /** `*` is left as is. */
   quoteSimpleColumnName(name: string): string {
-    return name === "*" ? name : quoteIdentifier(name);
+    return name === '*' ? name : quoteIdentifier(name);
   }
 
   /** Expression values are used as SQL; `undefined` values are skipped. */
@@ -186,12 +186,12 @@ export class Builder {
     const params: Params = {};
     const tuples = rows.map((row) => {
       const values = names.map((name) =>
-        row[name] === undefined ? "DEFAULT" : this.#valueSQL(row[name], params),
+        row[name] === undefined ? 'DEFAULT' : this.#valueSQL(row[name], params),
       );
-      return `(${values.join(", ")})`;
+      return `(${values.join(', ')})`;
     });
     return this.newQuery(
-      `INSERT INTO ${quoteIdentifierPath(table)} (${quoteIdentifiers(names)}) VALUES ${tuples.join(", ")}`,
+      `INSERT INTO ${quoteIdentifierPath(table)} (${quoteIdentifiers(names)}) VALUES ${tuples.join(', ')}`,
     ).bind(params);
   }
 
@@ -212,7 +212,7 @@ export class Builder {
         : `${col}=EXCLUDED.${col}`;
     });
     const action =
-      lines.length === 0 ? "DO NOTHING" : `DO UPDATE SET ${lines.join(", ")}`;
+      lines.length === 0 ? 'DO NOTHING' : `DO UPDATE SET ${lines.join(', ')}`;
     return this.newQuery(
       `${sql} ON CONFLICT (${quoteIdentifiers(constraints)}) ${action}`,
     ).bind(params);
@@ -231,9 +231,9 @@ export class Builder {
     if (lines.length === 0) {
       throw new TypeError(`dbx: update of "${table}" has no columns to set.`);
     }
-    let sql = `UPDATE ${quoteIdentifierPath(table)} SET ${lines.join(", ")}`;
-    const condition = where?.build(this, params) ?? "";
-    if (condition !== "") sql += ` WHERE ${condition}`;
+    let sql = `UPDATE ${quoteIdentifierPath(table)} SET ${lines.join(', ')}`;
+    const condition = where?.build(this, params) ?? '';
+    if (condition !== '') sql += ` WHERE ${condition}`;
     return this.newQuery(sql).bind(params);
   }
 
@@ -241,8 +241,8 @@ export class Builder {
   delete(table: string, where?: Expression): Query {
     const params: Params = {};
     let sql = `DELETE FROM ${quoteIdentifierPath(table)}`;
-    const condition = where?.build(this, params) ?? "";
-    if (condition !== "") sql += ` WHERE ${condition}`;
+    const condition = where?.build(this, params) ?? '';
+    if (condition !== '') sql += ` WHERE ${condition}`;
     return this.newQuery(sql).bind(params);
   }
 
@@ -259,9 +259,9 @@ export class Builder {
       ([name, type]) => `${quoteIdentifier(name)} ${type}`,
     );
     const sql = [
-      `CREATE TABLE ${quoteIdentifierPath(table)} (${columns.join(", ")})`,
+      `CREATE TABLE ${quoteIdentifierPath(table)} (${columns.join(', ')})`,
       ...options,
-    ].join(" ");
+    ].join(' ');
     return this.newQuery(sql);
   }
 
@@ -331,7 +331,7 @@ export class Builder {
     const sql = [
       `ALTER TABLE ${quoteIdentifierPath(table)} ADD CONSTRAINT ${quoteIdentifier(name)} FOREIGN KEY (${quoteIdentifiers(cols)}) REFERENCES ${quoteIdentifierPath(refTable)} (${quoteIdentifiers(refCols)})`,
       ...options,
-    ].join(" ");
+    ].join(' ');
     return this.newQuery(sql);
   }
 
@@ -341,19 +341,19 @@ export class Builder {
 
   /** Columns may be SQL expressions such as `lower(email)`. */
   createIndex(table: string, name: string, ...cols: string[]): Query {
-    return this.#createIndex("INDEX", table, name, cols);
+    return this.#createIndex('INDEX', table, name, cols);
   }
 
   /** Columns may be SQL expressions such as `lower(email)`. */
   createUniqueIndex(table: string, name: string, ...cols: string[]): Query {
-    return this.#createIndex("UNIQUE INDEX", table, name, cols);
+    return this.#createIndex('UNIQUE INDEX', table, name, cols);
   }
 
   /** The index is looked up in the schema of `table`. */
   dropIndex(table: string, name: string): Query {
-    const dot = table.lastIndexOf(".");
+    const dot = table.lastIndexOf('.');
     const schema =
-      dot === -1 ? "" : `${quoteIdentifierPath(table.slice(0, dot))}.`;
+      dot === -1 ? '' : `${quoteIdentifierPath(table.slice(0, dot))}.`;
     return this.newQuery(`DROP INDEX ${schema}${quoteIdentifier(name)}`);
   }
 
@@ -367,7 +367,7 @@ export class Builder {
     const names = entries.map(([name]) => quoteIdentifier(name));
     const values = entries.map(([, value]) => this.#valueSQL(value, params));
     return {
-      sql: `INSERT INTO ${quoted} (${names.join(", ")}) VALUES (${values.join(", ")})`,
+      sql: `INSERT INTO ${quoted} (${names.join(', ')}) VALUES (${values.join(', ')})`,
       params,
     };
   }
@@ -385,12 +385,12 @@ export class Builder {
   }
 
   #createIndex(
-    kind: "INDEX" | "UNIQUE INDEX",
+    kind: 'INDEX' | 'UNIQUE INDEX',
     table: string,
     name: string,
     cols: readonly string[],
   ): Query {
-    const columns = cols.map((col) => this.quoteColumnName(col)).join(", ");
+    const columns = cols.map((col) => this.quoteColumnName(col)).join(', ');
     return this.newQuery(
       `CREATE ${kind} ${quoteIdentifier(name)} ON ${quoteIdentifierPath(table)} (${columns})`,
     );
@@ -402,5 +402,5 @@ function definedEntries(cols: Params): [string, unknown][] {
 }
 
 function quoteIdentifiers(names: readonly string[]): string {
-  return names.map(quoteIdentifier).join(", ");
+  return names.map(quoteIdentifier).join(', ');
 }

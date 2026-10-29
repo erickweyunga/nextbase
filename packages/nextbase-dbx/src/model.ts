@@ -1,21 +1,21 @@
-import type { Builder } from "./builder.ts";
-import { hash } from "./expression.ts";
-import type { Params } from "./query.ts";
-import { quoteIdentifier } from "./sql.ts";
+import type { Builder } from './builder.ts';
+import { hash } from './expression.ts';
+import type { Params } from './query.ts';
+import { quoteIdentifier } from './sql.ts';
 
 /** Thrown when a model has no primary key, or its key value is missing. */
 export class MissingPKError extends Error {
-  constructor(message = "dbx: missing primary key.") {
+  constructor(message = 'dbx: missing primary key.') {
     super(message);
-    this.name = "MissingPKError";
+    this.name = 'MissingPKError';
   }
 }
 
 /** Thrown by `SelectQuery.model()` for a composite primary key. */
 export class CompositePKError extends Error {
   constructor() {
-    super("dbx: composite primary key is not supported.");
-    this.name = "CompositePKError";
+    super('dbx: composite primary key is not supported.');
+    this.name = 'CompositePKError';
   }
 }
 
@@ -44,8 +44,8 @@ export class ModelQuery<T extends object> {
     this.#builder = builder;
     this.#table = table;
     this.#record = record;
-    const pk = options.pk ?? "id";
-    this.#pk = typeof pk === "string" ? [pk] : pk;
+    const pk = options.pk ?? 'id';
+    this.#pk = typeof pk === 'string' ? [pk] : pk;
     if (this.#pk.length === 0) throw new MissingPKError();
   }
 

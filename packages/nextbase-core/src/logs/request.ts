@@ -1,6 +1,6 @@
-import type { Principal } from "../auth/principal.ts";
-import type { ApiError } from "../errors.ts";
-import { errorMessage, LOG_LEVELS } from "./logger.ts";
+import type { Principal } from '../auth/principal.ts';
+import type { ApiError } from '../errors.ts';
+import { errorMessage, LOG_LEVELS } from './logger.ts';
 
 /** What a request's entry is made of, besides the request itself. */
 export interface RequestOutcome {
@@ -24,7 +24,7 @@ export interface RequestOutcome {
 }
 
 // Query parameters that carry secrets: file tokens and OAuth2's code and state.
-const SECRET_PARAMS: ReadonlySet<string> = new Set(["token", "code", "state"]);
+const SECRET_PARAMS: ReadonlySet<string> = new Set(['token', 'code', 'state']);
 const MAX_URL = 1000;
 const MAX_USER_AGENT = 512;
 const MAX_REFERER = 512;
@@ -51,21 +51,21 @@ export function requestEntry(
   const url = new URL(request.url);
   const { status, principal, failure, unexpected, noted } = outcome;
   const data: Record<string, unknown> = {
-    type: "request",
+    type: 'request',
     method: request.method,
     url: redactedUrl(url).slice(0, MAX_URL),
     status,
     execTime: outcome.execTime,
-    auth: principal?.collection?.name ?? "",
+    auth: principal?.collection?.name ?? '',
   };
   const id = principal?.record?.id;
-  if (outcome.authId && typeof id === "string") data.authId = id;
+  if (outcome.authId && typeof id === 'string') data.authId = id;
   if (outcome.ip !== undefined) data.ip = outcome.ip;
-  data.userAgent = (request.headers.get("user-agent") ?? "").slice(
+  data.userAgent = (request.headers.get('user-agent') ?? '').slice(
     0,
     MAX_USER_AGENT,
   );
-  const referer = refererOf(request.headers.get("referer"));
+  const referer = refererOf(request.headers.get('referer'));
   if (referer !== undefined) data.referer = referer;
   if (unexpected !== undefined) {
     // The response says only that something went wrong; the log says what.
@@ -79,7 +79,7 @@ export function requestEntry(
   } else if (noted !== undefined) {
     data.error = noted.slice(0, MAX_ERROR);
   }
-  for (const key of ["details", "stack"]) {
+  for (const key of ['details', 'stack']) {
     if (JSON.stringify(data).length <= MAX_DATA) break;
     delete data[key];
   }
@@ -95,23 +95,23 @@ export function requestEntry(
 
 /** The path and query, with secret parameters' values replaced. */
 function redactedUrl(url: URL): string {
-  if (url.search === "") return url.pathname;
+  if (url.search === '') return url.pathname;
   const parts = url.search
     .slice(1)
-    .split("&")
+    .split('&')
     .map((part) => {
-      const separator = part.indexOf("=");
+      const separator = part.indexOf('=');
       const rawKey = separator === -1 ? part : part.slice(0, separator);
       return SECRET_PARAMS.has(decodeKey(rawKey).toLowerCase())
         ? `${rawKey}=REDACTED`
         : part;
     });
-  return `${url.pathname}?${parts.join("&")}`;
+  return `${url.pathname}?${parts.join('&')}`;
 }
 
 function decodeKey(key: string): string {
   try {
-    return decodeURIComponent(key.replaceAll("+", " "));
+    return decodeURIComponent(key.replaceAll('+', ' '));
   } catch {
     return key;
   }
@@ -122,7 +122,7 @@ function refererOf(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);
-    if (url.origin === "null") return undefined;
+    if (url.origin === 'null') return undefined;
     return `${url.origin}${url.pathname}`.slice(0, MAX_REFERER);
   } catch {
     return undefined;

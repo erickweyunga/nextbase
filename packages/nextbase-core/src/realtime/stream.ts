@@ -1,25 +1,25 @@
-import type { Collection } from "@nextbasejs/client";
-import type { DB, Row, Tx } from "@nextbasejs/dbx";
-import type { Principal } from "../auth/principal.ts";
+import type { Collection } from '@nextbasejs/client';
+import type { DB, Row, Tx } from '@nextbasejs/dbx';
+import type { Principal } from '../auth/principal.ts';
 import {
   type ActiveSession,
   bearerToken,
   findSession,
   findSessions,
   sessionCookie,
-} from "../auth/sessions.ts";
-import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { readJsonObject } from "../http.ts";
-import type { Logger } from "../logs/logger.ts";
+} from '../auth/sessions.ts';
+import { table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { readJsonObject } from '../http.ts';
+import type { Logger } from '../logs/logger.ts';
 import {
   matchingRows,
   outputRecords,
   type RecordsContext,
   subscriptionCondition,
-} from "../records/service.ts";
-import { SCHEMA_RACE, type Schema, type SchemaCache } from "../schema/cache.ts";
-import { CursorSigner } from "./cursor.ts";
+} from '../records/service.ts';
+import { SCHEMA_RACE, type Schema, type SchemaCache } from '../schema/cache.ts';
+import { CursorSigner } from './cursor.ts';
 import {
   type Cursor,
   compareCursors,
@@ -29,9 +29,9 @@ import {
   purgeEvents,
   readEvents,
   type StoredEvent,
-} from "./events.ts";
-import { type HubStream, PAGE, RealtimeHub } from "./hub.ts";
-import { timings } from "./timings.ts";
+} from './events.ts';
+import { type HubStream, PAGE, RealtimeHub } from './hub.ts';
+import { timings } from './timings.ts';
 
 /** Realtime subscriptions to records as they are created, updated and deleted. */
 export interface RealtimeOptions<N extends string = string> {
@@ -51,7 +51,7 @@ export interface RealtimeOptions<N extends string = string> {
 }
 
 /** Why a stream ended on purpose; the client reconnects at once. */
-type EndReason = "timeout" | "signed_out" | "schema_changed";
+type EndReason = 'timeout' | 'signed_out' | 'schema_changed';
 
 const DEFAULT_STREAM_SECONDS = 240;
 const MAX_TOPICS = 50;
@@ -67,7 +67,7 @@ const MAX_STREAMS_PER_RECORD = 10;
 const QUEUED_CHUNKS = 16;
 // Pages from the hub a stream may have waiting before it reads on by itself.
 const QUEUED_PAGES = 4;
-const SUPERUSERS = "_superusers";
+const SUPERUSERS = '_superusers';
 
 /** What the realtime route gets from the request and from NextBase. */
 export interface StreamContext {
@@ -121,9 +121,9 @@ export class Realtime {
   ) {
     const config: RealtimeOptions =
       options === true ? { collections: true } : options;
-    if (config === null || typeof config !== "object") {
+    if (config === null || typeof config !== 'object') {
       throw new TypeError(
-        "realtime must be true or an object such as { collections: [...] }.",
+        'realtime must be true or an object such as { collections: [...] }.',
       );
     }
     const { collections, listenUrl, streamSeconds } = config;
@@ -131,23 +131,23 @@ export class Realtime {
       this.#collections = undefined;
     } else if (
       Array.isArray(collections) &&
-      collections.every((name) => typeof name === "string" && name !== "")
+      collections.every((name) => typeof name === 'string' && name !== '')
     ) {
       this.#collections = new Set(collections);
     } else {
       throw new TypeError(
-        "realtime.collections must be true or an array of collection names.",
+        'realtime.collections must be true or an array of collection names.',
       );
     }
     if (
       listenUrl !== undefined &&
-      (typeof listenUrl !== "string" || listenUrl === "")
+      (typeof listenUrl !== 'string' || listenUrl === '')
     ) {
-      throw new TypeError("realtime.listenUrl must be a connection string.");
+      throw new TypeError('realtime.listenUrl must be a connection string.');
     }
     const seconds = streamSeconds ?? DEFAULT_STREAM_SECONDS;
-    if (typeof seconds !== "number" || !(seconds > 0) || seconds === Infinity) {
-      throw new RangeError("realtime.streamSeconds must be a positive number.");
+    if (typeof seconds !== 'number' || !(seconds > 0) || seconds === Infinity) {
+      throw new RangeError('realtime.streamSeconds must be a positive number.');
     }
     this.#listenUrl = listenUrl ?? database;
     this.#streamMs = seconds * 1000;
@@ -160,7 +160,7 @@ export class Realtime {
   /** Whether writes to the collection log realtime events. */
   sends(collection: Collection): boolean {
     return (
-      collection.type !== "view" &&
+      collection.type !== 'view' &&
       collection.name !== SUPERUSERS &&
       (this.#collections?.has(collection.name) ?? true)
     );
@@ -179,8 +179,8 @@ export class Realtime {
       purgeEvents(this.#db(), timings.retentionMs / 1000).catch(
         (error: unknown) => {
           this.#logger.failure(
-            "realtime",
-            "deleting old realtime events failed",
+            'realtime',
+            'deleting old realtime events failed',
             error,
           );
         },
@@ -205,9 +205,9 @@ export class Realtime {
           );
         }
         const query = new URLSearchParams();
-        for (const name of ["filter", "expand", "fields"] as const) {
+        for (const name of ['filter', 'expand', 'fields'] as const) {
           const value = input[name];
-          if (value !== undefined && value !== "") query.set(name, value);
+          if (value !== undefined && value !== '') query.set(name, value);
         }
         const topic = { collection, id: input.id, query };
         subscriptionCondition(
@@ -224,14 +224,14 @@ export class Realtime {
           `Topic ${i + 1} was refused: ${error.message}`,
           {
             topics: {
-              [i]: { code: "realtime_topic_refused", message: error.message },
+              [i]: { code: 'realtime_topic_refused', message: error.message },
             },
           },
         );
       }
     });
     const weight = topics.reduce(
-      (sum, topic) => sum + 1 + relations(topic.query.get("expand")),
+      (sum, topic) => sum + 1 + relations(topic.query.get('expand')),
       0,
     );
     if (weight > MAX_TOPIC_WEIGHT) {
@@ -260,14 +260,14 @@ export class Realtime {
     }
     let cursor = head;
     let reset = false;
-    const lastId = request.headers.get("last-event-id");
-    if (lastId !== null && lastId !== "") {
+    const lastId = request.headers.get('last-event-id');
+    if (lastId !== null && lastId !== '') {
       // An id signed for another caller, another state of the signed-in
       // record or another schema starts over at the head.
       const resumed = signer.verify(lastId, schema.version, principal);
       if (resumed && compareCursors(resumed, head) > 0) {
         console.warn(
-          "[nextbase] realtime: an event id is ahead of the event log, as after restoring an older copy of the database. The client starts over.",
+          '[nextbase] realtime: an event id is ahead of the event log, as after restoring an older copy of the database. The client starts over.',
         );
       }
       if (resumed && compareCursors(resumed, head) <= 0) cursor = resumed;
@@ -295,12 +295,12 @@ export class Realtime {
     });
     return new Response(stream.body, {
       headers: {
-        "content-type": "text/event-stream; charset=utf-8",
+        'content-type': 'text/event-stream; charset=utf-8',
         // no-transform keeps compression, such as `next start` adds, from
         // buffering the stream.
-        "cache-control": "no-store, no-transform",
+        'cache-control': 'no-store, no-transform',
         // Tells nginx and similar proxies not to buffer the stream.
-        "x-accel-buffering": "no",
+        'x-accel-buffering': 'no',
       },
     });
   }
@@ -316,20 +316,20 @@ export class Realtime {
     if (open >= MAX_STREAMS) {
       throw new ApiError(
         503,
-        "Too many realtime streams are open. Try again later.",
+        'Too many realtime streams are open. Try again later.',
       );
     }
     const mine = this.#callers.get(caller) ?? 0;
-    if (caller === "" && mine >= MAX_ANONYMOUS_STREAMS) {
+    if (caller === '' && mine >= MAX_ANONYMOUS_STREAMS) {
       throw new ApiError(
         503,
-        "Too many realtime streams are open without signing in. Try again later.",
+        'Too many realtime streams are open without signing in. Try again later.',
       );
     }
     // Superuser server code counts only against the instance.
     if (
-      caller !== "" &&
-      caller !== "superuser" &&
+      caller !== '' &&
+      caller !== 'superuser' &&
       mine >= MAX_STREAMS_PER_RECORD
     ) {
       throw new ApiError(
@@ -343,7 +343,7 @@ export class Realtime {
   // keeps, so every instance shares it and a restored copy keeps it.
   #cursorSigner(): Promise<CursorSigner> {
     this.#signer ??= this.#db()
-      .newQuery(`SELECT setup_secret FROM {{${table("_meta")}}}`)
+      .newQuery(`SELECT setup_secret FROM {{${table('_meta')}}}`)
       .column<string>()
       .then(([secret]) => new CursorSigner(secret as string))
       .catch((error: unknown) => {
@@ -359,16 +359,16 @@ function callerKey(principal: Principal): string {
   if (principal.record && principal.collection) {
     return `${principal.collection.id}/${principal.record.id as string}`;
   }
-  return principal.superuser ? "superuser" : "";
+  return principal.superuser ? 'superuser' : '';
 }
 
 /** How many relations `expand` loads, nested ones included. */
 function relations(expand: string | null): number {
   if (!expand) return 0;
   return new Set(
-    expand.split(",").flatMap((path) => {
-      const names = path.trim().split(".").filter(Boolean);
-      return names.map((_, i) => names.slice(0, i + 1).join("."));
+    expand.split(',').flatMap((path) => {
+      const names = path.trim().split('.').filter(Boolean);
+      return names.map((_, i) => names.slice(0, i + 1).join('.'));
     }),
   ).size;
 }
@@ -396,16 +396,16 @@ function parseTopics(body: Record<string, unknown>): TopicInput[] {
   }
   return topics.map((topic: unknown, i) => {
     const problem = `Topic ${i + 1} must be an object with a collection name, and optionally an id, filter, expand and fields, all strings.`;
-    if (topic === null || typeof topic !== "object" || Array.isArray(topic)) {
+    if (topic === null || typeof topic !== 'object' || Array.isArray(topic)) {
       throw new ApiError(400, problem);
     }
     const input = topic as Record<string, unknown>;
-    if (typeof input.collection !== "string" || input.collection === "") {
+    if (typeof input.collection !== 'string' || input.collection === '') {
       throw new ApiError(400, problem);
     }
-    for (const name of ["id", "filter", "expand", "fields"]) {
+    for (const name of ['id', 'filter', 'expand', 'fields']) {
       const value = input[name];
-      if (value !== undefined && typeof value !== "string") {
+      if (value !== undefined && typeof value !== 'string') {
         throw new ApiError(400, problem);
       }
     }
@@ -426,7 +426,7 @@ function topicContext(
     schema: context.schema,
     principal,
     request: {
-      method: "GET",
+      method: 'GET',
       query: Object.fromEntries(topic.query),
       headers: Object.fromEntries(context.request.headers),
       body: {},
@@ -443,7 +443,7 @@ function topicContext(
 function unreadable(error: unknown): boolean {
   const { code } = error as { code?: unknown };
   return (
-    typeof code === "string" && (code.startsWith("22") || code === "42804")
+    typeof code === 'string' && (code.startsWith('22') || code === '42804')
   );
 }
 
@@ -543,8 +543,8 @@ class Stream implements HubStream {
       return;
     }
     const abort = (): void => this.#close();
-    signal.addEventListener("abort", abort, { once: true });
-    this.#cleanup.push(() => signal.removeEventListener("abort", abort));
+    signal.addEventListener('abort', abort, { once: true });
+    this.#cleanup.push(() => signal.removeEventListener('abort', abort));
     this.#cleanup.push(this.#hub.subscribe(this));
     this.#after(streamMs, () => this.#timed(() => this.#rotate()));
     this.#repeat(timings.heartbeatMs, () =>
@@ -564,7 +564,7 @@ class Stream implements HubStream {
   /** Runs a timer's work; one that fails closes the stream. */
   #timed(run: () => void | Promise<void>): void {
     void (async () => run())().catch((error: unknown) => {
-      console.error("[nextbase] realtime stream failed:", error);
+      console.error('[nextbase] realtime stream failed:', error);
       this.#close();
     });
   }
@@ -631,10 +631,10 @@ class Stream implements HubStream {
           }
         }
       } catch (error) {
-        if (SCHEMA_RACE.has((error as { code?: string }).code ?? "")) {
-          this.#end("schema_changed");
+        if (SCHEMA_RACE.has((error as { code?: string }).code ?? '')) {
+          this.#end('schema_changed');
         } else {
-          console.error("[nextbase] realtime stream failed:", error);
+          console.error('[nextbase] realtime stream failed:', error);
           this.#close();
         }
       } finally {
@@ -685,7 +685,7 @@ class Stream implements HubStream {
     // Rules or collections may have changed: the client reconnects, and its
     // topics are checked again.
     if (page.schemaVersion > this.#context.schema.version) {
-      this.#end("schema_changed");
+      this.#end('schema_changed');
       return;
     }
     const events = page.events.filter(
@@ -714,7 +714,7 @@ class Stream implements HubStream {
         // whole query: each is tried alone, and only those that fail are
         // left out.
         console.warn(
-          "[nextbase] realtime: left out events whose records cannot be read back, such as after a field changed:",
+          '[nextbase] realtime: left out events whose records cannot be read back, such as after a field changed:',
           error,
         );
         messages = [];
@@ -756,13 +756,13 @@ class Stream implements HubStream {
     return this.#topics.some(
       (topic) =>
         events.some((e) => e.collectionId === topic.collection.id) &&
-        (topic.query.has("expand") ||
+        (topic.query.has('expand') ||
           (subscriptionCondition(
             topicContext(db, this.#context, this.#principal, topic),
             topic.collection,
             topic.id,
             topic.query,
-          )?.build(db, {}) ?? "") !== ""),
+          )?.build(db, {}) ?? '') !== ''),
     );
   }
 
@@ -861,7 +861,7 @@ class Stream implements HubStream {
   #apply(active: ActiveSession | undefined): boolean {
     if (this.#done) return false;
     if (!active || active.session.id !== this.#principal.session?.id) {
-      this.#end("signed_out");
+      this.#end('signed_out');
       return false;
     }
     this.#principal = {
@@ -894,12 +894,12 @@ class Stream implements HubStream {
     ) {
       return;
     }
-    if (!this.#sendCursor()) this.#send(":\n\n");
+    if (!this.#sendCursor()) this.#send(':\n\n');
   }
 
   /** Ends the stream after `streamSeconds`, with an id for the record as it is. */
   async #rotate(): Promise<void> {
-    if (await this.#checkSession()) this.#end("timeout");
+    if (await this.#checkSession()) this.#end('timeout');
   }
 
   /**

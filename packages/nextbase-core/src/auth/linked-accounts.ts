@@ -1,21 +1,21 @@
-import type { AuthCollection, LinkedAccountModel } from "@nextbasejs/client";
+import type { AuthCollection, LinkedAccountModel } from '@nextbasejs/client';
 import {
   type Builder,
   type DB,
   hash,
   type Row,
   type Tx,
-} from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
-import { newId } from "../random.ts";
-import type { Hooks } from "../records/hooks.ts";
-import { newRecord, systemContext, updateRecord } from "../records/service.ts";
-import type { Schema } from "../schema/cache.ts";
-import { randomPassword } from "../schema/fields.ts";
-import { findByEmail } from "./identity.ts";
-import { type Identity, OAuth2Error } from "./oauth2.ts";
+} from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { Effects } from '../effects.ts';
+import { ApiError } from '../errors.ts';
+import { newId } from '../random.ts';
+import type { Hooks } from '../records/hooks.ts';
+import { newRecord, systemContext, updateRecord } from '../records/service.ts';
+import type { Schema } from '../schema/cache.ts';
+import { randomPassword } from '../schema/fields.ts';
+import { findByEmail } from './identity.ts';
+import { type Identity, OAuth2Error } from './oauth2.ts';
 
 // Sign-ins find their record by the provider's permanent account id, never by
 // email. A new provider account is auto-linked to an existing record by email
@@ -86,13 +86,13 @@ async function findAccount(
     }
     const record = await findRecord(tx, collection, linkRecordId);
     if (!record) {
-      throw new OAuth2Error("oauth2_failed", "The account no longer exists.");
+      throw new OAuth2Error('oauth2_failed', 'The account no longer exists.');
     }
     // A record without an email, such as one that signs in by phone, has
     // no address anyone could claim.
-    if (record.email !== "" && record.emailVerified !== true) {
+    if (record.email !== '' && record.emailVerified !== true) {
       throw new OAuth2Error(
-        "email_not_verified",
+        'email_not_verified',
         "Verify this account's email before linking a provider.",
       );
     }
@@ -102,22 +102,22 @@ async function findAccount(
   if (linked) return { record: linked };
   if (identity.email === undefined) {
     throw new OAuth2Error(
-      "email_required",
-      "The provider did not share an email address.",
+      'email_required',
+      'The provider did not share an email address.',
     );
   }
   if (!identity.emailVerified) {
     throw new OAuth2Error(
-      "email_not_verified",
-      "The provider has not verified this email address.",
+      'email_not_verified',
+      'The provider has not verified this email address.',
     );
   }
   const existing = await findByEmail(tx, collection, identity.email);
   if (existing) {
     if (existing.emailVerified !== true) {
       throw new OAuth2Error(
-        "account_exists",
-        "An account with this email exists. Sign in to it, then link this provider.",
+        'account_exists',
+        'An account with this email exists. Sign in to it, then link this provider.',
       );
     }
     await link(tx, collection, existing.id as string, provider, identity.id);
@@ -135,7 +135,7 @@ export async function listLinkedAccounts(
 ): Promise<LinkedAccountModel[]> {
   const rows = await q
     .newQuery(
-      `SELECT id, provider, created FROM {{${table("_linked_accounts")}}}
+      `SELECT id, provider, created FROM {{${table('_linked_accounts')}}}
        WHERE collection_id = {:collectionId} AND record_id = {:recordId}
        ORDER BY created, id`,
     )
@@ -152,7 +152,7 @@ export async function unlinkAccount(
 ): Promise<boolean> {
   const deleted = await q
     .newQuery(
-      `DELETE FROM {{${table("_linked_accounts")}}}
+      `DELETE FROM {{${table('_linked_accounts')}}}
        WHERE collection_id = {:collectionId} AND record_id = {:recordId}
          AND provider = {:provider}
        RETURNING id`,
@@ -173,7 +173,7 @@ export async function unlinkUnproven(
 ): Promise<void> {
   await q
     .newQuery(
-      `DELETE FROM {{${table("_linked_accounts")}}}
+      `DELETE FROM {{${table('_linked_accounts')}}}
        WHERE collection_id = {:collectionId} AND record_id = {:recordId}`,
     )
     .bind({ collectionId, recordId })
@@ -188,7 +188,7 @@ async function findLinked(
 ): Promise<Row | undefined> {
   const [recordId] = await q
     .newQuery(
-      `SELECT record_id FROM {{${table("_linked_accounts")}}}
+      `SELECT record_id FROM {{${table('_linked_accounts')}}}
        WHERE collection_id = {:collectionId} AND provider = {:provider}
          AND provider_id = {:providerId}`,
     )
@@ -214,8 +214,8 @@ async function findRecord(
 
 const alreadyLinked = (): OAuth2Error =>
   new OAuth2Error(
-    "already_linked",
-    "This provider account is linked to another account, or this account already has one from this provider.",
+    'already_linked',
+    'This provider account is linked to another account, or this account already has one from this provider.',
   );
 
 async function link(
@@ -227,7 +227,7 @@ async function link(
 ): Promise<void> {
   const inserted = await q
     .newQuery(
-      `INSERT INTO {{${table("_linked_accounts")}}}
+      `INSERT INTO {{${table('_linked_accounts')}}}
          (id, collection_id, record_id, provider, provider_id)
        VALUES ({:id}, {:collectionId}, {:recordId}, {:provider}, {:providerId})
        ON CONFLICT DO NOTHING
@@ -266,10 +266,10 @@ async function signUp(
         pool,
         schema,
         principal: { superuser: false },
-        request: { method: "POST", query: {}, headers: {}, body: input },
+        request: { method: 'POST', query: {}, headers: {}, body: input },
         effects,
         hooks,
-        source: "system",
+        source: 'system',
       },
       collection,
       input,
@@ -292,7 +292,7 @@ async function signUp(
   } catch (error) {
     if (error instanceof ApiError && error.status < 500) {
       throw new OAuth2Error(
-        error.status === 403 ? "sign_up_disabled" : "sign_up_failed",
+        error.status === 403 ? 'sign_up_disabled' : 'sign_up_failed',
         error.message,
       );
     }
