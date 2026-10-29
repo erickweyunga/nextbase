@@ -620,30 +620,41 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, principal, origins, oauth2 } =
         context;
-      const collection = authCollection(schema, params[0] as string);
-      if (collection.id === SUPERUSERS) {
-        throw new ApiError(400, 'Superusers sign in with their password.');
-      }
-      const provider = oauth2.provider(params[1] as string);
       const query = new URL(request.url).searchParams;
-      const redirect = checkRedirect(query.get('redirect'));
-      const errorRedirect =
-        checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
-      // The browser is navigating, so a refusal goes back to the app as
-      // its other sign-in errors do, not as JSON.
+      // Counted first, so requests that fail below count too. The browser
+      // is navigating, so a refusal goes back to the app as its other
+      // sign-in errors do, not as JSON; only to a redirect that is valid,
+      // and only when OAuth2 is set up, so there is an app to return to.
       try {
         await context.rateLimit();
       } catch (error) {
         if (!(error instanceof ApiError) || error.status !== 429) throw error;
+        let back: string;
+        try {
+          oauth2.provider(params[1] as string);
+          back =
+            checkRedirect(query.get('errorRedirect'), 'errorRedirect') ||
+            checkRedirect(query.get('redirect'));
+        } catch {
+          throw error;
+        }
         context.noteError('too_many_requests');
         return new Response(null, {
           status: 302,
           headers: {
             ...error.headers,
-            location: oauth2.returnUrl(errorRedirect, 'too_many_requests'),
+            location: oauth2.returnUrl(back, 'too_many_requests'),
           },
         });
       }
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, 'Superusers sign in with their password.');
+      }
+      const provider = oauth2.provider(params[1] as string);
+      const redirect = checkRedirect(query.get('redirect'));
+      const errorRedirect =
+        checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
       let linkRecordId: string | null = null;
       if (query.get('link') === 'true') {
         // Linking adds a way into the account, so only this site may start it.

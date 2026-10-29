@@ -12,6 +12,7 @@ import { NextBase, type NextBaseOptions } from '../src/index.ts';
 import { type RateLimitRule, rateLimitTimings } from '../src/rate-limits.ts';
 import { call, origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
+import { waitFor, waitsForLock } from './wait.ts';
 
 const PASSWORD = 'password 123 456';
 
@@ -271,6 +272,14 @@ describe('rate limits', () => {
       expect(await labelOf(['/', '*:create', '*:auth'], ...create)).toBe(
         '*:auth',
       );
+      // A rule for creates in that collection wins; `*:create` never applies.
+      expect(
+        await labelOf(
+          ['/', '*:create', '*:auth', 'users:auth', 'users:create'],
+          ...create,
+        ),
+      ).toBe('users:create');
+      expect(await labelOf(['/', '*:create'], ...create)).toBe('/');
       expect(
         await labelOf(['/', '*:auth'], 'POST', '/collections/posts/records'),
       ).toBe('/');
@@ -580,14 +589,103 @@ describe('rate limits', () => {
     );
     expect(refused.headers.get('ratelimit-policy')).toBe('"*:auth";q=1;w=60');
     expect(refused.headers.get('retry-after')).toMatch(/^\d+$/);
-    // A bad redirect is still refused as JSON, as before.
-    const invalid = await send(
-      nextbase,
-      'GET',
-      '/collections/users/auth-with-oauth2/github?redirect=https://evil.example',
-      { ip },
+    // With a bad redirect there is nowhere to send it back to, so the
+    // refusal is JSON, as the validation error is under the limit.
+    const evil =
+      '/collections/users/auth-with-oauth2/github?redirect=https://evil.example';
+    const invalid = await send(nextbase, 'GET', evil, { ip });
+    expect(invalid.status).toBe(429);
+    expect(invalid.headers.get('content-type')).toMatch(/json/);
+    expect((await send(nextbase, 'GET', evil, { ip: nextIp() })).status).toBe(
+      400,
     );
-    expect(invalid.status).toBe(400);
+    // Requests that fail validation count too.
+    const other = nextIp();
+    expect(
+      (
+        await send(
+          nextbase,
+          'GET',
+          '/collections/nothing/auth-with-oauth2/github',
+          {
+            ip: other,
+          },
+        )
+      ).status,
+    ).toBe(404);
+    const after = await send(nextbase, 'GET', path, { ip: other });
+    expect(after.headers.get('location')).toBe(
+      'https://app.example/login?error=too_many_requests',
+    );
+  });
+
+  it('never deadlocks batches of one caller that count the same rules in another order', async () => {
+    const nextbase = limited([
+      { label: '*:create', max: 10_000, window: 60 },
+      { label: '*:update', max: 10_000, window: 60 },
+      { label: '*:delete', max: 10_000, window: 60 },
+    ]);
+    const write = (method: string) =>
+      method === 'POST'
+        ? {
+            method,
+            url: '/collections/posts/records',
+            body: { title: 'order' },
+          }
+        : { method, url: '/collections/posts/records/missing', body: {} };
+    const batch = (methods: string[]) =>
+      send(nextbase, 'POST', '/batch', {
+        token: user,
+        body: { requests: methods.map(write) },
+      });
+    const statuses: number[] = [];
+    const orders = [
+      ['POST', 'PATCH', 'DELETE'],
+      ['DELETE', 'PATCH', 'POST'],
+      ['PATCH', 'DELETE', 'POST'],
+      ['POST', 'DELETE', 'PATCH'],
+    ];
+    for (let round = 0; round < 20; round++) {
+      const replies = await Promise.all(
+        Array.from({ length: 12 }, (_, i) => batch(orders[i % 4] as string[])),
+      );
+      statuses.push(...replies.map((r) => r.status));
+    }
+    // The writes to a missing record fail the batch with a 400; never a
+    // conflict or a 500.
+    expect(new Set(statuses)).toEqual(new Set([400]));
+  });
+
+  it('reads when a window ends again if another statement started it meanwhile', async () => {
+    const nextbase = limited([{ label: '/', max: 1, window: 60 }]);
+    const ip = nextIp();
+    const key = `/||ip:${ip}`;
+    const path = '/collections/posts/records';
+    await t.pool.query(
+      "INSERT INTO nextbase._rate_limits VALUES ($1, 5, now() - interval '1 second')",
+      [key],
+    );
+    // Another caller's statement starts the next window and goes over,
+    // committing only once this request's statement has read the old one.
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(
+        "UPDATE nextbase._rate_limits SET hits = 2, window_end = now() + interval '60 seconds' WHERE key = $1",
+        [key],
+      );
+      const pending = send(nextbase, 'GET', path, { ip });
+      await waitFor(() => waitsForLock(t.pool), 'the count to wait');
+      await other.query('COMMIT');
+      const refused = await pending;
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(50);
+    } finally {
+      other.release();
+    }
+    // Remembered for the window as it is now.
+    const again = await send(nextbase, 'GET', path, { ip });
+    expect(Number(again.headers.get('retry-after'))).toBeGreaterThan(50);
   });
 
   it('ends a real window after its seconds', async () => {
@@ -599,7 +697,9 @@ describe('rate limits', () => {
       [0, 1].map(() => send(nextbase, 'GET', path, { ip })),
     );
     expect(first.map((r) => r.status).sort()).toEqual([200, 429]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    // The refusal is remembered no longer than the window the database
+    // counts, which started before either response.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     expect((await send(nextbase, 'GET', path, { ip })).status).toBe(200);
   });
 

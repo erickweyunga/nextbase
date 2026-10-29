@@ -105,6 +105,11 @@ Only one rule counts a request: the first that matches, in this order:
 4. The exact path, such as `/batch`.
 5. The longest prefix, such as `/collections/` before `/`.
 
+Creating a record in an auth collection signs up, so for those creates the
+tags are looked up as `users:create`, then `users:auth`, then `*:auth`, and
+never `*:create`: a rule for creates in that very collection wins, and
+otherwise the create counts as a sign-up. Path rules follow as usual.
+
 For each label, a rule for the caller's audience comes before one without an
 audience. A rule for the other audience is skipped, and the search goes on.
 Two rules with the same label and audience are refused when NextBase is
@@ -138,7 +143,10 @@ headers.
 
 Starting an OAuth2 sign-in is a browser navigation, so a refused one is not
 answered with JSON: it is sent back to its `errorRedirect` (or `redirect`)
-with `?error=too_many_requests`, as its other sign-in errors are. The OAuth2
+with `?error=too_many_requests`, as its other sign-in errors are. It is
+counted before anything else is checked, so requests that fail count too;
+when its redirect is invalid, or the provider is not set up, there is no app
+to send it back to, and the refusal is JSON. The OAuth2
 callback has no tag, so sign-in limits never cut a sign-in short on its way
 back from the provider. Refused requests are [logged](/docs/guides/logs) at warn, with
 `data.error` saying `Too many requests.`

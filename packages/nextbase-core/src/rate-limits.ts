@@ -87,6 +87,12 @@ const MAX_REFUSED = 10_000;
 
 const RATE_LIMITS = table('_rate_limits');
 
+/** Requests of one check counted against one rule's key. */
+interface Counted {
+  rule: RateLimitRule;
+  hits: number;
+}
+
 /** The rules of one label: one per audience. */
 interface Slot {
   guest?: RateLimitRule;
@@ -220,7 +226,7 @@ export class RateLimits {
       caller = `ip:${ipKey(ip)}`;
     }
     // Requests that count against one rule add up on its key.
-    const counted = new Map<string, { rule: RateLimitRule; hits: number }>();
+    const counted = new Map<string, Counted>();
     for (const request of requests) {
       const rule = this.#find(request, signedIn ? 'auth' : 'guest');
       if (!rule) continue;
@@ -241,12 +247,15 @@ export class RateLimits {
       if (until > now) throw tooMany(rule, until - now);
       this.#refused.delete(key);
     }
-    const keys = [...counted.keys()];
-    const counts = [...counted.values()];
+    // Sorted, and inserted in that order, so statements of one caller lock
+    // their rows in the same order and cannot deadlock.
+    const keys = [...counted.keys()].sort();
+    const counts = keys.map((key) => counted.get(key) as Counted);
     // A key over its limit is not written again until its window ends, so
     // refusals add no dead rows and hold no row lock. For a key left as
     // it was, the outer query reads when its window ends, as it was
     // before the statement.
+    const sent = Date.now();
     const rows = await db
       .newQuery(
         `WITH counted AS (
@@ -254,6 +263,7 @@ export class RateLimits {
            SELECT key, hits, now() + make_interval(secs => window_seconds)
            FROM unnest({:keys}::text[], {:hits}::int[], {:windows}::int[])
              AS c(key, hits, window_seconds)
+           ORDER BY key COLLATE "C"
            ON CONFLICT (key) DO UPDATE SET
              hits = CASE WHEN r.window_end <= now() THEN excluded.hits ELSE r.hits + excluded.hits END,
              window_end = CASE WHEN r.window_end <= now() THEN excluded.window_end ELSE r.window_end END
@@ -275,30 +285,46 @@ export class RateLimits {
       })
       .all<{ key: string; hits: number | null; resetMs: number | null }>();
     if (Math.random() * rateLimitTimings.pruneEvery < 1) this.#prune(db);
-    const results = new Map(rows.map((row) => [row.key, row]));
+    const over = new Map<string, number | null>();
+    for (const row of rows) {
+      const { rule } = counted.get(row.key) as Counted;
+      if (row.hits != null && row.hits <= rule.max) continue;
+      over.set(row.key, row.resetMs === null ? null : Number(row.resetMs));
+    }
+    if (over.size === 0) return;
+    // A row the upsert left alone was read as it was when the statement
+    // started: missing, if another statement created it meanwhile, or
+    // expired, if one started its next window. Those are read again.
+    const stale = [...over].filter(([, ms]) => ms === null || ms <= 0);
+    if (stale.length > 0) {
+      const now = await db
+        .newQuery(
+          `SELECT key, extract(epoch FROM window_end - now()) * 1000 AS "resetMs"
+           FROM {{${RATE_LIMITS}}} WHERE key = ANY({:keys}::text[])`,
+        )
+        .bind({ keys: stale.map(([key]) => key) })
+        .all<{ key: string; resetMs: number }>();
+      for (const [key] of stale) over.set(key, null);
+      for (const row of now) over.set(row.key, Number(row.resetMs));
+    }
     let refusal: ApiError | undefined;
     for (const [key, { rule }] of counted) {
-      const row = results.get(key);
-      if (row?.hits != null && row.hits <= rule.max) continue;
-      // Null when another instance created the row as this one counted.
-      const resetMs = Number(row?.resetMs ?? rule.window * 1000);
-      this.#refuse(key, Date.now() + resetMs);
-      refusal ??= tooMany(rule, resetMs);
+      if (!over.has(key)) continue;
+      const resetMs = over.get(key) ?? null;
+      // Remembered only while its window lasts, from when the statement
+      // was sent, so never past the window the database counts.
+      if (resetMs !== null && resetMs > 0) this.#refuse(key, sent + resetMs);
+      refusal ??= tooMany(rule, resetMs ?? 0);
     }
     if (refusal) throw refusal;
   }
 
   #refuse(key: string, until: number): void {
-    if (this.#refused.size >= MAX_REFUSED) {
-      const now = Date.now();
-      for (const [old, end] of this.#refused) {
-        if (end <= now) this.#refused.delete(old);
-      }
-      // Still full: the oldest go first.
-      for (const old of this.#refused.keys()) {
-        if (this.#refused.size < MAX_REFUSED) break;
-        this.#refused.delete(old);
-      }
+    // Full: the oldest goes, in insertion order. Expired entries also go
+    // when their key is next looked up.
+    if (this.#refused.size >= MAX_REFUSED && !this.#refused.has(key)) {
+      const oldest = this.#refused.keys().next();
+      if (!oldest.done) this.#refused.delete(oldest.value);
     }
     this.#refused.set(key, until);
   }
@@ -306,7 +332,9 @@ export class RateLimits {
   /**
    * The first rule that applies: the route's tags for its collection, then
    * for all collections, then the method and path, the path, and the
-   * longest prefix. For each label, a rule for the caller's audience comes
+   * longest prefix. A create in an auth collection looks up the
+   * collection's `create` and `auth` rules, then `*:auth`, never
+   * `*:create`. For each label, a rule for the caller's audience comes
    * before one for both.
    */
   #find(
@@ -317,15 +345,19 @@ export class RateLimits {
       slot && (slot[audience] ?? slot.any);
     const name = collection?.name.toLowerCase();
     for (const routeTag of tags) {
-      // Creating an auth record signs up, as `/sign-up` does.
-      const tag =
+      // Creating an auth record signs up, as `/sign-up` does, unless a rule
+      // limits creates in that very collection.
+      const labels =
         routeTag === 'create' && collection?.type === 'auth'
-          ? 'auth'
-          : routeTag;
-      const rule =
-        (name !== undefined && pick(this.#tags.get(`${name}:${tag}`))) ||
-        pick(this.#tags.get(`*:${tag}`));
-      if (rule) return rule;
+          ? [`${name}:create`, `${name}:auth`, '*:auth']
+          : [
+              ...(name === undefined ? [] : [`${name}:${routeTag}`]),
+              `*:${routeTag}`,
+            ];
+      for (const label of labels) {
+        const rule = pick(this.#tags.get(label));
+        if (rule) return rule;
+      }
     }
     const rule =
       pick(this.#paths.get(`${method} ${route}`)) ??
