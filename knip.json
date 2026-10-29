@@ -8,6 +8,9 @@
       ],
       "entry": ["src/fonts.ts"]
     },
+    "packages/nextbase-core": {
+      "ignoreBinaries": ["pg_dump", "psql"]
+    },
     "examples/next-app": {
       "ignoreBinaries": ["openssl"]
     }

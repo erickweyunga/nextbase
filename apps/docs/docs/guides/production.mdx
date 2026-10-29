@@ -132,6 +132,11 @@ export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
 with `streamSeconds: 780` in the `realtime` option. An open stream keeps its
 function running, and on usage-billed hosts it is billed while open.
 
+Each instance serves at most 1000 streams. Transactions that write to
+realtime collections commit one at a time, which caps write throughput to
+those collections at very high rates; see
+[Limits](/docs/guides/realtime#limits).
+
 ## Many instances
 
 Serverless platforms run many copies of your app. A collection or rule change

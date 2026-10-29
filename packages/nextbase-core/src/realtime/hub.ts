@@ -1,12 +1,36 @@
 import type { DB } from "@nextbasejs/dbx";
 import pg from "pg";
-import { CHANNEL, lastEventId } from "./events.ts";
+import {
+  CHANNEL,
+  type Cursor,
+  compareCursors,
+  type EventPage,
+  headCursor,
+  lastPosition,
+  readEvents,
+} from "./events.ts";
 import { timings } from "./timings.ts";
 
-type Wake = () => void;
+/** Events read per query; a reader reads on at once while pages are full. */
+export const PAGE = 500;
+
+/** An open stream, as the hub sees it. */
+export interface HubStream {
+  /**
+   * The next page of events, read once for every stream that follows the
+   * hub. It may start before the stream's own cursor.
+   */
+  page(page: EventPage): void;
+  /** Events may be ready: a stream that does not follow reads them itself. */
+  wake(): void;
+}
 
 /**
- * Wakes this instance's open streams when events may have been committed.
+ * Wakes this instance's open streams when events may have been committed,
+ * and reads each new page of events once for all streams that are caught
+ * up. A stream behind, such as one that resumed, reads its own pages until
+ * it catches up, then follows.
+ *
  * It listens for the notification writes send on a connection of its own,
  * which transaction poolers do not support, so it uses `listenUrl`. While it
  * cannot listen, it polls the log instead, and keeps trying to listen.
@@ -18,13 +42,19 @@ type Wake = () => void;
 export class RealtimeHub {
   readonly #listenUrl: string | undefined;
   readonly #db: () => DB;
-  readonly #streams = new Set<Wake>();
+  readonly #streams = new Set<HubStream>();
+  readonly #following = new Set<HubStream>();
+  /** After the last event handed to followers; unset until first read. */
+  #cursor: Cursor | undefined;
+  #reading = false;
+  #dirty = false;
   /** Bumped on every start and stop, so work of an earlier run is dropped. */
   #run = 0;
   #client: pg.Client | undefined;
   #listening = false;
   #attempts = 0;
   #reconnect: ReturnType<typeof setTimeout> | undefined;
+  #health: ReturnType<typeof setInterval> | undefined;
   #poll: ReturnType<typeof setInterval> | undefined;
   #polled: string | undefined;
   #warned = false;
@@ -34,23 +64,98 @@ export class RealtimeHub {
     this.#db = db;
   }
 
-  /** Calls `wake` whenever events may be ready. Returns the unsubscribe. */
-  subscribe(wake: Wake): () => void {
-    this.#streams.add(wake);
+  /** How many streams are open on this instance. */
+  get size(): number {
+    return this.#streams.size;
+  }
+
+  /** Wakes `stream` whenever events may be ready. Returns the unsubscribe. */
+  subscribe(stream: HubStream): () => void {
+    this.#streams.add(stream);
     if (this.#streams.size === 1) this.#start();
     return () => {
-      if (!this.#streams.delete(wake)) return;
+      this.#following.delete(stream);
+      if (!this.#streams.delete(stream)) return;
       if (this.#streams.size === 0) this.#stop();
     };
   }
 
+  /**
+   * Hands `stream` the pages the hub reads from now on, if they leave no
+   * gap after `cursor`. False when the stream must read on by itself.
+   */
+  follow(stream: HubStream, cursor: Cursor): boolean {
+    if (
+      !this.#streams.has(stream) ||
+      this.#cursor === undefined ||
+      compareCursors(cursor, this.#cursor) < 0
+    ) {
+      return false;
+    }
+    this.#following.add(stream);
+    return true;
+  }
+
+  unfollow(stream: HubStream): void {
+    this.#following.delete(stream);
+  }
+
   #wakeAll(): void {
-    for (const wake of this.#streams) wake();
+    void this.#read();
+    for (const stream of this.#streams) {
+      if (!this.#following.has(stream)) stream.wake();
+    }
+  }
+
+  /** Reads the new pages once, for every stream that follows. */
+  async #read(): Promise<void> {
+    if (this.#reading) {
+      this.#dirty = true;
+      return;
+    }
+    this.#reading = true;
+    const run = this.#run;
+    try {
+      do {
+        this.#dirty = false;
+        const db = this.#db();
+        this.#cursor ??= await headCursor(db);
+        for (;;) {
+          const page = await readEvents(db, this.#cursor, undefined, PAGE);
+          if (run !== this.#run) return;
+          if (page.lost) {
+            // Too far behind, as after a long stall: start again at the
+            // head, and let each stream find out what it missed.
+            this.#cursor = await headCursor(db);
+            this.#unfollowAll();
+            break;
+          }
+          const last = page.events.at(-1);
+          if (!last) break;
+          for (const stream of this.#following) stream.page(page);
+          this.#cursor = last.cursor;
+          if (page.events.length < PAGE) break;
+        }
+      } while (this.#dirty && run === this.#run);
+    } catch (error) {
+      console.error("[nextbase] realtime: reading events failed:", error);
+      if (run === this.#run) this.#unfollowAll();
+    } finally {
+      this.#reading = false;
+    }
+  }
+
+  // Streams that stop following read on from their own cursor.
+  #unfollowAll(): void {
+    const streams = [...this.#following];
+    this.#following.clear();
+    for (const stream of streams) stream.wake();
   }
 
   #start(): void {
     const run = ++this.#run;
     this.#attempts = 0;
+    this.#cursor = undefined;
     // Polls until it listens, so events flow while it connects.
     this.#startPolling();
     if (this.#listenUrl === undefined) {
@@ -64,8 +169,12 @@ export class RealtimeHub {
 
   #stop(): void {
     this.#run++;
+    this.#following.clear();
+    this.#cursor = undefined;
     clearTimeout(this.#reconnect);
     this.#reconnect = undefined;
+    clearInterval(this.#health);
+    this.#health = undefined;
     this.#stopPolling();
     this.#listening = false;
     const client = this.#client;
@@ -76,8 +185,10 @@ export class RealtimeHub {
   async #listen(run: number, url: string): Promise<void> {
     const client = new pg.Client({
       connectionString: url,
-      // Keeps an idle connection from being dropped silently on the way.
+      // Notices a connection dropped on the way, such as by a NAT or a
+      // failover, within seconds rather than the system's default hours.
       keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
       // The default waits forever on a database that does not answer.
       connectionTimeoutMillis: 10_000,
     });
@@ -104,8 +215,31 @@ export class RealtimeHub {
     this.#listening = true;
     this.#attempts = 0;
     this.#stopPolling();
+    this.#checkHealth(run, client);
     // Notifications sent while not listening were missed.
     this.#wakeAll();
+  }
+
+  /**
+   * Queries the listening connection now and then. A connection that died
+   * without the server saying so, as in a failover, hears nothing and
+   * reports no error, so one that does not answer in time counts as lost.
+   */
+  #checkHealth(run: number, client: pg.Client): void {
+    clearInterval(this.#health);
+    this.#health = setInterval(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("no answer")),
+          timings.healthTimeoutMs,
+        );
+      });
+      Promise.race([client.query("SELECT 1"), late])
+        .catch(() => this.#lost(run, client))
+        .finally(() => clearTimeout(timer));
+    }, timings.healthMs);
+    this.#health.unref?.();
   }
 
   /** The connection failed or ended: poll, and listen again later. */
@@ -113,6 +247,8 @@ export class RealtimeHub {
     if (run !== this.#run || this.#client !== client) return;
     this.#client = undefined;
     this.#listening = false;
+    clearInterval(this.#health);
+    this.#health = undefined;
     client.end().catch(() => {});
     this.#startPolling();
     const delay = Math.min(
@@ -135,10 +271,10 @@ export class RealtimeHub {
     this.#poll = setInterval(() => {
       if (polling) return;
       polling = true;
-      lastEventId(this.#db())
-        .then((id) => {
-          if (run !== this.#run || id === this.#polled) return;
-          this.#polled = id;
+      lastPosition(this.#db())
+        .then((position) => {
+          if (run !== this.#run || position === this.#polled) return;
+          this.#polled = position;
           this.#wakeAll();
         })
         .catch((error: unknown) => {

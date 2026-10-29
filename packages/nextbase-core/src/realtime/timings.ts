@@ -9,6 +9,10 @@ export const timings = {
   reconnectMs: 500,
   /** The longest wait between attempts to listen again. */
   maxReconnectMs: 30_000,
+  /** How often to check that the listening connection still answers. */
+  healthMs: 30_000,
+  /** How long that check may take before the connection counts as lost. */
+  healthTimeoutMs: 5_000,
   /** How often an idle stream sends a comment, so proxies keep it open. */
   heartbeatMs: 25_000,
   /** How often a stream checks that its session still exists. */

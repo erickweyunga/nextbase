@@ -23,8 +23,10 @@ export interface SubscribeOptions {
   /** Output fields, e.g. `id,title`. */
   fields?: string;
   /**
-   * Called when events may have been missed, such as after the client was
-   * away longer than the server keeps events. Refetch what you show.
+   * Called once the subscription is live, so events from then on arrive,
+   * and again whenever events may have been missed, such as after the
+   * client was away longer than the server keeps events. Load what you
+   * show here.
    */
   onReset?: () => void;
   /** Called when the server refuses the subscription, which then ends. */
@@ -36,6 +38,8 @@ interface Subscription {
   id: string | undefined;
   callback: (event: RealtimeEvent) => void;
   options: SubscribeOptions;
+  /** A stream with it started, so it misses nothing from then on. */
+  live: boolean;
 }
 
 /** How a stream ended. */
@@ -98,6 +102,7 @@ export class RealtimeService {
       id: topic === "*" ? undefined : topic,
       callback: callback as (event: RealtimeEvent) => void,
       options,
+      live: false,
     };
     this.#subscriptions.add(subscription);
     this.#offAuth ??= this.#client.authStore.onChange(() => this.#restart());
@@ -204,6 +209,14 @@ export class RealtimeService {
       }
       if (!response.ok) return await this.#refused(response, subscriptions);
       if (!response.body) return "failed";
+      // The server answers once it knows where the stream starts.
+      for (const subscription of subscriptions) {
+        if (subscription.live || !this.#subscriptions.has(subscription)) {
+          continue;
+        }
+        subscription.live = true;
+        call(() => subscription.options.onReset?.());
+      }
       let ended = false;
       const parser = new EventStreamParser((event) => {
         if (event.type === "end") {

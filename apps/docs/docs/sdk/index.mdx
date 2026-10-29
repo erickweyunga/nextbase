@@ -50,7 +50,9 @@ stopWatchingOne();
 `subscribe` takes `"*"` for every record the list rule allows, or a record id
 for one record under the view rule, and returns the function that
 unsubscribes. All subscriptions share one stream, which reconnects and resumes
-on its own. See [Realtime](/docs/guides/realtime).
+on its own. Its `onReset` option is called once the subscription is live and
+whenever events may have been missed: load what you show there. See
+[Realtime](/docs/guides/realtime).
 
 ## Filters
 

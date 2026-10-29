@@ -1160,7 +1160,8 @@ describe("realtime subscriptions", () => {
           'id: 2.1\nevent: create\ndata: {"action":"create","topics":{"0":{"id":"b"}}}\n\n',
       );
       await waitFor(() => seen.length === 2, "both events");
-      expect(resets).toEqual(["posts"]);
+      // Once when it went live, and once for the reset.
+      expect(resets).toEqual(["posts", "posts"]);
       expect(error).toHaveBeenCalledTimes(2);
     } finally {
       error.mockRestore();

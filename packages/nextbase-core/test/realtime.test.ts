@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import net from "node:net";
 import {
   AuthStore,
   type ClientError,
@@ -9,6 +11,7 @@ import {
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError, NextBase, type SmsMessage } from "../src/index.ts";
+import { CursorSigner } from "../src/realtime/cursor.ts";
 import { headCursor, readEvents, writeEvents } from "../src/realtime/events.ts";
 import { timings } from "../src/realtime/timings.ts";
 import { call, origin } from "./http.ts";
@@ -137,7 +140,6 @@ async function listeners(t: TestDatabase): Promise<number> {
 function counting(pool: pg.Pool): {
   pool: pg.Pool;
   trips: () => number;
-  peek: () => number;
 } {
   let count = 0;
   const countQueries = <T extends object>(target: T): T =>
@@ -164,7 +166,6 @@ function counting(pool: pg.Pool): {
       count = 0;
       return n;
     },
-    peek: () => count,
   };
 }
 
@@ -179,6 +180,8 @@ describe("realtime", () => {
   const tokens = { alice: "", bob: "", carol: "", dave: "", admin: "" };
   const ids = { alice: "", bob: "", carol: "", dave: "" };
   let slow = gate();
+  /** A record the held create updates once it is let go. */
+  let slowUpdate: string | undefined;
   let entered = gate();
   const streams: OpenStream[] = [];
 
@@ -248,15 +251,21 @@ describe("realtime", () => {
           "locked",
           "items",
           "lounge",
+          "tagged",
         ],
         listenUrl: t.url,
       },
       hooks: {
         items: {
           async onCreate(e) {
-            if (e.record.title === "slow") {
+            if (String(e.record.title).startsWith("slow")) {
               entered.open();
               await slow.promise;
+              if (slowUpdate) {
+                await e.nextbase
+                  .collection("items")
+                  .update(slowUpdate, { title: "from slow" });
+              }
             }
             if (e.record.title === "boom") throw new ApiError(400, "Boom.");
           },
@@ -330,6 +339,14 @@ describe("realtime", () => {
       listRule: "",
       viewRule: "",
       fields: [{ name: "title", type: "text", required: true }],
+    });
+    await admin.collections.create({
+      name: "tagged",
+      listRule: "",
+      viewRule: "",
+      fields: [
+        { name: "tag", type: "relation", collectionId: rooms.id, maxSelect: 1 },
+      ],
     });
     await admin.collections.create({
       name: "lounge",
@@ -495,8 +512,11 @@ describe("realtime", () => {
     ]);
     await received(mine, 1, (r) => r.text === "private match 2");
     // Bob got the last event, so he would have got the update by now.
+    // Ids are signed for each caller; their first parts are the position.
+    const position = (s: OpenStream) =>
+      s.lastId()?.split(".").slice(0, 2).join(".");
     await waitFor(
-      () => one.lastId() === superuser.lastId(),
+      () => position(one) === position(superuser),
       "the stream to pass the update",
     );
     expect(one.records()).toEqual([]);
@@ -550,10 +570,11 @@ describe("realtime", () => {
         )
       ).status,
     ).toBe(400);
-    const malformed = await open(nextbase, [{ collection: "rooms" }], {
+    // An id that is not one starts over, as any id not signed for the caller.
+    const malformed = await subscribe([{ collection: "rooms" }], {
       lastEventId: "nope",
     });
-    expect(malformed.status).toBe(400);
+    expect(malformed.messages[0]?.type).toBe("reset");
   });
 
   it("sends nothing for writes that roll back", async () => {
@@ -654,7 +675,7 @@ describe("realtime", () => {
     expect(rows[0].n).toBe(0);
   });
 
-  it("waits for a transaction that started writing first, so none is skipped", async () => {
+  it("sends both of two overlapping transactions, in commit order", async () => {
     const stream = await subscribe([{ collection: "items" }], {
       token: tokens.admin,
     });
@@ -669,71 +690,338 @@ describe("realtime", () => {
     const events = await received(stream, 2, (r) =>
       ["slow", "fast"].includes(r.title as string),
     );
-    expect(events.map((e) => e.record.title)).toEqual(["slow", "fast"]);
+    // The slow create started writing first, but committed last.
+    expect(events.map((e) => e.record.title)).toEqual(["fast", "slow"]);
   });
 
-  it("reads events again that wait behind a transaction that never notifies", async () => {
-    // The stream's instance counts its queries, so the test knows when it
-    // has read the log.
+  it("sends a record's writes in the order they were committed", async () => {
+    const shared = await admin.collection("items").create({ title: "shared" });
+    const id = shared?.id as string;
+    const stream = await subscribe([{ collection: "items", id }], {
+      token: tokens.admin,
+    });
+    slow = gate();
+    entered = gate();
+    slowUpdate = id;
+    try {
+      // The held create starts writing first, then updates the record last.
+      const writing = admin.collection("items").create({ title: "slow one" });
+      await entered.promise;
+      await admin.collection("items").update(id, { title: "from fast" });
+      slow.open();
+      await writing;
+    } finally {
+      slowUpdate = undefined;
+    }
+    expect((await admin.collection("items").getOne(id)).title).toBe(
+      "from slow",
+    );
+    const events = await received(stream, 2, (r) => r.title !== "shared");
+    expect(events.map((e) => e.record.title)).toEqual([
+      "from fast",
+      "from slow",
+    ]);
+  });
+
+  it("keeps events of a transaction that commits after old events are deleted", async () => {
+    slow = gate();
+    entered = gate();
+    const writing = admin.collection("items").create({ title: "slow late" });
+    await entered.promise;
+    // Deletes everything committed so far, while the held create runs.
+    timings.retentionMs = 0;
+    try {
+      await admin.collection("items").create({ title: "purged" });
+      // A write deletes old events while it runs, so it takes a second
+      // write to delete the first once it is committed.
+      await admin.collection("items").create({ title: "purging" });
+      await flush();
+      const { rows } = await t.pool.query(
+        "SELECT count(*)::int AS n FROM nextbase._realtime_events WHERE record->>'title' = 'purged'",
+      );
+      expect(rows[0].n).toBe(0);
+    } finally {
+      timings.retentionMs = defaults.retentionMs;
+    }
+    const stream = await subscribe([{ collection: "items" }], {
+      token: tokens.admin,
+    });
+    slow.open();
+    await writing;
+    await received(stream, 1, (r) => r.title === "slow late");
+    expect(stream.messages.some((m) => m.type === "reset")).toBe(false);
+  });
+
+  it("notices a listening connection that died without a word", async () => {
+    const proxy = await freezableProxy(t.url);
+    Object.assign(timings, { healthMs: 50, healthTimeoutMs: 50 });
+    try {
+      const instance = new NextBase({
+        database: t.pool,
+        realtime: { collections: ["rooms"], listenUrl: proxy.url },
+      });
+      const before = await listeners(t);
+      const stream = await subscribe([{ collection: "rooms" }], {
+        via: instance,
+      });
+      await waitFor(async () => (await listeners(t)) > before, "a listener");
+      // The connection stays open but carries nothing, as after a NAT drop.
+      proxy.freeze();
+      await admin.collection("rooms").create({ name: "after freeze" });
+      await received(stream, 1, (r) => r.name === "after freeze");
+      await stream.close();
+    } finally {
+      Object.assign(timings, {
+        healthMs: defaults.healthMs,
+        healthTimeoutMs: defaults.healthTimeoutMs,
+      });
+      await proxy.close();
+    }
+  });
+
+  it("resumes only for the caller and the record state an id was sent to", async () => {
+    const first = await subscribe([{ collection: "rooms" }], {
+      token: tokens.alice,
+    });
+    const id = first.lastId() as string;
+    await first.close();
+    await admin.collection("rooms").create({ name: "replay" });
+    const replayed = (s: OpenStream) =>
+      s.records().some((e) => e.record.name === "replay");
+
+    const bob = await subscribe([{ collection: "rooms" }], {
+      token: tokens.bob,
+      lastEventId: id,
+    });
+    expect(bob.messages[0]?.type).toBe("reset");
+    const own = await subscribe([{ collection: "rooms" }], {
+      token: tokens.alice,
+      lastEventId: id,
+    });
+    await received(own, 1, (r) => r.name === "replay");
+    expect(own.messages[0]?.type).not.toBe("reset");
+
+    // A changed record, such as one given a new role, starts over.
+    await admin.collection("users").update(ids.alice, { name: "promoted" });
+    const promoted = await subscribe([{ collection: "rooms" }], {
+      token: tokens.alice,
+      lastEventId: id,
+    });
+    expect(promoted.messages[0]?.type).toBe("reset");
+    await admin.collection("users").update(ids.alice, { name: "Alice" });
+    await admin.collection("rooms").create({ name: "after replay" });
+    const after = (r: Record<string, unknown>) => r.name === "after replay";
+    await received(bob, 1, after);
+    await received(promoted, 1, after);
+    expect(replayed(bob)).toBe(false);
+    expect(replayed(promoted)).toBe(false);
+  });
+
+  it("starts over when resuming across a change of the collections", async () => {
+    const stream = await subscribe([{ collection: "tagged" }], {
+      token: tokens.admin,
+    });
+    const room = await admin.collection("rooms").create({ name: "tag" });
+    await admin.collection("tagged").create({ tag: room?.id });
+    await received(stream, 1);
+    const id = stream.lastId() as string;
+    await stream.close();
+    // The relation now takes several records: the old event's single value
+    // no longer fits it.
+    const tagged = await admin.collections.getOne("tagged");
+    await admin.collections.update("tagged", {
+      fields: tagged.fields.map((f) =>
+        f.name === "tag" ? { ...f, maxSelect: 2 } : f,
+      ),
+    });
+    const resumed = await subscribe([{ collection: "tagged" }], {
+      token: tokens.admin,
+      lastEventId: id,
+    });
+    expect(resumed.messages[0]?.type).toBe("reset");
+    await admin.collection("tagged").create({ tag: [room?.id] });
+    const [event] = await received(resumed, 1);
+    expect(event?.record.tag).toEqual([room?.id]);
+    expect(resumed.ended()).toBe(false);
+  });
+
+  it("stops sending as soon as the session ends", async () => {
+    // The timer alone would not notice for a minute.
+    timings.sessionMs = 60_000;
+    try {
+      const token = await signIn("bob@example.com");
+      const stream = await subscribe([{ collection: "rooms" }], { token });
+      await call(nextbase, "DELETE", "/session", { token });
+      await admin.collection("rooms").create({ name: "after sign out" });
+      await waitFor(stream.ended, "the stream to end");
+      expect(stream.messages.at(-1)?.data).toEqual({ reason: "signed_out" });
+      expect(
+        stream.records().some((e) => e.record.name === "after sign out"),
+      ).toBe(false);
+    } finally {
+      timings.sessionMs = 50;
+    }
+  });
+
+  it("limits streams per account and the weight of topics", async () => {
+    await admin.collection("users").create({
+      email: "erin@example.com",
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const token = await signIn("erin@example.com");
+    const open: OpenStream[] = [];
+    for (let i = 0; i < 10; i++) {
+      open.push(await subscribe([{ collection: "rooms" }], { token }));
+    }
+    const refused = await subscribe([{ collection: "rooms" }], { token });
+    expect(refused.status).toBe(429);
+    await Promise.all(open.map((s) => s.close()));
+    expect((await subscribe([{ collection: "rooms" }], { token })).status).toBe(
+      200,
+    );
+
+    const heavy = await subscribe(
+      Array.from({ length: 50 }, () => ({
+        collection: "messages",
+        expand: "author,room",
+      })),
+      { token },
+    );
+    expect(heavy.status).toBe(400);
+    expect(String(heavy.body.message)).toMatch(/weigh 150/);
+  });
+
+  it("reads each page of events once for every stream", async () => {
     const counted = counting(t.pool);
-    const watcher = new NextBase({
+    const instance = new NextBase({
       database: counted.pool,
-      realtime: { collections: ["items"], listenUrl: t.url },
+      realtime: { collections: ["rooms"], listenUrl: t.url },
     });
     const before = await listeners(t);
-    const stream = await subscribe([{ collection: "items" }], {
-      via: watcher,
-    });
-    // Listening, so it no longer polls, which would count too.
+    const many: OpenStream[] = [];
+    for (let i = 0; i < 5; i++) {
+      many.push(await subscribe([{ collection: "rooms" }], { via: instance }));
+    }
     await waitFor(async () => (await listeners(t)) > before, "a listener");
+    const all = async (name: string) => {
+      await admin.collection("rooms").create({ name });
+      for (const stream of many) {
+        await received(stream, 1, (r) => r.name === name);
+      }
+    };
+    // Caught up, the streams follow the instance's reads.
+    await all("warm");
+    counted.trips();
+    await all("shared");
+    expect(counted.trips()).toBeLessThanOrEqual(2);
+    await Promise.all(many.map((s) => s.close()));
+  });
+
+  it.skipIf(!hasPgDump())(
+    "keeps working on a restored copy of the database",
+    async () => {
+      const first = await subscribe([{ collection: "rooms" }], {
+        token: tokens.alice,
+      });
+      await admin.collection("rooms").create({ name: "before dump" });
+      await received(first, 1, (r) => r.name === "before dump");
+      const id = first.lastId() as string;
+      await first.close();
+      const copy = await createTestDatabase();
+      try {
+        const dump = spawnSync(
+          "pg_dump",
+          ["--no-owner", "--no-privileges", t.url],
+          {
+            encoding: "utf8",
+            maxBuffer: 64 * 1024 * 1024,
+          },
+        );
+        expect(dump.status).toBe(0);
+        const restore = spawnSync(
+          "psql",
+          ["--quiet", "--set", "ON_ERROR_STOP=1", copy.url],
+          { input: dump.stdout, encoding: "utf8" },
+        );
+        expect(restore.stderr).toBe("");
+        const restored = new NextBase({
+          database: copy.pool,
+          realtime: { collections: ["rooms"], listenUrl: copy.url },
+        });
+        // The id resumes on the copy, which has the same secret and log.
+        const resumed = await open(restored, [{ collection: "rooms" }], {
+          token: tokens.alice,
+          lastEventId: id,
+        });
+        try {
+          await waitFor(() => resumed.messages.length > 0, "the stream");
+          expect(resumed.messages[0]?.type).not.toBe("reset");
+          await restored
+            .client({ superuser: true })
+            .collection("rooms")
+            .create({ name: "on the copy" });
+          await waitFor(
+            () =>
+              resumed.records().some((e) => e.record.name === "on the copy"),
+            "the copy's event",
+          );
+        } finally {
+          await resumed.close();
+        }
+        await waitFor(
+          async () => (await listeners(copy)) === 0,
+          "the copy's listener to stop",
+        );
+      } finally {
+        await copy.close();
+      }
+    },
+  );
+
+  it("sends events at once while other transactions run", async () => {
+    const stream = await subscribe([{ collection: "items" }], {
+      token: tokens.admin,
+    });
+    // A transaction that took an id and stays open, as session renewals
+    // and other writes do for a moment, holds nothing back.
     const blocker = new pg.Client({ connectionString: t.url });
     await blocker.connect();
     try {
       await blocker.query("BEGIN");
       await blocker.query("SELECT pg_current_xact_id()");
-      await admin.collection("items").create({ title: "held" });
-      counted.trips();
-      // BEGIN, the read and COMMIT: the stream read the log, and found the
-      // event waiting behind the blocker.
-      await waitFor(() => counted.peek() >= 3, "the stream to read the log");
-      const held = (r: Record<string, unknown>) => r.title === "held";
-      expect(stream.records().filter((e) => held(e.record))).toEqual([]);
-      // It writes no events, so its end notifies nothing.
+      await admin.collection("items").create({ title: "unblocked" });
+      await received(stream, 1, (r) => r.title === "unblocked");
       await blocker.query("COMMIT");
     } finally {
       await blocker.end();
     }
-    const events = await received(stream, 1, (r) => r.title === "held");
-    expect(events.map((e) => e.record.title)).toEqual(["held"]);
   });
 
-  it("reads no event behind a transaction still running", async () => {
+  it("orders events by commit, not by when a transaction started writing", async () => {
     const collection = { id: "gap", fields: [] } as unknown as Collection;
     const start = await headCursor(t.db);
-    const read = () => readEvents(t.db, start, ["gap"], 500);
+    const read = async () =>
+      (await readEvents(t.db, start, ["gap"], 500)).events.map(
+        (e) => e.recordId,
+      );
     const early = await t.db.begin();
     try {
-      // The early transaction logs its event first, then the late one
-      // commits: the late event waits, or a cursor would pass the early one.
+      // The early transaction writes first and commits last.
       await writeEvents(early, collection, "create", [{ id: "early" }]);
       await t.db.transaction((late) =>
-        writeEvents(late, collection, "create", [{ id: "late" }]),
+        writeEvents(late, collection, "update", [{ id: "shared" }]),
       );
-      const waiting = await read();
-      expect(waiting.events).toEqual([]);
-      expect(waiting.held).toBe(true);
+      // The late one is committed: it is sent at once, not held back.
+      expect(await read()).toEqual(["shared"]);
+      await writeEvents(early, collection, "update", [{ id: "shared" }]);
       await early.commit();
     } finally {
       if (!early.done) await early.rollback();
     }
-    // Transactions of other test files, on other databases of the server,
-    // can hold both back a while longer: transaction ids are server-wide.
-    await waitFor(async () => {
-      const ids = (await read()).events.map((e) => e.recordId);
-      // Never the late one without the early one.
-      expect(ids).toEqual(["early", "late"].slice(0, ids.length));
-      return ids.length === 2;
-    }, "the events");
+    // The early transaction's update of the shared record comes last, as
+    // the database has it.
+    expect(await read()).toEqual(["shared", "early", "shared"]);
     await t.pool.query(
       "DELETE FROM nextbase._realtime_events WHERE collection_id = 'gap'",
     );
@@ -744,7 +1032,7 @@ describe("realtime", () => {
       token: tokens.alice,
     });
     const start = first.lastId();
-    expect(start).toMatch(/^\d+\.\d+$/);
+    expect(start).toBeTruthy();
     await first.close();
     await admin.collection("rooms").create({ name: "missed 1" });
     await admin.collection("rooms").create({ name: "missed 2" });
@@ -777,7 +1065,7 @@ describe("realtime", () => {
     await first.close();
     await admin.collection("rooms").create({ name: "forgotten" });
     await t.pool.query(
-      "UPDATE nextbase._realtime_events SET created = now() - interval '1 day'",
+      "UPDATE nextbase._realtime_transactions SET committed = now() - interval '1 day'",
     );
     // A write deletes old events in the background.
     await admin.collection("rooms").create({ name: "kept" });
@@ -796,11 +1084,26 @@ describe("realtime", () => {
       "forgotten",
     );
 
-    // An id from the future resets too.
-    const future = await subscribe([{ collection: "rooms" }], {
-      lastEventId: "99999999999.1",
-    });
-    expect(future.messages[0]?.type).toBe("reset");
+    // A signed id ahead of the log, as after restoring an older copy of the
+    // database, resets too, and says so in the log.
+    const { rows } = await t.pool.query(
+      "SELECT setup_secret, schema_version FROM nextbase._meta",
+    );
+    const ahead = new CursorSigner(rows[0].setup_secret).sign(
+      { position: 10n ** 12n, seq: 1n },
+      Number(rows[0].schema_version),
+      { superuser: false },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const future = await subscribe([{ collection: "rooms" }], {
+        lastEventId: ahead,
+      });
+      expect(future.messages[0]?.type).toBe("reset");
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/ahead of the event log/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("ends the stream when its session ends", async () => {
@@ -1001,12 +1304,18 @@ describe("realtime client", () => {
       .signInWithPassword("user@example.com", PASSWORD);
     const tasks: RealtimeEvent[] = [];
     const users: RealtimeEvent[] = [];
+    let live = 0;
+    const onReset = () => {
+      live++;
+    };
     const offTasks = nb
       .collection("tasks")
-      .subscribe("*", (e) => tasks.push(e), { fields: "id,title" });
+      .subscribe("*", (e) => tasks.push(e), { fields: "id,title", onReset });
     const offUser = nb
       .collection("users")
-      .subscribe(userId, (e) => users.push(e));
+      .subscribe(userId, (e) => users.push(e), { onReset });
+    // Both are live once their stream started.
+    await waitFor(() => live === 2, "the subscriptions to be live");
     // Streams end every 0.3 seconds; writes across several are all sent once.
     for (let i = 0; i < 6; i++) {
       await admin.collection("tasks").create({ title: `t${i}` });
@@ -1057,9 +1366,60 @@ describe("realtime client", () => {
   });
 });
 
+/** Whether pg_dump and psql are installed, for the restore test. */
+function hasPgDump(): boolean {
+  return ["pg_dump", "psql"].every(
+    (tool) => spawnSync(tool, ["--version"]).status === 0,
+  );
+}
+
+/**
+ * A TCP proxy to the database whose open connections can be frozen: they
+ * stay open but carry nothing, as when a NAT drops a connection or a
+ * server fails over without saying so. Later connections pass.
+ */
+async function freezableProxy(
+  target: string,
+): Promise<{ url: string; freeze: () => void; close: () => Promise<void> }> {
+  const { hostname, port } = new URL(target);
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((client) => {
+    const upstream = net.connect(Number(port || 5432), hostname || "localhost");
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => {
+        sockets.delete(socket);
+        client.destroy();
+        upstream.destroy();
+      });
+    }
+    client.pipe(upstream);
+    upstream.pipe(client);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = new URL(target);
+  url.hostname = "127.0.0.1";
+  url.port = String((server.address() as net.AddressInfo).port);
+  return {
+    url: url.toString(),
+    freeze: () => {
+      for (const socket of sockets) {
+        socket.unpipe();
+        socket.pause();
+      }
+    },
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+/** Orders event ids, `{position}.{seq}.{schema}.{signature}`, by position. */
 function byId(a: string, b: string): number {
-  const [at, as] = a.split(".").map(BigInt) as [bigint, bigint];
-  const [bt, bs] = b.split(".").map(BigInt) as [bigint, bigint];
+  const [at, as] = a.split(".").slice(0, 2).map(BigInt) as [bigint, bigint];
+  const [bt, bs] = b.split(".").slice(0, 2).map(BigInt) as [bigint, bigint];
   if (at !== bt) return at < bt ? -1 : 1;
   return as < bs ? -1 : as > bs ? 1 : 0;
 }

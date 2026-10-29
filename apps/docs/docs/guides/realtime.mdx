@@ -67,7 +67,7 @@ stopWatchingRoom();
 | `filter` | a [filter](/docs/guides/filters) the records must match |
 | `expand` | relations to load, as for a list |
 | `fields` | fields to return, as for a list |
-| `onReset` | called when events may have been missed, see [Resets](#resets) |
+| `onReset` | called once the subscription is live, and whenever events may have been missed, see [Resets](#resets) |
 | `onError` | called with a `ClientError` when the server refuses the subscription, which then ends |
 
 All subscriptions of a client share one streamed request. Subscribing or
@@ -100,9 +100,9 @@ export function Messages({ room }: { room: string }) {
           const others = list.filter((m) => m.id !== record.id);
           return action === "delete" ? others : [...others, record];
         }),
+      // Loads once the subscription is live, and again after a reset.
       { filter, onReset: load },
     );
-    void load();
     return unsubscribe;
   }, [room]);
 
@@ -116,8 +116,10 @@ export function Messages({ room }: { room: string }) {
 }
 ```
 
-Subscribe before you load, as above, so a record written while the list
-loads is not missed: a record that comes both ways replaces itself.
+Load in `onReset`, as above. It is called once the subscription is live,
+so a record written while the list loads is not missed: a record that comes
+both ways replaces itself. Writes made between `subscribe()` and that call
+are not sent.
 
 ## What subscribers get
 
@@ -135,8 +137,10 @@ delete. A record cleared out of a relation by a delete sends an update.
   subscriber: hidden fields left out, an email only when visible, with
   `expand` and `fields` applied.
 - **Deletes** send the record as it was before it was deleted.
-- **Once and in order.** Each event arrives once, in the order the writes
-  were committed. A write that is rolled back, such as one whose on hook
+- **Once and in order.** Each event arrives once, in the order the writes'
+  transactions were committed, and the events of one transaction in the
+  order it wrote them. So the last event for a record is the record as the
+  database has it. A write that is rolled back, such as one whose on hook
   throws or a batch that fails, sends nothing.
 
 Writes made outside the records API send nothing, as for
@@ -146,26 +150,38 @@ password rehash on sign-in, and deleted collections or fields.
 ## How it works
 
 Every write to a realtime collection logs an event in the write's own
-transaction, so the event exists exactly when the write is committed. On
-commit, Postgres notifies each NextBase instance, which reads the new events
-for its open streams, checks them against each subscriber's rules and sends
+transaction, so the event exists exactly when the write is committed. As
+the transaction commits, it takes the next position in the log, under a lock
+held until the commit is done, so positions follow the commit order. Postgres
+then notifies each NextBase instance, which reads the new events once for
+all its open streams, checks them against each subscriber's rules and sends
 those it may see as [server-sent events](/docs/api/realtime).
 
 A stream holds no database connection between events. Each instance keeps one
-connection listening for notifications while it has streams open.
+connection listening for notifications while it has streams open, and checks
+now and then that it still answers.
 
 The client keeps the id of the last event it received. When a stream ends or
 breaks, it reconnects with that id and gets every event since, so nothing is
 lost. A stream ends on purpose after `streamSeconds`, and the client
 reconnects at once; after a failure it waits, from one second up to thirty.
-When the signed-in session changes, the stream starts over with it, and when
-the session ends on the server, the stream ends within 30 seconds.
+When the signed-in session changes, the stream starts over with it. When the
+session ends on the server, the stream sends nothing more and ends, at the
+latest within 30 seconds.
 
 ### Resets
 
-Events are kept for at least ten minutes. A client away longer than that, such as a
-laptop that slept, cannot get what it missed: its subscriptions' `onReset`
-is called, and events flow again from then. Refetch what you show there.
+Events are kept for at least ten minutes after they are committed. A client
+away longer than that, such as a laptop that slept, cannot get what it
+missed: its subscriptions' `onReset` is called, and events flow again from
+then. Refetch what you show there.
+
+Event ids are signed for the caller they were sent to, and for the signed-in
+record and the collections as they were. Resuming starts over with a reset,
+rather than replaying past events, when the id was sent to someone else, when
+the signed-in record changed since (such as being given a new role), or when
+collections or rules changed. This keeps a caller from seeing old versions of
+records under rules that now let them see more.
 
 ## Limits
 
@@ -177,12 +193,16 @@ is called, and events flow again from then. Refetch what you show there.
   subscriber may no longer see the record sends nothing to it, not a delete.
 - **Expanded relations** are read when the event is sent, so they show the
   related records as they are then.
-- **Long transactions** hold back events. Events are sent in commit order,
-  so an event waits while a transaction that started writing earlier is
-  still running, even one outside NextBase or in another database of the
-  same server, since Postgres numbers transactions server-wide. Keep
-  transactions short. A new subscriber may also get the events of writes
-  committed while it subscribed that such a transaction held back.
+- **Write throughput.** Transactions that write to realtime collections
+  commit one at a time: each takes its position under a lock, and Postgres
+  also serializes the commits of transactions that notify. A commit holds
+  them only for the moment it takes, but at very high write rates to
+  realtime collections, this caps throughput. Other writes are not affected.
+- **Streams.** An instance serves at most 1000 streams, of which callers who
+  are not signed in may hold 500 together, and a signed-in record at most
+  10. A stream's topics may weigh at most 100: each counts 1, and 1 more for
+  each relation it expands. Past these, the server answers 503 or 429, and
+  the client tries again later.
 
 ## Deploying
 
