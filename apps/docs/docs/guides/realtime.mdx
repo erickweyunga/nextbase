@@ -1,0 +1,234 @@
+---
+title: Realtime
+description: Subscribe to records as they are created, updated and deleted.
+---
+
+# Realtime
+
+Realtime sends records to the browser as they are created, updated or
+deleted, so a chat, a feed or a dashboard updates without polling. Each
+subscriber gets only the records its rules let it see, shaped as a list
+request would return them.
+
+## Turn it on
+
+List the collections that send events in `new NextBase()`, or pass `true` for
+all of them:
+
+```ts title="lib/nextbase.ts"
+import "server-only";
+import { NextBase } from "@nextbasejs/core";
+import type { Collections } from "./nextbase-types";
+
+export const nextbase = new NextBase<Collections>({
+  realtime: { collections: ["messages", "rooms"] },
+});
+```
+
+| Option | Default | |
+| ------ | ------- | - |
+| `collections` | | the collection names, or `true` for every collection |
+| `listenUrl` | the `database` string, or `DATABASE_URL` | a direct connection string to listen for new events on, see [Deploying](#deploying) |
+| `streamSeconds` | `240` | how long a stream stays open before the client reconnects |
+
+`realtime: true` is short for `{ collections: true }`. Writes to the other
+collections, and to `_superusers`, send nothing and cost nothing extra.
+
+## Subscribe
+
+`subscribe()` takes `"*"` for every record of the collection, or a record id
+for one record, and returns the function that unsubscribes:
+
+```ts
+import { NextBaseClient } from "@nextbasejs/client";
+
+const nb = new NextBaseClient();
+
+const unsubscribe = nb.collection("messages").subscribe(
+  "*",
+  (e) => {
+    e.action; // "create" | "update" | "delete"
+    e.record; // the record, as a list request would return it
+  },
+  { filter: nb.filter("room = {:room}", { room: "abc" }), expand: "author" },
+);
+
+const roomId = "k3j2h1g9xa0b1c2";
+const stopWatchingRoom = nb.collection("rooms").subscribe(roomId, (e) => {
+  console.log(`room ${e.record.id} was ${e.action}d`);
+});
+
+unsubscribe();
+stopWatchingRoom();
+```
+
+| Option | |
+| ------ | - |
+| `filter` | a [filter](/docs/guides/filters) the records must match |
+| `expand` | relations to load, as for a list |
+| `fields` | fields to return, as for a list |
+| `onReset` | called once the subscription is live, and whenever events may have been missed, see [Resets](#resets) |
+| `onError` | called with a `ClientError` when the server refuses the subscription, which then ends |
+
+All subscriptions of a client share one streamed request. Subscribing or
+unsubscribing starts it over, so subscribe together where you can, such as
+in one effect.
+
+In React, subscribe in an effect and unsubscribe in its cleanup:
+
+```tsx title="app/rooms/[id]/messages.tsx"
+"use client";
+import { NextBaseClient, type RecordModel } from "@nextbasejs/client";
+import { useEffect, useState } from "react";
+
+const nb = new NextBaseClient();
+
+export function Messages({ room }: { room: string }) {
+  const [messages, setMessages] = useState<RecordModel[]>([]);
+
+  useEffect(() => {
+    const filter = nb.filter("room = {:room}", { room });
+    const load = () =>
+      nb
+        .collection("messages")
+        .getFullList({ filter, sort: "created" })
+        .then(setMessages);
+    const unsubscribe = nb.collection("messages").subscribe(
+      "*",
+      ({ action, record }) =>
+        setMessages((list) => {
+          const others = list.filter((m) => m.id !== record.id);
+          return action === "delete" ? others : [...others, record];
+        }),
+      // Loads once the subscription is live, and again after a reset.
+      { filter, onReset: load },
+    );
+    return unsubscribe;
+  }, [room]);
+
+  return (
+    <ul>
+      {messages.map((m) => (
+        <li key={m.id}>{String(m.text)}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Load in `onReset`, as above. It is called once the subscription is live,
+so a record written while the list loads is not missed: a record that comes
+both ways replaces itself. Writes made between `subscribe()` and that call
+are not sent.
+
+## What subscribers get
+
+Every create, update and delete, from any source: over HTTP, from
+`nextbase.client()`, in a batch, from a [hook](/docs/guides/hooks), from
+NextBase itself (such as a sign-up through OAuth2), or from a cascading
+delete. A record cleared out of a relation by a delete sends an update.
+
+- **Rules.** A `"*"` subscription checks each record against the list rule
+  and its `filter`; a subscription to one record checks the view rule. They
+  are checked for the subscriber, with `@request.auth` as it is now, against
+  the record as the write left it. A `null` rule refuses everyone but
+  superusers when they subscribe, with a 403.
+- **Shape.** Records come as a list request would return them to the
+  subscriber: hidden fields left out, an email only when visible, with
+  `expand` and `fields` applied.
+- **Deletes** send the record as it was before it was deleted.
+- **Once and in order.** Each event arrives once, in the order the writes'
+  transactions were committed, and the events of one transaction in the
+  order it wrote them. So the last event for a record is the record as the
+  database has it. A write that is rolled back, such as one whose on hook
+  throws or a batch that fails, sends nothing.
+
+Writes made outside the records API send nothing, as for
+[hooks](/docs/guides/hooks#what-hooks-do-not-see): `_superusers`, the
+password rehash on sign-in, and deleted collections or fields.
+
+## How it works
+
+Every write to a realtime collection logs an event in the write's own
+transaction, so the event exists exactly when the write is committed. As
+the transaction commits, it takes the next position in the log, under a lock
+held until the commit is done, so positions follow the commit order. Postgres
+then notifies each NextBase instance, which reads the new events once for
+all its open streams, checks them against each subscriber's rules and sends
+those it may see as [server-sent events](/docs/api/realtime).
+
+A stream holds no database connection between events. Each instance keeps one
+connection listening for notifications while it has streams open, and checks
+now and then that it still answers.
+
+The client keeps the id of the last event it received. When a stream ends or
+breaks, it reconnects with that id and gets every event since, so nothing is
+lost. A stream ends on purpose after `streamSeconds`, and the client
+reconnects at once; after a failure it waits, from one second up to thirty.
+When the signed-in session changes, the stream starts over with it. When the
+session ends on the server, the stream sends nothing more and ends, at the
+latest within 30 seconds.
+
+### Resets
+
+Events are kept for at least ten minutes after they are committed. A client
+away longer than that, such as a laptop that slept, cannot get what it
+missed: its subscriptions' `onReset` is called, and events flow again from
+then. Refetch what you show there.
+
+Event ids are signed for the caller they were sent to, and for the signed-in
+record and the collections as they were. Resuming starts over with a reset,
+rather than replaying past events, when the id was sent to someone else, when
+the signed-in record changed since (such as being given a new role), or when
+collections or rules changed. This keeps a caller from seeing old versions of
+records under rules that now let them see more. A stream sends a newly
+signed id within 30 seconds of a change to the signed-in record, and as it
+ends, so an edit of the user's own record causes at most one reset: when the
+connection breaks before that.
+
+## Limits
+
+- **Rules that read other records.** An event is checked when its record is
+  written. A change elsewhere that changes what a rule allows, such as a new
+  membership for an `@collection` rule, sends nothing for records that did
+  not change.
+- **Records that leave a subscriber's view.** An update after which the
+  subscriber may no longer see the record sends nothing to it, not a delete.
+- **Expanded relations** are read when the event is sent, so they show the
+  related records as they are then.
+- **Write throughput.** Transactions that write to realtime collections
+  commit one at a time: each takes its position under a lock, and Postgres
+  also serializes the commits of transactions that notify. A commit holds
+  them only for the moment it takes, but at very high write rates to
+  realtime collections, this caps throughput. Other writes are not affected.
+- **Streams.** An instance serves at most 1000 streams, of which callers who
+  are not signed in may hold 500 together, and a signed-in record at most
+  10. A stream's topics may weigh at most 100: each counts 1, and 1 more for
+  each relation it expands. Past these, the server answers 503 or 429, and
+  the client tries again later.
+
+## Deploying
+
+Realtime needs a Postgres connection that can `LISTEN`. Transaction poolers,
+such as PgBouncer in transaction mode and the pooled connection strings of
+Neon (`-pooler` hosts) and Supabase (port 6543), cannot. Set `listenUrl` to a
+direct connection string there:
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "@nextbasejs/core";
+
+export const nextbase = new NextBase({
+  realtime: {
+    collections: ["messages"],
+    listenUrl: process.env.DATABASE_URL_UNPOOLED,
+  },
+});
+```
+
+When it cannot listen, NextBase checks for new events every second instead,
+and logs that once.
+
+Serverless hosts cap how long a response may stream. On Vercel that is 300
+seconds by default, and `streamSeconds` defaults to 240 to stay under it. If
+you raise either, keep `streamSeconds` below the route's `maxDuration`. See
+[Going to production](/docs/guides/production#realtime).

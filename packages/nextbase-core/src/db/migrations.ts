@@ -10,6 +10,10 @@ import { lockSchema, SCHEMA, table } from "./system.ts";
 // Postgres 16: pg_input_is_valid and the CREATEROLE rules view roles rely on.
 const MIN_SERVER_VERSION = 160_000;
 
+// Advisory lock a transaction takes as it commits realtime events, so their
+// positions follow the commit order.
+const REALTIME_LOCK = 7_163_845_122_002;
+
 interface Migration {
   /**
    * Unique and permanent: never rename or remove a released migration. Change
@@ -358,6 +362,66 @@ const MIGRATIONS: readonly Migration[] = [
           `CREATE INDEX "_phone_codes_expires" ON {{${table("_phone_codes")}}} (expires)`,
         )
         .execute();
+    },
+  },
+  {
+    name: "0010_realtime",
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // A transaction that writes to realtime collections, with the position
+      // it takes when it commits. Its events are in `_realtime_events`.
+      await exec(`CREATE SEQUENCE {{${table("_realtime_transaction_ids")}}}`);
+      await exec(`CREATE SEQUENCE {{${table("_realtime_positions")}}}`);
+      await exec(`
+        CREATE TABLE {{${table("_realtime_transactions")}}} (
+          id        bigint PRIMARY KEY,
+          position  bigint UNIQUE,
+          committed timestamptz
+        )`);
+      await exec(
+        `CREATE INDEX "_realtime_transactions_committed" ON {{${table("_realtime_transactions")}}} (committed)`,
+      );
+      await exec(`
+        CREATE TABLE {{${table("_realtime_events")}}} (
+          transaction_id bigint NOT NULL,
+          seq            bigserial,
+          collection_id  text NOT NULL,
+          action         text NOT NULL,
+          record_id      text NOT NULL,
+          record         jsonb NOT NULL,
+          PRIMARY KEY (transaction_id, seq)
+        )`);
+      // Runs as the transaction commits, after its other work. The lock is
+      // held until the commit is done, so the next transaction takes the
+      // next position only once this one is visible: positions are taken,
+      // and become visible, in commit order.
+      await exec(`
+        CREATE FUNCTION {{${table("_realtime_commit")}}}() RETURNS trigger
+        LANGUAGE plpgsql SET search_path = '' AS $$
+        BEGIN
+          PERFORM pg_catalog.pg_advisory_xact_lock(${REALTIME_LOCK});
+          UPDATE ${table("_realtime_transactions")}
+          SET position = pg_catalog.nextval('${table("_realtime_positions")}'),
+              committed = pg_catalog.clock_timestamp()
+          WHERE id = NEW.id;
+          RETURN NULL;
+        END
+        $$`);
+      await exec(`
+        CREATE CONSTRAINT TRIGGER "_realtime_commit"
+        AFTER INSERT ON {{${table("_realtime_transactions")}}}
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION {{${table("_realtime_commit")}}}()`);
+      // The last event deleted as too old, so readers behind it learn they
+      // may have missed events.
+      await exec(`
+        CREATE TABLE {{${table("_realtime_state")}}} (
+          id              boolean PRIMARY KEY DEFAULT true CHECK (id),
+          purged_position bigint NOT NULL DEFAULT 0,
+          purged_seq      bigint NOT NULL DEFAULT 0
+        )`);
+      await exec(`INSERT INTO {{${table("_realtime_state")}}} DEFAULT VALUES`);
     },
   },
 ];

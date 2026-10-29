@@ -7,6 +7,11 @@ const url =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
   "postgres://localhost/nextbase_test";
 
+/** Connection string of the server test databases are created on. */
+export function testDatabaseUrl(): string {
+  return url;
+}
+
 export interface TestDatabase {
   db: DB;
   pool: pg.Pool;

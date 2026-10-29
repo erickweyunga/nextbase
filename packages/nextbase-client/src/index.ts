@@ -5,6 +5,7 @@ import { ClientError } from "./client-error.ts";
 import { CollectionService } from "./collections.ts";
 import { FileService } from "./files.ts";
 import { type FilterValue, filter } from "./filter.ts";
+import { RealtimeService } from "./realtime.ts";
 import { RecordService } from "./records.ts";
 import {
   type ApiErrorBody,
@@ -32,6 +33,12 @@ export { ClientError } from "./client-error.ts";
 export type { CollectionInput, CollectionService } from "./collections.ts";
 export type { FileService, FileUrlOptions } from "./files.ts";
 export { type FilterValue, filter } from "./filter.ts";
+export type {
+  RealtimeAction,
+  RealtimeEvent,
+  RealtimeService,
+  SubscribeOptions,
+} from "./realtime.ts";
 export type {
   AuthOptions,
   FullListOptions,
@@ -116,6 +123,11 @@ export class NextBaseClient<
   readonly collections: CollectionService;
   /** File URLs and tokens for protected files. */
   readonly files: FileService;
+  /**
+   * Realtime subscriptions, all over one streamed request. Subscribe with
+   * `collection(name).subscribe()`.
+   */
+  readonly realtime: RealtimeService;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
 
@@ -127,6 +139,9 @@ export class NextBaseClient<
     this.authStore = options.authStore ?? new AuthStore();
     this.collections = new CollectionService(this);
     this.files = new FileService(this);
+    this.realtime = new RealtimeService(this, (init) =>
+      this.#fetch(this.#url("/realtime"), init),
+    );
   }
 
   /** Records of one collection, by name or id. */

@@ -9,6 +9,7 @@ import type {
 import type { Row, Tx } from "@nextbasejs/dbx";
 import type { Principal } from "../auth/principal.ts";
 import type { Effects } from "../effects.ts";
+import { writeEvents } from "../realtime/events.ts";
 import type { Schema } from "../schema/cache.ts";
 import { serverRecord } from "./serialize.ts";
 
@@ -207,15 +208,37 @@ export interface HookClients {
   joined(join: Join): JoinedClient;
 }
 
+/** Which collections send realtime events, from NextBase. */
+export interface RealtimeWrites {
+  sends(collection: Collection): boolean;
+  /** Called once a write logged events, in its transaction. */
+  logged(): void;
+}
+
+/** A record a write changed, and what it was before an update. */
+export interface WrittenRecord {
+  record: Row;
+  original?: Row;
+}
+
 type AnyHook = (event: Record<string, unknown>) => void | Promise<void>;
 
-/** The app's record hooks, checked once when NextBase is created. */
+/**
+ * The app's record hooks, checked once when NextBase is created, and the
+ * realtime events of written records, which follow the same writes.
+ */
 export class Hooks {
   readonly #hooks = new Map<string, Partial<Record<HookName, AnyHook>>>();
   readonly #clients: HookClients;
+  readonly #realtime: RealtimeWrites | undefined;
 
-  constructor(hooks: RecordHooks | undefined, clients: HookClients) {
+  constructor(
+    hooks: RecordHooks | undefined,
+    clients: HookClients,
+    realtime?: RealtimeWrites,
+  ) {
     this.#clients = clients;
+    this.#realtime = realtime;
     for (const [name, set] of Object.entries(hooks ?? {})) {
       if (set === undefined) continue;
       if (name === SUPERUSERS) {
@@ -258,11 +281,28 @@ export class Hooks {
   }
 
   /** Whether the collection has an on or after hook for `action`. */
-  observes(collection: Collection, action: Action): boolean {
+  hasOnOrAfter(collection: Collection, action: Action): boolean {
     const name = capitalize(action);
     return (
       this.#find(collection, `on${name}`).length > 0 ||
       this.#find(collection, `after${name}`).length > 0
+    );
+  }
+
+  /**
+   * Whether writes of `action` to the collection must pass their records to
+   * `wrote`: for on or after hooks, or realtime events.
+   */
+  observes(collection: Collection, action: Action): boolean {
+    return this.hasOnOrAfter(collection, action) || this.#sends(collection);
+  }
+
+  // As for hooks, superusers send none: setup and createSuperuser() write
+  // them outside the records API.
+  #sends(collection: Collection): boolean {
+    return (
+      collection.name !== SUPERUSERS &&
+      (this.#realtime?.sends(collection) ?? false)
     );
   }
 
@@ -296,10 +336,63 @@ export class Hooks {
   }
 
   /**
-   * Runs the on hooks of a written record in its transaction, then queues
-   * its after hooks for once the request's changes are committed.
+   * Logs the realtime event of a written record and runs its on hooks, in
+   * its transaction, then queues its after hooks for once the request's
+   * changes are committed.
    */
   async wrote(
+    tx: Tx,
+    scope: HookScope,
+    collection: Collection,
+    action: Action,
+    record: Row,
+    original?: Row,
+  ): Promise<void> {
+    await this.#log(tx, collection, action, [record]);
+    await this.#run(tx, scope, collection, action, record, original);
+  }
+
+  /**
+   * `wrote` for several records of one collection, in order. Without on
+   * hooks, which may write records of their own in between, their events
+   * are logged with one statement.
+   */
+  async wroteAll(
+    tx: Tx,
+    scope: HookScope,
+    collection: Collection,
+    action: Action,
+    written: readonly WrittenRecord[],
+  ): Promise<void> {
+    if (this.#find(collection, `on${capitalize(action)}`).length > 0) {
+      for (const { record, original } of written) {
+        await this.wrote(tx, scope, collection, action, record, original);
+      }
+      return;
+    }
+    await this.#log(
+      tx,
+      collection,
+      action,
+      written.map((w) => w.record),
+    );
+    for (const { record, original } of written) {
+      await this.#run(tx, scope, collection, action, record, original);
+    }
+  }
+
+  async #log(
+    tx: Tx,
+    collection: Collection,
+    action: Action,
+    records: readonly Row[],
+  ): Promise<void> {
+    if (records.length === 0 || !this.#sends(collection)) return;
+    await writeEvents(tx, collection, action, records);
+    this.#realtime?.logged();
+  }
+
+  async #run(
     tx: Tx,
     scope: HookScope,
     collection: Collection,

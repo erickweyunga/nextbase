@@ -1,0 +1,156 @@
+---
+title: Realtime
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Realtime
+
+Streams records as they are created, updated and deleted, as
+[server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html).
+Only the collections in the `realtime` option send events; see
+[Realtime](/docs/guides/realtime).
+
+## Subscribe
+
+Opens a stream for up to 50 topics. Each topic is checked as a list request
+(for a collection) or a view request (for one record) would be, before the
+stream starts.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const unsubscribe = nb.collection("messages").subscribe(
+  "*",
+  (e) => console.log(e.action, e.record),
+  { filter: 'room = "k3j2h1g9xa0b1c2"', expand: "author" },
+);
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -N https://app.example/api/nextbase/realtime \
+  -H 'content-type: application/json' \
+  -d '{"topics":[{"collection":"messages","filter":"room = \"k3j2h1g9xa0b1c2\""}]}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /realtime
+```
+
+It is a `POST`, so a session cookie needs the same `Origin` check as other
+writes; browsers send it on their own. `EventSource` cannot send a `POST` or
+an `Authorization` header, so the SDK reads the stream with `fetch`.
+
+**Headers**
+
+| Header | Description |
+| ------ | ----------- |
+| `Last-Event-ID` | Optional. The id of the last event received, to resume after it. An id sent to another caller, or from before the signed-in record or the collections changed, starts at the newest event with a `reset`. |
+
+**Body**
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `topics` | array | 1 to 50 topics, weighing at most 100 together: each counts 1, and 1 more for each relation it expands. |
+| `topics[].collection` | string | Collection name or id. |
+| `topics[].id` | string | Optional. One record, checked against the view rule. Without it, every record, checked against the list rule. |
+| `topics[].filter` | string | Optional. A [filter](/docs/guides/filters) the records must match. |
+| `topics[].expand` | string | Optional. Relations to load, as for a list. |
+| `topics[].fields` | string | Optional. Fields to return, as for a list. |
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+A `text/event-stream` that stays open:
+
+```text
+id: 41.73.6.Hk2Pq0vZ3lM9xYt1aBc8dE
+
+id: 42.75.6.u7Rn4WbX1sQe9KfT0cVy2A
+event: create
+data: {"action":"create","topics":{"0":{"collectionId":"c1a2b3c4d5e6f7g","collectionName":"messages","id":"o51h3v90k1oa22e","text":"Hello","room":"k3j2h1g9xa0b1c2"}}}
+
+:
+
+event: end
+data: {"reason":"timeout"}
+```
+
+</TabItem>
+<TabItem value="400" label="400">
+
+A malformed body, topics that weigh too much, a collection without
+realtime, or a bad `filter`, `expand` or `fields`. For a topic,
+`data.topics` names it, by position from 0:
+
+```json
+{
+  "status": 400,
+  "message": "Topic 1 was refused: Invalid filter: Unknown field \"nope\".",
+  "data": {
+    "topics": {
+      "0": {
+        "code": "realtime_topic_refused",
+        "message": "Invalid filter: Unknown field \"nope\"."
+      }
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+A topic's list or view rule is `null`, and the caller is not a superuser.
+`data.topics` names the topic, as for a 400.
+
+</TabItem>
+<TabItem value="404" label="404">
+
+A topic's collection does not exist, its id cannot be a record's, or
+realtime is not enabled at all.
+
+</TabItem>
+<TabItem value="429" label="429">
+
+The signed-in record already has 10 streams open.
+
+</TabItem>
+<TabItem value="503" label="503">
+
+The instance already serves 1000 streams, or 500 for callers who are not
+signed in. Try again later.
+
+</TabItem>
+</Tabs>
+
+## Messages
+
+| Event | Data | |
+| ----- | ---- | - |
+| `create`, `update`, `delete` | `{ action, topics }` | A record written. `topics` maps the position of each topic that may see the record to the record, shaped for that topic. A delete has the record as it was. |
+| `reset` | `{}` | Events may have been missed: the client was away longer than they are kept, its `Last-Event-ID` cannot be resumed from, or a record could not be read back after its collection changed. Refetch; events flow again from here. |
+| `end` | `{ reason }` | The server ended the stream: `timeout` after `streamSeconds`, `signed_out` when the session ended, `schema_changed` when collections or rules changed. Reconnect at once. |
+
+- Each event's `id` is its position in the log, in commit order, signed for
+  the caller. Treat it as opaque. Messages with an `id` but no
+  data move the last event id on without an event: one comes first, so the
+  client can resume from where it subscribed, and more come every 25 seconds
+  and before an `end`, once the stream has read past events the caller may
+  not see.
+- Every 25 seconds without such a message, a comment line (`:`) comes
+  instead, so proxies keep the stream open.
+- To resume, reconnect with the last `id` received in `Last-Event-ID`. The
+  stream sends every event after it, once.
+- The request does not renew the session, since the response could only
+  carry the renewed cookie once it ends.

@@ -116,14 +116,24 @@ async function readSession(
   schema: Schema,
   hashed: string,
 ): Promise<SessionRow> {
-  const params: Record<string, string> = { tokenHash: hashed };
+  const [row] = await readSessions(db, schema, [hashed]);
+  return row as SessionRow;
+}
+
+/** `readSession` for several tokens, with one query: a row for each, in order. */
+async function readSessions(
+  db: DB,
+  schema: Schema,
+  hashes: readonly string[],
+): Promise<SessionRow[]> {
+  const params: Record<string, unknown> = { tokenHashes: [...hashes] };
   const branches = schema.collections
     .filter((c) => c.type === "auth")
     .map((c, i) => {
       params[`c${i}`] = c.id;
       return `WHEN {:c${i}} THEN (SELECT to_json(r) FROM {{${table(c.name)}}} r WHERE r.id = s.record_id)`;
     });
-  const [row] = await db
+  return db
     .newQuery(
       `SELECT m.schema_version AS "schemaVersion",
               s.id, s.collection_id AS "collectionId", s.record_id AS "recordId",
@@ -131,12 +141,13 @@ async function readSession(
               s.key_hash AS "keyHash", now() AS now,
               CASE s.collection_id ${branches.join(" ")} END AS record
        FROM {{${table("_meta")}}} m
+       CROSS JOIN unnest({:tokenHashes}::text[]) WITH ORDINALITY AS h(hash, i)
        LEFT JOIN {{${table("_sessions")}}} s
-         ON s.token_hash = {:tokenHash} AND s.expires > now()`,
+         ON s.token_hash = h.hash AND s.expires > now()
+       ORDER BY h.i`,
     )
     .bind(params)
     .all<SessionRow>();
-  return row as SessionRow;
 }
 
 /**
@@ -165,26 +176,10 @@ export async function findSession(
     row = await readSession(db, built, hashed);
   }
   const schema = await schemas.get(db, Number(row.schemaVersion));
-  const { schemaVersion, id, keyHash, now, record: json, ...rest } = row;
-  if (id === null) return { schema, active: undefined };
-  const session: Session = { id, ...rest };
-
-  const collection = schema.find(session.collectionId);
-  if (collection?.type !== "auth") return { schema, active: undefined };
-  // When the schema changed, the record may come from the wrong table, so read it again.
-  const record =
-    schema.version === built.version
-      ? json && decodeRecordJson(collection, json)
-      : (
-          await db
-            .select()
-            .from(table(collection.name))
-            .where(hash({ id: session.recordId }))
-            .all()
-        )[0];
-  if (!record || sessionKey(collection, record) !== keyHash) {
-    return { schema, active: undefined };
-  }
+  const found = await activeSession(db, schema, built, row);
+  if (!found) return { schema, active: undefined };
+  const { session, collection, record } = found;
+  const { now } = row;
 
   const { duration } = collection.tokens.auth;
   const remaining = (session.expires.getTime() - now.getTime()) / 1000;
@@ -201,6 +196,66 @@ export async function findSession(
   if (extended)
     session.expires = await extendSession(db, collection, session.id);
   return { schema, active: { session, collection, record, extended } };
+}
+
+/**
+ * The sessions of several tokens, with one query, as `findSession` finds
+ * them but never extended: undefined for a token without one.
+ */
+export async function findSessions(
+  db: DB,
+  schemas: SchemaCache,
+  tokens: readonly string[],
+): Promise<(ActiveSession | undefined)[]> {
+  if (tokens.length === 0) return [];
+  const hashes = tokens.map(tokenHash);
+  let built = schemas.cached ?? (await schemas.get(db));
+  let rows: SessionRow[];
+  try {
+    rows = await readSessions(db, built, hashes);
+  } catch (error) {
+    // As in findSession: a table of the cached schema is gone.
+    if (!SCHEMA_RACE.has((error as { code?: string }).code ?? "")) throw error;
+    built = await schemas.get(db);
+    rows = await readSessions(db, built, hashes);
+  }
+  const schema = await schemas.get(db, Number(rows[0]?.schemaVersion));
+  const found: (ActiveSession | undefined)[] = [];
+  for (const row of rows) {
+    const active = await activeSession(db, schema, built, row);
+    found.push(active && { ...active, extended: false });
+  }
+  return found;
+}
+
+/**
+ * The session of a row `readSessions` read, if it is still valid: its
+ * record exists in an auth collection and its key matches the record's.
+ */
+async function activeSession(
+  db: DB,
+  schema: Schema,
+  built: Schema,
+  row: SessionRow,
+): Promise<Omit<ActiveSession, "extended"> | undefined> {
+  const { schemaVersion, id, keyHash, now, record: json, ...rest } = row;
+  if (id === null) return undefined;
+  const session: Session = { id, ...rest };
+  const collection = schema.find(session.collectionId);
+  if (collection?.type !== "auth") return undefined;
+  // When the schema changed, the record may come from the wrong table, so read it again.
+  const record =
+    schema.version === built.version
+      ? json && decodeRecordJson(collection, json)
+      : (
+          await db
+            .select()
+            .from(table(collection.name))
+            .where(hash({ id: session.recordId }))
+            .all()
+        )[0];
+  if (!record || sessionKey(collection, record) !== keyHash) return undefined;
+  return { session, collection, record };
 }
 
 /** Never past the session's absolute end. */

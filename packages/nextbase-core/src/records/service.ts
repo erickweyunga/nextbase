@@ -274,6 +274,47 @@ export async function outputRecord(
   return record as Output;
 }
 
+/** Like `outputRecord`, for several rows. */
+export function outputRecords(
+  ctx: RecordsContext,
+  collection: Collection,
+  rows: Row[],
+  query: URLSearchParams,
+): Promise<Output[]> {
+  return output(ctx.db, ctx, collection, rows, query);
+}
+
+/**
+ * The condition the records a realtime subscriber gets must meet: the list
+ * rule and the `filter` of `query`, as a list request checks them, or the
+ * view rule and the id, for one record. Throws as such a request would: 403
+ * for a null rule, 400 for a bad filter, `expand` or `fields`, 404 for an id
+ * no record can have.
+ */
+export function subscriptionCondition(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string | undefined,
+  query: URLSearchParams,
+): Expression | undefined {
+  if (id !== undefined) checkId(collection, id);
+  const rule = ruleCondition(
+    ctx,
+    collection,
+    id === undefined ? collection.listRule : collection.viewRule,
+  );
+  const filter = compile(ctx, collection, query.get("filter") ?? "", "filter");
+  const expand = query.get("expand");
+  if (expand) pathTree(expand, MAX_EXPAND_DEPTH, "expand");
+  const fields = query.get("fields");
+  if (fields) pathTree(fields, Number.POSITIVE_INFINITY, "fields");
+  return and(
+    id === undefined ? undefined : hash({ [`${ALIAS}.id`]: id }),
+    rule,
+    filter,
+  );
+}
+
 /** Returns the record, or undefined when the caller may not view it. */
 export async function newRecord(
   ctx: RecordsContext,
@@ -449,10 +490,11 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
  * only its own collection, and the batch's earlier writes are done before it
  * starts, so only such a rule could see records the run inserts. False too
  * when the collection has on or after hooks: each create's hooks then run
- * before the next create, and see its record as stored, as in turn.
+ * before the next create, and see its record as stored, as in turn. Realtime
+ * events alone do not split runs: they are logged together.
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
-  if (ctx.hooks?.observes(collection, "create")) return false;
+  if (ctx.hooks?.hasOnOrAfter(collection, "create")) return false;
   if (ctx.principal.superuser) return true;
   const own = `{{${table(collection.name)}}}`;
   return [collection.createRule, collection.viewRule].every((rule) => {
@@ -559,14 +601,26 @@ export async function applyCreates(
       : [];
   if (failed !== undefined)
     throw new CreateFailed(failed, failures.get(failed));
-  if (returning) {
+  const hooks = ctx.hooks;
+  if (returning && hooks) {
     const scope = hookScope(ctx);
-    for (const [i, row] of inserted.entries()) {
-      try {
-        await ctx.hooks?.wrote(tx, scope, collection, "create", row);
-      } catch (error) {
-        throw new CreateFailed(i, error);
+    if (hooks.hasOnOrAfter(collection, "create")) {
+      for (const [i, row] of inserted.entries()) {
+        try {
+          await hooks.wrote(tx, scope, collection, "create", row);
+        } catch (error) {
+          throw new CreateFailed(i, error);
+        }
       }
+    } else {
+      // Realtime events alone, for every record at once.
+      await hooks.wroteAll(
+        tx,
+        scope,
+        collection,
+        "create",
+        inserted.map((record) => ({ record })),
+      );
     }
   }
   return afterWrites(
@@ -852,15 +906,20 @@ export async function planDeleteRecord(
     }
     const written = await deleteWithReferences(tx, ctx, collection, [id]);
     // Once every record is written, so hooks never see a delete half done.
-    for (const { collection, action, record, original, source } of written) {
-      await ctx.hooks?.wrote(
+    // Consecutive records of one collection, action and source go together.
+    for (let i = 0; i < written.length; ) {
+      const first = written[i] as Written;
+      let end = i + 1;
+      while (end < written.length && sameWrite(written[end] as Written, first))
+        end++;
+      await ctx.hooks?.wroteAll(
         tx,
-        hookScope(ctx, source),
-        collection,
-        action,
-        record,
-        original,
+        hookScope(ctx, first.source),
+        first.collection,
+        first.action,
+        written.slice(i, end),
       );
+      i = end;
     }
   };
 }
@@ -1224,7 +1283,83 @@ async function refusedNewRows(
   rows: readonly { row: Record<string, unknown>; rule: Expression }[],
 ): Promise<number[]> {
   const params: Params = {};
-  const tuples = rows.map(({ row }, i) => {
+  const source = rowsTable(
+    q,
+    collection,
+    rows.map(({ row }) => row),
+    params,
+  );
+  const [first] = rows;
+  const condition =
+    first && rows.every(({ rule }) => rule === first.rule)
+      ? first.rule.build(q, params)
+      : `CASE "_i" ${rows.map(({ rule }, i) => `WHEN ${i} THEN ${rule.build(q, params)}`).join(" ")} END`;
+  return q
+    .newQuery(
+      `${source} SELECT "_i" FROM "${ALIAS}" WHERE NOT COALESCE(${condition}, false) ORDER BY "_i"`,
+    )
+    .bind(params)
+    .column<number>();
+}
+
+/**
+ * Evaluates `conditions` on rows that are not read from the collection's
+ * table, such as the records of realtime events, as `refusedNewRows` does:
+ * for each row, whether each condition matches it. An undefined condition
+ * matches every row. Takes one query per few thousand rows, and none when
+ * no condition needs one.
+ */
+export async function matchingRows(
+  q: Builder,
+  collection: Collection,
+  rows: readonly Row[],
+  conditions: readonly (Expression | undefined)[],
+): Promise<boolean[][]> {
+  const matches = rows.map(() => conditions.map(() => true));
+  // Leaves room under the limit for the conditions' own parameters.
+  const perChunk = Math.max(
+    1,
+    Math.floor((MAX_PARAMETERS - 15_000) / collection.fields.length),
+  );
+  for (let start = 0; start < rows.length; start += perChunk) {
+    const params: Params = {};
+    const source = rowsTable(
+      q,
+      collection,
+      rows.slice(start, start + perChunk),
+      params,
+    );
+    const columns = conditions.flatMap((condition, k) => {
+      const sql = condition?.build(q, params) ?? "";
+      return sql === "" ? [] : [`COALESCE(${sql}, false) AS "nb_m${k}"`];
+    });
+    if (columns.length === 0) break;
+    const found = await q
+      .newQuery(`${source} SELECT "_i", ${columns.join(", ")} FROM "${ALIAS}"`)
+      .bind(params)
+      .all();
+    for (const row of found) {
+      const i = start + Number(row._i);
+      for (const k of conditions.keys()) {
+        const match = row[`nb_m${k}`];
+        if (match !== undefined) (matches[i] as boolean[])[k] = match === true;
+      }
+    }
+  }
+  return matches;
+}
+
+/**
+ * The rows as a table named ALIAS, for rules to read: a WITH clause whose
+ * table has a column per field, and `_i`, each row's position.
+ */
+function rowsTable(
+  q: Builder,
+  collection: Collection,
+  rows: readonly Record<string, unknown>[],
+  params: Params,
+): string {
+  const tuples = rows.map((row, i) => {
     const values = collection.fields.map((field, j) => {
       // Rules cannot read secrets, so they are never sent.
       const secret = field.type === "password" || field.name === "tokenKey";
@@ -1240,17 +1375,7 @@ async function refusedNewRows(
     `"_i"`,
     ...collection.fields.map((field) => q.quoteSimpleColumnName(field.name)),
   ];
-  const [first] = rows;
-  const condition =
-    first && rows.every(({ rule }) => rule === first.rule)
-      ? first.rule.build(q, params)
-      : `CASE "_i" ${rows.map(({ rule }, i) => `WHEN ${i} THEN ${rule.build(q, params)}`).join(" ")} END`;
-  return q
-    .newQuery(
-      `WITH "${ALIAS}"(${columns.join(", ")}) AS (VALUES ${tuples.join(", ")}) SELECT "_i" FROM "${ALIAS}" WHERE NOT COALESCE(${condition}, false) ORDER BY "_i"`,
-    )
-    .bind(params)
-    .column<number>();
+  return `WITH "${ALIAS}"(${columns.join(", ")}) AS (VALUES ${tuples.join(", ")})`;
 }
 
 /**
@@ -1356,8 +1481,8 @@ async function viewable(
 // block the delete: the result depends neither on cycles nor on the order
 // fields are declared in. Works on every record of one level at once, so a
 // delete takes a few queries per level and collection, not per record.
-// Returns the records it wrote whose collections have on or after hooks, in
-// the order it wrote them, and each record once.
+// Returns the records it wrote whose collections have on or after hooks or
+// send realtime events, in the order it wrote them, and each record once.
 async function deleteWithReferences(
   tx: Builder,
   ctx: RecordsContext,
@@ -1406,8 +1531,9 @@ async function deleteWithReferences(
       // Each cascade already put all the records it reaches in `deleting`.
       if (field.cascadeDelete) continue;
       const stays = `${refers} AND id <> ALL({:gone}::text[])`;
-      // Hooks get each record as it was and as it is left, so then the rows
-      // are read whole and the update returns them.
+      // Hooks get each record as it was and as it is left, and realtime
+      // events as it is left, so then the rows are read whole and the
+      // update returns them.
       const observed = hooks?.observes(source, "update") ?? false;
       // Locked in id order, so concurrent deletes lock rows in the same order.
       // Field names start with a letter, so `_kept` cannot clash with one.
@@ -1471,13 +1597,21 @@ async function deleteWithReferences(
   return [...updated.values(), ...deleted];
 }
 
-/** A record a write changed, for its hooks. */
+/** A record a write changed, for its hooks and realtime events. */
 interface Written {
   collection: Collection;
   action: "create" | "update" | "delete";
   record: Row;
   original?: Row;
   source: HookSource;
+}
+
+function sameWrite(a: Written, b: Written): boolean {
+  return (
+    a.collection.id === b.collection.id &&
+    a.action === b.action &&
+    a.source === b.source
+  );
 }
 
 interface Deleting {

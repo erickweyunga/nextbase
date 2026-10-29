@@ -4,12 +4,14 @@ import {
   ClientError,
   filter,
   NextBaseClient,
+  type RealtimeEvent,
   type RecordModel,
 } from "@nextbasejs/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseFilter } from "../src/filter/parser.ts";
 import { NextBase } from "../src/index.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres.ts";
+import { waitFor } from "./wait.ts";
 
 /** The literal on the right of `x = <value>`, as the server parses it. */
 function parsedLiteral(value: Parameters<typeof filter>[1]): unknown {
@@ -973,6 +975,197 @@ describe("the SDK against a real instance", () => {
       expect(await nb.setupStatus()).toEqual({ required: true });
     } finally {
       await fresh.close();
+    }
+  });
+});
+
+interface FakeStream {
+  headers: Headers;
+  topics: Record<string, unknown>[];
+  signal: AbortSignal;
+  send(text: string): void;
+  end(): void;
+}
+
+/**
+ * A fake realtime endpoint. Each request gets a stream the test writes to,
+ * or the next of `responses`, if any.
+ */
+function fakeRealtime(): {
+  client: NextBaseClient;
+  streams: FakeStream[];
+  responses: Response[];
+} {
+  const streams: FakeStream[] = [];
+  const responses: Response[] = [];
+  const encoder = new TextEncoder();
+  const client = new NextBaseClient({
+    baseUrl: "https://app.example/api/nextbase",
+    authStore: new AuthStore({ storage: null }),
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe("https://app.example/api/nextbase/realtime");
+      const { topics } = (await request.json()) as {
+        topics: Record<string, unknown>[];
+      };
+      const prepared = responses.shift();
+      if (prepared) return prepared;
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      request.signal.addEventListener("abort", () => {
+        try {
+          controller.error(request.signal.reason);
+        } catch {
+          // Already ended.
+        }
+      });
+      streams.push({
+        headers: request.headers,
+        topics,
+        signal: request.signal,
+        send: (text) => controller.enqueue(encoder.encode(text)),
+        end: () => controller.close(),
+      });
+      return new Response(body, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  return { client, streams, responses };
+}
+
+describe("realtime subscriptions", () => {
+  it("multiplexes subscriptions and parses events however the stream splits them", async () => {
+    const { client, streams } = fakeRealtime();
+    const posts: RealtimeEvent[] = [];
+    const one: RealtimeEvent[] = [];
+    const offPosts = client
+      .collection("posts")
+      .subscribe("*", (e) => posts.push(e));
+    const offOne = client
+      .collection("users")
+      .subscribe("u1", (e) => one.push(e), { filter: "a = 1", fields: "id" });
+    await waitFor(() => streams.length === 1, "the stream");
+    const [stream] = streams as [FakeStream];
+    expect(stream.topics).toEqual([
+      { collection: "posts" },
+      { collection: "users", id: "u1", filter: "a = 1", fields: "id" },
+    ]);
+    expect(stream.headers.get("accept")).toBe("text/event-stream");
+    expect(stream.headers.has("last-event-id")).toBe(false);
+    // CRLF split between chunks, CR alone, comments, a field without a
+    // value, data over two lines and an event of a type it does not know.
+    for (const chunk of [
+      "id: 1.1\n\n: ping\n\nid: 1.2\r",
+      '\nevent: create\r\ndata: {"action":"create",',
+      '\ndata: "topics":{"0":{"id":"p1"},"1":{"id":"u1"}}}\r\n\r',
+      "\nevent: other\ndata: x\n\nevent: update\rdata",
+      ': {"action":"update","topics":{"1":{"id":"u1","x":2}}}\r\r',
+      "event: delete\ndata: {}\n",
+    ]) {
+      stream.send(chunk);
+    }
+    await waitFor(() => one.length === 2, "two events");
+    expect(posts).toEqual([{ action: "create", record: { id: "p1" } }]);
+    expect(one).toEqual([
+      { action: "create", record: { id: "u1" } },
+      { action: "update", record: { id: "u1", x: 2 } },
+    ]);
+    offPosts();
+    offOne();
+    await waitFor(() => stream.signal.aborted, "the abort");
+    expect(streams).toHaveLength(1);
+  });
+
+  it("resumes after the last event id, at once after an end and after a wait on failure", async () => {
+    const { client, streams } = fakeRealtime();
+    const off = client.collection("posts").subscribe("*", () => {});
+    await waitFor(() => streams.length === 1, "the stream");
+    streams[0]?.send('id: 5.1\n\nevent: end\ndata: {"reason":"timeout"}\n\n');
+    streams[0]?.end();
+    await waitFor(() => streams.length === 2, "the second stream", 500);
+    expect(streams[1]?.headers.get("last-event-id")).toBe("5.1");
+    // Broken off without an end: the client waits before it reconnects.
+    streams[1]?.send("id: 5.2\n\n");
+    const broken = Date.now();
+    streams[1]?.end();
+    await waitFor(() => streams.length === 3, "the third stream", 3_000);
+    expect(Date.now() - broken).toBeGreaterThanOrEqual(400);
+    expect(streams[2]?.headers.get("last-event-id")).toBe("5.2");
+    off();
+    await waitFor(() => streams[2]?.signal.aborted === true, "the abort");
+  });
+
+  it("starts over when the session changes, and ends sessions the server ended", async () => {
+    const { client, streams } = fakeRealtime();
+    const off = client.collection("posts").subscribe("*", () => {});
+    await waitFor(() => streams.length === 1, "the stream");
+    expect(streams[0]?.headers.has("authorization")).toBe(false);
+    client.authStore.save("token-1", { id: "u1" } as RecordModel);
+    await waitFor(() => streams.length === 2, "the second stream");
+    expect(streams[0]?.signal.aborted).toBe(true);
+    expect(streams[1]?.headers.get("authorization")).toBe("Bearer token-1");
+    streams[1]?.send('event: end\ndata: {"reason":"signed_out"}\n\n');
+    streams[1]?.end();
+    await waitFor(() => streams.length === 3, "the third stream");
+    expect(client.authStore.isValid).toBe(false);
+    expect(streams[2]?.headers.has("authorization")).toBe(false);
+    off();
+  });
+
+  it("tells subscribers of resets and refusals, and survives callbacks that throw", async () => {
+    const { client, streams, responses } = fakeRealtime();
+    const resets: string[] = [];
+    const errors: ClientError[] = [];
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let off = (): void => {};
+    try {
+      responses.push(
+        Response.json(
+          {
+            status: 403,
+            message:
+              "Topic 2 was refused: Only superusers can perform this action.",
+            data: {
+              topics: {
+                1: { code: "realtime_topic_refused", message: "No." },
+              },
+            },
+          },
+          { status: 403 },
+        ),
+      );
+      const seen: unknown[] = [];
+      off = client.collection("posts").subscribe(
+        "*",
+        (e) => {
+          seen.push(e.record.id);
+          throw new Error("callback failed");
+        },
+        { onReset: () => resets.push("posts") },
+      );
+      client
+        .collection("secrets")
+        .subscribe("*", () => {}, { onError: (e) => errors.push(e) });
+      await waitFor(() => streams.length === 1, "the stream");
+      expect(errors.map((e) => e.status)).toEqual([403]);
+      expect(streams[0]?.topics).toEqual([{ collection: "posts" }]);
+      streams[0]?.send(
+        'id: 1.1\nevent: create\ndata: {"action":"create","topics":{"0":{"id":"a"}}}\n\n' +
+          "id: 2.0\nevent: reset\ndata: {}\n\n" +
+          'id: 2.1\nevent: create\ndata: {"action":"create","topics":{"0":{"id":"b"}}}\n\n',
+      );
+      await waitFor(() => seen.length === 2, "both events");
+      // Once when it went live, and once for the reset.
+      expect(resets).toEqual(["posts", "posts"]);
+      expect(error).toHaveBeenCalledTimes(2);
+    } finally {
+      error.mockRestore();
+      off();
     }
   });
 });
