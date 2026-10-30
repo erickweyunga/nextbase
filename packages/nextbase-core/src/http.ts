@@ -7,6 +7,24 @@ const MAX_JSON_BODY = 1024 * 1024;
 export async function readJsonObject(
   request: Request,
 ): Promise<Record<string, unknown>> {
+  checkJson(request);
+  return parseJsonObject(await readJsonBytes(request));
+}
+
+/**
+ * A JSON object, or `{}` for a request with no body, whatever its
+ * Content-Type: clients often send one on every request.
+ */
+export async function readOptionalJsonObject(
+  request: Request,
+): Promise<Record<string, unknown>> {
+  const bytes = await readJsonBytes(request);
+  if (bytes.byteLength === 0) return {};
+  checkJson(request);
+  return parseJsonObject(bytes);
+}
+
+function checkJson(request: Request): void {
   const type = request.headers.get('content-type') ?? '';
   if (!/^application\/json\s*(;|$)/i.test(type)) {
     throw new ApiError(
@@ -14,10 +32,12 @@ export async function readJsonObject(
       'The request body must be JSON (Content-Type: application/json).',
     );
   }
+}
+
+async function readJsonBytes(request: Request): Promise<Buffer> {
   const tooLarge = new ApiError(413, 'The request body is too large.');
   if (Number(request.headers.get('content-length') ?? 0) > MAX_JSON_BODY)
     throw tooLarge;
-
   const chunks: Uint8Array[] = [];
   let size = 0;
   if (request.body) {
@@ -33,9 +53,13 @@ export async function readJsonObject(
       chunks.push(value);
     }
   }
+  return Buffer.concat(chunks);
+}
+
+function parseJsonObject(bytes: Buffer): Record<string, unknown> {
   let body: unknown;
   try {
-    body = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+    body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     throw new ApiError(400, 'The request body is not valid JSON.');
   }

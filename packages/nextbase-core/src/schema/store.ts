@@ -126,5 +126,6 @@ function fromRow(row: CollectionRow): Collection {
     implicitLinking: true,
     mfa: defaultMfa(),
     ...(row.options as Partial<AuthOptions>),
+    ...(row.id === '_superusers' && { implicitLinking: false }),
   } as AuthCollection;
 }

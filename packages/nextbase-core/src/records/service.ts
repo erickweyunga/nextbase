@@ -84,6 +84,8 @@ export interface RecordsContext {
   passwordOrigin?: PasswordOrigin;
   /** Set when an emailed link confirmed the owner's deletion of their account. */
   deletionConfirmed?: boolean;
+  /** What a delete's body brought to confirm the caller's own account goes. */
+  deletionCredentials?: { password: unknown; mfaCode: unknown };
 }
 
 /**
@@ -927,9 +929,21 @@ export async function planDeleteRecord(
   denyNullRule(context, collection.deleteRule);
   // Credentials confirm the delete; rules and hooks never see them.
   const { password, mfaCode, ...body } = context.request.body;
-  await checkOwnDeletion(context, collection, id, password, mfaCode);
-  const ctx = { ...context, request: { ...context.request, body } };
+  const ctx = {
+    ...context,
+    request: { ...context.request, body },
+    deletionCredentials: { password, mfaCode },
+  };
   const notFound = new ApiError(404, 'Record not found.');
+  const rule = ruleCondition(ctx, collection, collection.deleteRule);
+  if (ownAccount(ctx, collection, id)) {
+    // Asked for no password, nor counted against the account, when the rule
+    // would refuse the delete anyway.
+    if (!(await matchesStoredRow(ctx.pool, collection, id, rule))) {
+      throw notFound;
+    }
+    await checkOwnDeletion(ctx, collection, id, password, mfaCode);
+  }
   if (ctx.hooks?.hasBefore(collection, 'delete')) {
     await ctx.hooks.before(hookScope(ctx), collection, 'delete', {
       record: await storedRecord(
@@ -942,7 +956,6 @@ export async function planDeleteRecord(
       request: ctx.request,
     });
   }
-  const rule = ruleCondition(ctx, collection, collection.deleteRule);
   return async (tx) => {
     if (collection.id === SUPERUSERS) await keepOneSuperuser(tx, id);
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
@@ -986,22 +999,38 @@ async function checkOwnDeletion(
   mfaCode: unknown,
 ): Promise<void> {
   const { principal } = ctx;
-  if (
-    collection.type !== 'auth' ||
-    principal.superuser ||
-    ctx.deletionConfirmed ||
-    principal.collection?.id !== collection.id ||
-    principal.record?.id !== id
-  ) {
-    return;
-  }
-  forbidImpersonated(principal, 'delete the account');
   const record = principal.record;
+  if (collection.type !== 'auth' || !record || !ownAccount(ctx, collection, id))
+    return;
+  forbidImpersonated(principal, 'delete the account');
   const created = principal.session?.created.getTime() ?? 0;
-  if (password !== undefined || Date.now() - created > FRESH_SESSION_MS) {
+  if (password === undefined && Date.now() - created > FRESH_SESSION_MS) {
+    throw new ApiError(
+      400,
+      'Enter your current password, or sign in again, to delete your account.',
+      { password: { code: 'validation_required', message: 'Required.' } },
+    );
+  }
+  if (password !== undefined) {
     await checkPassword(ctx.pool, collection, record, password);
   }
   await checkStepUp(ctx, collection, record, mfaCode);
+}
+
+/** Whether a delete is of the caller's own account, by the caller. */
+function ownAccount(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+): boolean {
+  const { principal } = ctx;
+  return (
+    collection.type === 'auth' &&
+    !principal.superuser &&
+    !ctx.deletionConfirmed &&
+    principal.collection?.id === collection.id &&
+    principal.record?.id === id
+  );
 }
 
 async function keepFiles(
@@ -1637,6 +1666,19 @@ async function deleteWithReferences(
   const updated = new Map<string, Written>();
   const deleted: Written[] = [];
   const deleting = await cascade(tx, schema, collection, ids);
+  // A cascade from another record may reach the caller's own account, which
+  // needs the same confirmation as deleting it directly.
+  const own = ctx.principal.collection;
+  const ownId = ctx.principal.record?.id as string | undefined;
+  if (
+    own &&
+    ownId !== undefined &&
+    !(own.id === collection.id && ids.includes(ownId)) &&
+    deleting.get(own.id)?.ids.has(ownId)
+  ) {
+    const { password, mfaCode } = ctx.deletionCredentials ?? {};
+    await checkOwnDeletion(ctx, own, ownId, password, mfaCode);
+  }
   // Collections reached later go first: a cascade reaches the records that
   // point at those it deletes, so few references are left to clear.
   const order = [...deleting.keys()].reverse();

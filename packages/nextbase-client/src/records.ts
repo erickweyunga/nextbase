@@ -666,7 +666,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   /**
    * Deletes the account with the token of its deletion link, and with an
    * authenticator app a code from it or a recovery code. Its sessions end
-   * with it.
+   * with it, and this client signs out when it was the signed-in account.
    */
   async confirmAccountDeletion(
     token: string,
@@ -678,6 +678,11 @@ export class RecordService<T extends RecordModel = RecordModel> {
       { token, ...(mfaCode !== undefined && { mfaCode }) },
       rest,
     );
+    const store = this.#client.authStore;
+    const { record } = store;
+    if (record && record.id === tokenRecordId(token) && this.#matches(record)) {
+      store.clear();
+    }
   }
 
   /**
@@ -850,6 +855,25 @@ export class RecordService<T extends RecordModel = RecordModel> {
       `/collections/${encodeURIComponent(this.#collection)}${path}`,
       { ...rest, query: { ...rest.query, expand, fields } },
     );
+  }
+}
+
+/** The record a link's token was made for: its JWT payload's `id`. */
+function tokenRecordId(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1] ?? '';
+    const claims: unknown = JSON.parse(
+      atob(payload.replace(/-/g, '+').replace(/_/g, '/')),
+    );
+    return typeof claims === 'object' &&
+      claims !== null &&
+      'id' in claims &&
+      typeof claims.id === 'string'
+      ? claims.id
+      : undefined;
+  } catch {
+    // Not a JWT: the server already refused it.
+    return undefined;
   }
 }
 

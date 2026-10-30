@@ -162,10 +162,11 @@ export function parseCollection(
       manageRule: parseRule(r, 'manageRule', previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
       phoneSignIn: r.boolean('phoneSignIn', previous?.phoneSignIn ?? false),
-      implicitLinking: r.boolean(
-        'implicitLinking',
-        previous?.implicitLinking ?? true,
-      ),
+      // Superusers never sign in through a provider.
+      implicitLinking:
+        id === '_superusers'
+          ? false
+          : r.boolean('implicitLinking', previous?.implicitLinking ?? true),
       tokens: parseTokens(r, previous?.tokens),
       mfa: parseMfa(r, previous?.mfa),
     };

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AuthCollection, TokenType } from '@nextbasejs/client';
-import { type DB, hash, type Row } from '@nextbasejs/dbx';
+import { type Builder, type DB, hash, type Row } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
 import type { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
@@ -237,7 +237,11 @@ async function sendEmailChange(
 }
 
 /** Marks a single-use token used; false when it was already. */
-async function spendToken(db: DB, jti: string, exp: unknown): Promise<boolean> {
+async function spendToken(
+  db: Builder,
+  jti: string,
+  exp: unknown,
+): Promise<boolean> {
   const spent = await db
     .newQuery(
       `WITH expired AS (
@@ -312,10 +316,13 @@ export async function requestAccountDeletion(
   principal: Principal,
 ): Promise<void> {
   const record = recordIn(principal, collection, 'delete its account');
+  if (collection.deleteRule === null) {
+    throw new ApiError(403, 'Only superusers can delete these accounts.');
+  }
   if (record.emailVerified !== true) {
     throw new ApiError(
       400,
-      'Verify your email first, or confirm with your password.',
+      'Without a verified email, sign in again, or enter your password, to delete your account.',
     );
   }
   ctx.mailer.check();
@@ -352,8 +359,8 @@ export async function confirmAccountDeletion(
   if (claims.email !== record.email || typeof claims.jti !== 'string') {
     throw invalidToken();
   }
+  const { jti } = claims;
   await ctx.mfa.stepUp(ctx.db, collection, record, input.mfaCode);
-  if (!(await spendToken(ctx.db, claims.jti, claims.exp))) throw invalidToken();
   const owner: Principal = { collection, record, superuser: false };
   const apply = await planDeleteRecord(
     {
@@ -366,7 +373,11 @@ export async function confirmAccountDeletion(
     collection,
     record.id as string,
   );
-  await ctx.db.transaction(apply);
+  // Spent with the delete, so a delete that fails leaves the link usable.
+  await ctx.db.transaction(async (tx) => {
+    if (!(await spendToken(tx, jti, claims.exp))) throw invalidToken();
+    await apply(tx);
+  });
   ctx.effects.commit();
 }
 

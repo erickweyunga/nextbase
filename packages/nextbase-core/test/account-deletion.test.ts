@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hotp, totpStep } from '../src/auth/totp.ts';
 import { type MailMessage, NextBase } from '../src/index.ts';
 import { fromBase32 } from './base32.ts';
+import { origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
 
 const PASSWORD = 'password 123 456';
@@ -236,7 +237,13 @@ describe('deleting your own account', () => {
     expect(error.data).toMatchObject({
       mfaCode: { code: 'validation_required' },
     });
-    // A wrong code leaves the link usable.
+    // A missing or wrong code leaves the link usable.
+    const wrong = await failure(
+      anonymous.confirmAccountDeletion(token, { mfaCode: '000000' }),
+    );
+    expect(wrong.data).toMatchObject({
+      mfaCode: { code: 'validation_invalid_code' },
+    });
     await anonymous.confirmAccountDeletion(token, { mfaCode: code ?? '' });
     expect(await exists(id)).toBe(false);
 
@@ -259,10 +266,9 @@ describe('deleting your own account', () => {
     await signedIn
       .collection('kept')
       .signInWithPassword('kept@example.com', PASSWORD);
-    await signedIn.collection('kept').requestAccountDeletion();
-    await flush();
+    // With a null rule, no link is sent: it could never work.
     const refused = await failure(
-      kept.confirmAccountDeletion(tokenTo('kept@example.com')),
+      signedIn.collection('kept').requestAccountDeletion(),
     );
     expect(refused.status).toBe(403);
   });
@@ -306,6 +312,141 @@ describe('deleting your own account', () => {
     await expect(
       nextbase.verifyPassword('notes', id, PASSWORD),
     ).rejects.toThrow(TypeError);
+  });
+
+  it('asks the same when a cascade from another record reaches the account', async () => {
+    const teams = await admin.collections.create({
+      name: 'teams',
+      deleteRule: '',
+    });
+    await admin.collections.create({
+      name: 'owners',
+      type: 'auth',
+      viewRule: 'id = @request.auth.id',
+      fields: [
+        {
+          name: 'team',
+          type: 'relation',
+          collectionId: teams.id,
+          cascadeDelete: true,
+        },
+      ],
+    });
+    const team = await admin.collection('teams').create({});
+    await admin.collection('owners').create({
+      email: 'owner@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      team: team?.id,
+    });
+    const nb = nextbase.client();
+    const { record } = await nb
+      .collection('owners')
+      .signInWithPassword('owner@example.com', PASSWORD);
+    await age(record.id);
+    const refused = await failure(
+      nb.collection('teams').delete(team?.id ?? ''),
+    );
+    expect(refused.status).toBe(400);
+    const left = async (): Promise<number> =>
+      (await t.pool.query('SELECT 1 FROM nextbase.owners')).rows.length;
+    expect(await left()).toBe(1);
+    await nb.collection('teams').delete(team?.id ?? '', { password: PASSWORD });
+    expect(await left()).toBe(0);
+  });
+
+  it('still deletes without a body when a Content-Type is sent anyway', async () => {
+    await admin.collections.create({ name: 'scraps', deleteRule: '' });
+    for (const type of ['application/json', 'text/plain']) {
+      const scrap = await admin.collection('scraps').create({});
+      const response = await nextbase.handle(
+        new Request(
+          `${origin}/api/nextbase/collections/scraps/records/${scrap?.id}`,
+          { method: 'DELETE', headers: { 'content-type': type } },
+        ),
+      );
+      expect(response.status).toBe(204);
+    }
+  });
+
+  it('keeps the link usable when the delete it confirms fails', async () => {
+    await admin.collections.create({
+      name: 'guarded',
+      type: 'auth',
+      viewRule: 'id = @request.auth.id',
+      deleteRule: 'id = @request.auth.id && ready = true',
+      fields: [{ name: 'ready', type: 'bool' }],
+    });
+    const created = await admin.collection('guarded').create({
+      email: 'guarded@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      emailVerified: true,
+    });
+    const nb = nextbase.client();
+    await nb
+      .collection('guarded')
+      .signInWithPassword('guarded@example.com', PASSWORD);
+    await nb.collection('guarded').requestAccountDeletion();
+    await flush();
+    const token = tokenTo('guarded@example.com');
+    const anonymous = nextbase.client().collection('guarded');
+    expect(
+      (await failure(anonymous.confirmAccountDeletion(token))).status,
+    ).toBe(404);
+    await admin
+      .collection('guarded')
+      .update(created?.id ?? '', { ready: true });
+    await anonymous.confirmAccountDeletion(token);
+    expect(
+      (await t.pool.query('SELECT 1 FROM nextbase.guarded')).rows.length,
+    ).toBe(0);
+  });
+
+  it('checks the delete rule before asking for a password', async () => {
+    await admin.collections.create({
+      name: 'locked',
+      type: 'auth',
+      viewRule: 'id = @request.auth.id',
+      deleteRule: '@request.auth.id != id',
+    });
+    await admin.collection('locked').create({
+      email: 'locked@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const nb = nextbase.client();
+    const { record } = await nb
+      .collection('locked')
+      .signInWithPassword('locked@example.com', PASSWORD);
+    await age(record.id);
+    expect(
+      (await failure(nb.collection('locked').delete(record.id))).status,
+    ).toBe(404);
+    // Nor offered a link that could never work.
+    await admin.collections.update('locked', { deleteRule: null });
+    expect(
+      (await failure(nb.collection('locked').requestAccountDeletion())).status,
+    ).toBe(403);
+  });
+
+  it('signs the client out when its own account was deleted by link', async () => {
+    const { nb, id } = await account('signout@example.com');
+    const users = nb.collection('users');
+    await users.requestAccountDeletion();
+    await flush();
+    await users.confirmAccountDeletion(tokenTo('signout@example.com'));
+    expect(await exists(id)).toBe(false);
+    expect(nb.authStore.isValid).toBe(false);
+  });
+
+  it('never links superusers by email', async () => {
+    const superusers = await admin.collections.getOne('_superusers');
+    expect(superusers).toMatchObject({ implicitLinking: false });
+    const updated = await admin.collections.update('_superusers', {
+      implicitLinking: true,
+    });
+    expect(updated).toMatchObject({ implicitLinking: false });
   });
 
   it('counts each own deletion in a batch the same way', async () => {

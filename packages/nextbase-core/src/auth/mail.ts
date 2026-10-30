@@ -93,7 +93,7 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   }),
   accountDeletion: ({ url }) => ({
     subject: 'Confirm the deletion of your account',
-    text: `Someone signed in to your account asked to delete it. Open this link to confirm; the account and its data are then deleted for good:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
+    text: `Someone signed in to your account asked to delete it. Open this link and confirm there; the account and its data are then deleted for good:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
   }),
   passwordChanged: () => ({
     subject: 'Your password was changed',

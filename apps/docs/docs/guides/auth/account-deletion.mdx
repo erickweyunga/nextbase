@@ -28,7 +28,8 @@ await nb.collection("users").delete(user.id);
 ```
 
 After a day, the same call answers `400` with `data.password.code`
-`validation_required`, and the page asks for the password.
+`validation_required`: the page asks for the password, or has the user sign
+in again, which starts a new session.
 
 ## By email
 
@@ -41,17 +42,22 @@ await nb.collection("users").requestAccountDeletion();
 ```
 
 A link goes to `/delete-account?token=...` in your app (see
-[email sending](/docs/guides/auth/email)). That page deletes the account:
+[email sending](/docs/guides/auth/email)). That page asks the user to confirm,
+and only their click deletes the account:
 
 ```ts
 await nb.collection("users").confirmAccountDeletion(token);
 ```
 
-The link works once, as the owner, so the `deleteRule` still decides, and
-like the email verification link for 3 days by default (the collection's
-`verification` token duration). It stops working if the account's email
-changes first. Without a verified email, `requestAccountDeletion` answers
-`400`.
+Never call it when the page loads: email security scanners open links, some
+running their JavaScript, and would delete the account without the user.
+
+The link deletes as the owner, so the `deleteRule` still decides, and works
+until it has deleted the account, like the email verification link for 3
+days by default (the collection's `verification` token duration). It stops
+working if the account's email changes first. Without a verified email, such
+as for an account that signs in by phone, `requestAccountDeletion` answers
+`400`, and signing in again is the way.
 
 ## With an authenticator app
 
@@ -66,7 +72,10 @@ await nb.collection("users").confirmAccountDeletion(token, { mfaCode });
 ## Who else can delete
 
 Superusers, and callers the `deleteRule` lets delete other records, delete
-without any of this. An [impersonation](/docs/guides/auth/impersonation)
+without any of this. A delete that would reach the caller's own account
+through a [cascade](/docs/guides/collections#relations) asks the same as
+deleting it directly. The `deleteRule` is checked first, so a caller it
+refuses is never asked for a password. An [impersonation](/docs/guides/auth/impersonation)
 session cannot delete the account it acts as.
 
 The account's sessions, linked providers and authenticator app are deleted

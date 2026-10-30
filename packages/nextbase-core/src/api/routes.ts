@@ -94,7 +94,11 @@ import {
 } from '../files/serve.ts';
 import type { Storage } from '../files/storage.ts';
 import type { Thumbs } from '../files/thumbs.ts';
-import { readJsonObject, readRecordBody } from '../http.ts';
+import {
+  readJsonObject,
+  readOptionalJsonObject,
+  readRecordBody,
+} from '../http.ts';
 import type { Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
@@ -306,9 +310,7 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       // Optional: deleting one's own account takes `password` or `mfaCode`.
-      const body = context.request.headers.has('content-type')
-        ? await readJsonObject(context.request)
-        : {};
+      const body = await readOptionalJsonObject(context.request);
       return replyOf(
         await writeRecord(context, {
           method: 'DELETE',
