@@ -5,7 +5,7 @@ import type {
 } from '@nextbasejs/client';
 import { type Builder, exp, hash, type Tx } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
-import { defaultMfa } from './collection.ts';
+import { defaultEmailVerification, defaultMfa } from './collection.ts';
 
 interface CollectionRow {
   id: string;
@@ -31,6 +31,7 @@ type AuthOptions = Pick<
   | 'implicitLinking'
   | 'tokens'
   | 'mfa'
+  | 'emailVerification'
 >;
 
 type ViewOptions = Pick<ViewCollection, 'viewQuery'>;
@@ -59,6 +60,7 @@ export async function saveCollectionRow(
           implicitLinking: collection.implicitLinking,
           tokens: collection.tokens,
           mfa: collection.mfa,
+          emailVerification: collection.emailVerification,
         }
       : collection.type === 'view'
         ? { viewQuery: collection.viewQuery }
@@ -125,7 +127,11 @@ function fromRow(row: CollectionRow): Collection {
     phoneSignIn: false,
     implicitLinking: true,
     mfa: defaultMfa(),
+    emailVerification: defaultEmailVerification(),
     ...(row.options as Partial<AuthOptions>),
-    ...(row.id === '_superusers' && { implicitLinking: false }),
+    ...(row.id === '_superusers' && {
+      implicitLinking: false,
+      emailVerification: defaultEmailVerification(),
+    }),
   } as AuthCollection;
 }

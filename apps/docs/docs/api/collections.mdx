@@ -130,6 +130,7 @@ POST /collections
 | `authRule`, `manageRule` | string or null | Optional, auth collections. Defaults `""` and `null`. |
 | `identityFields` | string[] | Optional, auth collections. Fields to sign in with. Default `["email"]`. Add `"phone"` to sign in with phone and password. |
 | `phoneSignIn` | boolean | Optional, auth collections. Sign-in with codes texted to the `phone` field; records may then have a phone instead of an email. Default `false`. |
+| `emailVerification` | object | Optional, auth collections. `{ required, sendOnSignUp, sendOnSignIn }`, each `false` by default: refuse unverified sign-ins (and answer duplicate sign-ups as new ones), and send the verification link on sign-up or on a refused sign-in. See [Email verification](/docs/guides/auth/verification#options). |
 | `implicitLinking` | boolean | Optional, auth collections. Links a provider account to an existing account with the same email when both verified it. Never for an account with a second sign-in step. Default `true`. |
 
 **Responses**

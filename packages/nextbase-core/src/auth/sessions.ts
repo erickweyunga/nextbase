@@ -389,6 +389,16 @@ async function activeSession(
             .all()
         )[0];
   if (!record || sessionKey(collection, record) !== keyHash) return undefined;
+  // Sessions from before verification was required end with it, as a new
+  // sign-in would be refused. A superuser acting as the account is not.
+  if (
+    collection.emailVerification.required &&
+    session.impersonatedBy === null &&
+    record.email !== '' &&
+    record.emailVerified !== true
+  ) {
+    return undefined;
+  }
   return { session, collection, record };
 }
 

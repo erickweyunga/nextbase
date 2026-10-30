@@ -17,6 +17,7 @@ export type MailKind =
   | 'emailChange'
   | 'emailChangeApproval'
   | 'accountDeletion'
+  | 'signUpAttempt'
   | 'passwordChanged'
   | 'emailChanged'
   | 'oauth2Linked'
@@ -94,6 +95,10 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   accountDeletion: ({ url }) => ({
     subject: 'Confirm the deletion of your account',
     text: `Someone signed in to your account asked to delete it. Open this link and confirm there; the account and its data are then deleted for good:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
+  }),
+  signUpAttempt: () => ({
+    subject: 'Someone tried to sign up with your email',
+    text: 'Someone just tried to create an account with this email, which already has one. If it was you, sign in, or reset your password if you forgot it. If not, you can ignore this email.',
   }),
   passwordChanged: () => ({
     subject: 'Your password was changed',
