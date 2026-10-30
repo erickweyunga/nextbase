@@ -878,6 +878,132 @@ Signed out. Signed in to another collection, it is a `403` with the same
 message, and the session stays valid.
 
 </TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Impersonation sessions cannot be refreshed.", "data": {} }
+```
+An [impersonation session](/docs/guides/auth/impersonation) ends when it was
+set to.
+
+</TabItem>
+</Tabs>
+
+## Impersonate
+
+Superusers only. Starts a session that acts as a record of an auth
+collection, as if its owner had signed in, without their password and
+without checking the collection's `authRule`. The session lasts `duration`
+seconds, is never extended, and cannot change how the account signs in. See
+[Impersonation](/docs/guides/auth/impersonation).
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+// A new client acting as the record; nb stays signed in as the superuser:
+const { client } = await nb.collection("users").impersonate("u7v8w9x0y1z2a3b");
+
+// Or this browser's cookie session becomes the record's until nb.signOut():
+await nb.collection("users").impersonate("u7v8w9x0y1z2a3b", { cookie: true });
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl -X POST https://app.example/api/nextbase/collections/users/impersonate/u7v8w9x0y1z2a3b \
+  -H 'authorization: Bearer <superuser token>' \
+  -H 'content-type: application/json' \
+  -d '{"duration":900}'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+POST /collections/{collection}/impersonate/{id}
+```
+
+**Body**
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `duration` | number | Optional. Whole seconds from `60` to `3600`. Defaults to `3600`. |
+| `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token, and keeps the superuser's own cookie session aside in `__Host-nextbase_impersonator` until [sign out](#sign-out). The superuser must be signed in with the cookie, and the request must send an `Origin` header naming this site. |
+
+**Query parameters:** `expand` and `fields`, applied to `record`, as the
+record would see them.
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "token": "yK2v0Xo8...43 characters",
+  "record": { "collectionName": "users", "id": "u7v8w9x0y1z2a3b", "email": "ann@example.com" },
+  "session": {
+    "id": "s1t2u3v4w5x6y7z",
+    "created": "2026-10-19T09:30:00.000Z",
+    "expires": "2026-10-19T10:30:00.000Z",
+    "userAgent": "Mozilla/5.0 ...",
+    "current": false,
+    "impersonatedBy": "a1b2c3d4e5f6g7h"
+  }
+}
+```
+With `cookie: true`, `token` is left out and the response sets the session
+cookie, as a [sign-in](#sign-in-with-a-password) does.
+
+</TabItem>
+<TabItem value="400" label="400">
+
+```json
+{
+  "status": 400,
+  "message": "Failed to impersonate.",
+  "data": {
+    "duration": {
+      "code": "validation_invalid_value",
+      "message": "Must be a whole number of seconds from 60 to 3600."
+    }
+  }
+}
+```
+Also `Impersonation in cookie mode needs a cookie session.` for `cookie: true`
+from a superuser signed in with a Bearer token, whose token the cookie would
+replace.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "Sign in as a superuser to do this.", "data": {} }
+```
+
+</TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Only superusers can do this.", "data": {} }
+```
+Also `Superusers cannot be impersonated.` for `_superusers`, `Sign in as a
+superuser to impersonate.` for server code using `client({ superuser: true })`,
+which has no superuser to act for the record, and `Impersonation sessions
+cannot impersonate.`
+
+</TabItem>
+<TabItem value="404" label="404">
+
+```json
+{ "status": 404, "message": "Record not found.", "data": {} }
+```
+Or `Collection not found.` when the collection does not exist or is not an
+auth collection.
+
+</TabItem>
 </Tabs>
 
 ## Get the current session
@@ -920,7 +1046,8 @@ GET /session
   "record": { "collectionName": "users", "id": "u7v8w9x0y1z2a3b", "email": "ann@example.com" }
 }
 ```
-`null` when signed out.
+`null` when signed out. An [impersonation session](/docs/guides/auth/impersonation)
+also has `impersonatedBy`, the superuser's id.
 
 </TabItem>
 </Tabs>
@@ -928,7 +1055,8 @@ GET /session
 ## Sign out
 
 Ends the current session, so its token stops working, and removes the session
-cookie.
+cookie. Ending an impersonation session started with `cookie: true` puts
+back the superuser's own cookie session, if it is still valid.
 
 <Tabs groupId="client">
 <TabItem value="sdk" label="SDK">
@@ -951,7 +1079,10 @@ curl -X DELETE https://app.example/api/nextbase/session -H 'authorization: Beare
 DELETE /session
 ```
 
-**Responses:** `204` with no body, also when there was no session.
+**Responses:** `204` with no body, also when there was no session. When it
+puts back a superuser's cookie session after a cookie impersonation, `200`
+with `{ "record": { ... } }`, the superuser's record, which the SDK saves in
+its auth store.
 
 ## List sessions
 
@@ -997,6 +1128,9 @@ GET /sessions
   ]
 }
 ```
+An [impersonation session](/docs/guides/auth/impersonation) has
+`impersonatedBy`, the id of the superuser acting as the record, so the owner
+can see it and revoke it.
 
 </TabItem>
 <TabItem value="401" label="401">
@@ -1050,6 +1184,13 @@ No body.
 ```
 
 </TabItem>
+<TabItem value="403" label="403">
+
+```json
+{ "status": 403, "message": "Impersonation sessions cannot revoke other sessions.", "data": {} }
+```
+
+</TabItem>
 </Tabs>
 
 ## Revoke a session
@@ -1099,7 +1240,9 @@ No body.
 ```json
 { "status": 404, "message": "Session not found.", "data": {} }
 ```
-Also returned for another record's session.
+Also returned for another record's session. An impersonation session can
+revoke only itself; any other is a `403`, `Impersonation sessions cannot
+revoke other sessions.`
 
 </TabItem>
 </Tabs>

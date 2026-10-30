@@ -463,6 +463,20 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    name: '0013_impersonation',
+    async up(tx) {
+      // Set on sessions a superuser started to act as the record: who, and
+      // a hash of their key then, so the session ends with their own key.
+      await tx
+        .newQuery(
+          `ALTER TABLE {{${table('_sessions')}}}
+             ADD COLUMN impersonator_id text NULL,
+             ADD COLUMN impersonator_key_hash text NULL`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**

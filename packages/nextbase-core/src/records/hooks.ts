@@ -45,6 +45,8 @@ export interface HookPrincipal {
   collection?: HookAuthCollection;
   /** The signed-in record, as hooks see records. */
   record?: RecordModel;
+  /** The id of the superuser acting as `record`, on an impersonation session. */
+  impersonatedBy?: string;
 }
 
 /** The request of a write, as rules see it. */
@@ -501,9 +503,10 @@ function deepFreeze<T>(value: T): T {
 }
 
 function hookPrincipal(principal: Principal): HookPrincipal {
-  const { collection, record, superuser } = principal;
+  const { collection, record, superuser, impersonatedBy } = principal;
   return {
     superuser,
+    ...(impersonatedBy !== undefined && { impersonatedBy }),
     ...(collection && { collection: hookCollection(collection) }),
     ...(collection &&
       record && { record: serverRecord(collection, record) as RecordModel }),

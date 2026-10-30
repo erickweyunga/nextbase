@@ -149,7 +149,7 @@ nothing: the response was already sent.
 | Field | Hooks | |
 | ----- | ----- | - |
 | `collection` | all | the collection definition, frozen, without token secrets |
-| `principal` | all | `superuser`, and the signed-in `collection` and `record`, if any |
+| `principal` | all | `superuser`, the signed-in `collection` and `record`, if any, and `impersonatedBy`, the id of a superuser [impersonating](/docs/guides/auth/impersonation) the record |
 | `source` | all | what made the write, see below |
 | `input` | before create and update | the body, which the hook may change |
 | `request` | before | `method`, `query` and `headers`, without `authorization` and `cookie` |

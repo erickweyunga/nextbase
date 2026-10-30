@@ -60,6 +60,10 @@ export function requestEntry(
   };
   const id = principal?.record?.id;
   if (outcome.authId && typeof id === 'string') data.authId = id;
+  // Who acted for the caller, so their requests can be told apart.
+  if (principal?.impersonatedBy !== undefined) {
+    data.impersonatedBy = principal.impersonatedBy;
+  }
   if (outcome.ip !== undefined) data.ip = outcome.ip;
   data.userAgent = (request.headers.get('user-agent') ?? '').slice(
     0,

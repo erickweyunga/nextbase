@@ -56,12 +56,23 @@ export interface SessionModel {
   userAgent: string;
   /** Whether this is the session making the request. */
   current: boolean;
+  /**
+   * The id of the superuser acting as the record, set only on an
+   * impersonation session. Revoke it like any other session.
+   */
+  impersonatedBy?: string;
 }
 
 /** The caller's own session and record. */
 export interface CurrentSession<T extends RecordModel = RecordModel>
   extends SessionModel {
   record: T;
+}
+
+/** An impersonation's response: like a sign-in, with the new session. */
+export interface ImpersonateResponse<T extends RecordModel = RecordModel>
+  extends AuthResponse<T> {
+  session: SessionModel;
 }
 
 export interface SetupStatus {

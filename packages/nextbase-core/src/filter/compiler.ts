@@ -375,6 +375,11 @@ class Compiler {
       if (modifier !== undefined) throw unknownModifier();
       return text(request.method);
     }
+    // The superuser acting as the caller, or empty when no one is.
+    if (section === 'impersonatedBy' && name === undefined) {
+      if (modifier !== undefined) throw unknownModifier();
+      return text(this.#context.principal.impersonatedBy ?? '');
+    }
     if (name === undefined || extra.length > 0) {
       throw new FilterError(
         `"${operand.path.join('.')}" is not a supported @request value.`,

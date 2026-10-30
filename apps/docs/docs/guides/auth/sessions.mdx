@@ -82,6 +82,9 @@ export async function signOut() {
 - Deleting an account ends all of its sessions.
 - Changing a password ends every other session. Rotating the collection's auth
   secret ends all of its sessions.
+- A superuser can [impersonate](/docs/guides/auth/impersonation) a user, for at
+  most an hour. That session shows in the user's `listSessions()` with
+  `impersonatedBy`, the superuser's id, and they can revoke it like any other.
 
 ## Cross-site protection
 

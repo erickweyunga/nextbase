@@ -13,7 +13,7 @@ import {
 } from '@nextbasejs/dbx';
 import { checkBreached } from '../auth/breached.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
-import type { Principal } from '../auth/principal.ts';
+import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
 import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
 import { table } from '../db/system.ts';
@@ -739,6 +739,10 @@ export async function planUpdateRecord(
       request: ctx.request,
     });
   }
+  // Before the slow work a new password takes, which would be refused.
+  if (input.password !== undefined) {
+    forbidSignInChanges(ctx, collection, { password: input.password }, {});
+  }
   const newFiles = await readFiles(ctx, collection, input);
   const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
   const ruleChecked =
@@ -797,6 +801,7 @@ export async function planUpdateRecord(
         if (!(await matchesStoredRow(tx, collection, id, rule))) throw notFound;
       }
       if (invalid !== undefined || !prepared) throw invalid;
+      forbidSignInChanges(ctx, collection, prepared.values, existing);
       if (prepared.oldPassword !== undefined) {
         const matches = old
           ? // Checked before the transaction: confirm it is still the same.
@@ -1231,6 +1236,38 @@ function compile(
         ? `Invalid filter: ${error.message}`
         : `The request does not fit the collection's rule: ${error.message}`,
     );
+  }
+}
+
+/**
+ * An impersonation session may change no account's way in: its password,
+ * token key, email, phone, whether they are verified, or identity fields.
+ * The superuser could keep using it after the session ends.
+ */
+function forbidSignInChanges(
+  ctx: RecordsContext,
+  collection: Collection,
+  values: Record<string, unknown>,
+  existing: Row,
+): void {
+  if (ctx.principal.impersonatedBy === undefined) return;
+  if (collection.type !== 'auth') return;
+  const guarded = new Set([
+    'tokenKey',
+    'email',
+    'emailVerified',
+    'phone',
+    'phoneVerified',
+    ...collection.identityFields,
+  ]);
+  const password = passwordField(collection)?.name;
+  if (password !== undefined) guarded.add(password);
+  for (const [name, value] of Object.entries(values)) {
+    // Setting a password changes it, even to the same one: it is rehashed.
+    const changed = name === password || value !== existing[name];
+    if (changed && guarded.has(name)) {
+      forbidImpersonated(ctx.principal, 'change sign-in details');
+    }
   }
 }
 

@@ -18,6 +18,7 @@ import { type Principal, resolvePrincipal } from './auth/principal.ts';
 import {
   bearerToken,
   checkSameOrigin,
+  IMPERSONATOR_COOKIES,
   type OriginPolicy,
   SESSION_COOKIES,
   sessionCookie,
@@ -505,9 +506,15 @@ export class NextBase<C extends Collections = Collections> {
         const request = new Request(input, init);
         // As fetch does, an aborted signal rejects before anything is sent.
         request.signal.throwIfAborted();
-        const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
-        const value = cookies?.get(name)?.value;
-        if (value) request.headers.set('cookie', `${name}=${value}`);
+        // The session, and the superuser's kept while they impersonate.
+        const sent = [
+          secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
+          secure ? IMPERSONATOR_COOKIES.secure : IMPERSONATOR_COOKIES.plain,
+        ].flatMap((name) => {
+          const value = cookies?.get(name)?.value;
+          return value ? [`${name}=${value}`] : [];
+        });
+        if (sent.length > 0) request.headers.set('cookie', sent.join('; '));
         const response = this.#dispatch(request, {
           principal,
           http: false,
@@ -1097,11 +1104,12 @@ function applySessionCookie(cookies: CookieStore, response: Response): void {
   }
 }
 
-const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set(
-  Object.values(SESSION_COOKIES),
-);
+const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set([
+  ...Object.values(SESSION_COOKIES),
+  ...Object.values(IMPERSONATOR_COOKIES),
+]);
 
-/** Writes a session cookie's Set-Cookie header to the store; other cookies are left out. */
+/** Writes a session cookie's Set-Cookie header, or the kept impersonator one, to the store; other cookies are left out. */
 function writeSessionCookie(cookies: CookieStore, header: string): void {
   const [pair = '', ...attributes] = header.split('; ');
   const separator = pair.indexOf('=');

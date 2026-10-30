@@ -17,6 +17,11 @@ export interface Principal {
   viaCookie?: boolean;
   /** Superusers bypass every rule. */
   superuser: boolean;
+  /**
+   * The id of the superuser acting as `record`, on an impersonation
+   * session. See `forbidImpersonated` for what such a session cannot do.
+   */
+  impersonatedBy?: string;
 }
 
 export interface Resolved {
@@ -88,6 +93,9 @@ export async function resolvePrincipal(
       session,
       viaCookie: cookie !== undefined,
       superuser: collection.id === SUPERUSERS,
+      ...(session.impersonatedBy !== null && {
+        impersonatedBy: session.impersonatedBy,
+      }),
     },
     ...(cookie !== undefined &&
       extended &&
@@ -122,4 +130,17 @@ export function requireSuperuser(principal: Principal): void {
   if (!principal.record)
     throw new ApiError(401, 'Sign in as a superuser to do this.');
   throw new ApiError(403, 'Only superusers can do this.');
+}
+
+/**
+ * A superuser acting as someone may do what they can, but nothing that
+ * would leave a way back into the account once the session ends, or change
+ * who else is signed in: no new or longer sessions, no new password, email,
+ * phone, identity or token key, no linked providers, no other sessions
+ * revoked. A 403 that says what was refused, such as `be refreshed`.
+ */
+export function forbidImpersonated(principal: Principal, action: string): void {
+  if (principal.impersonatedBy !== undefined) {
+    throw new ApiError(403, `Impersonation sessions cannot ${action}.`);
+  }
 }
