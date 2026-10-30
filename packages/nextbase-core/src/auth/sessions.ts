@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { AuthCollection, SessionModel } from '@nextbasejs/client';
+import type {
+  AuthCollection,
+  SessionModel,
+  SignInMethod,
+} from '@nextbasejs/client';
 import { type Builder, type DB, hash, type Row } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
 import { decodeRecordJson } from '../db/types.ts';
@@ -22,6 +26,12 @@ export const IMPERSONATOR_COOKIES = {
   plain: 'nextbase_impersonator',
 } as const;
 
+/** Holds a pending second sign-in step after an OAuth2 sign-in. */
+export const MFA_COOKIES = {
+  secure: '__Host-nextbase_mfa',
+  plain: 'nextbase_mfa',
+} as const;
+
 const SUPERUSERS = '_superusers';
 
 // Extend at most once a day, so active users stay signed in without a write per request.
@@ -42,6 +52,11 @@ export interface Session {
   userAgent: string;
   /** The superuser acting as the record, on an impersonation session. */
   impersonatedBy: string | null;
+  /**
+   * How the session was signed in, such as `password` and `totp`. Empty for
+   * sessions created before methods were recorded.
+   */
+  methods: SignInMethod[];
 }
 
 export interface ActiveSession {
@@ -61,14 +76,15 @@ function tokenHash(token: string): string {
  * Rotating the record's `tokenKey` or the collection's secret invalidates the
  * session, as does a deleted record whose id is later reused.
  */
-function sessionKey(collection: AuthCollection, record: Row): string {
+export function sessionKey(collection: AuthCollection, record: Row): string {
   return createHash('sha256')
     .update(`${record.tokenKey as string}:${collection.tokens.auth.secret}`)
     .digest('hex');
 }
 
 const COLUMNS = `id, collection_id AS "collectionId", record_id AS "recordId",
-  created, expires, user_agent AS "userAgent", impersonator_id AS "impersonatedBy"`;
+  created, expires, user_agent AS "userAgent", impersonator_id AS "impersonatedBy",
+  methods`;
 
 export interface SessionOptions {
   /** Seconds; defaults to the collection's auth token duration. */
@@ -78,6 +94,8 @@ export interface SessionOptions {
    * deleted or their key changes, and it is never extended.
    */
   impersonator?: { collection: AuthCollection; record: Row };
+  /** How the record signed in, such as `["password", "totp"]`. */
+  methods?: readonly SignInMethod[];
 }
 
 /** The returned token is shown only once. */
@@ -86,7 +104,7 @@ export async function createSession(
   collection: AuthCollection,
   record: Row,
   userAgent: string,
-  { duration, impersonator }: SessionOptions = {},
+  { duration, impersonator, methods = [] }: SessionOptions = {},
 ): Promise<{ token: string; session: Session }> {
   const token = randomBytes(32).toString('base64url');
   // Expired sessions are removed in the same statement.
@@ -97,10 +115,10 @@ export async function createSession(
        )
        INSERT INTO {{${table('_sessions')}}}
          (id, token_hash, collection_id, record_id, key_hash, user_agent, expires,
-          impersonator_id, impersonator_key_hash)
+          impersonator_id, impersonator_key_hash, methods)
        VALUES ({:id}, {:tokenHash}, {:collectionId}, {:recordId}, {:keyHash}, {:userAgent},
                now() + make_interval(secs => least({:duration}, ${MAX_AGE})),
-               {:impersonatorId}, {:impersonatorKeyHash})
+               {:impersonatorId}, {:impersonatorKeyHash}, {:methods}::text[])
        RETURNING ${COLUMNS}`,
     )
     .bind({
@@ -115,6 +133,7 @@ export async function createSession(
       impersonatorKeyHash: impersonator
         ? sessionKey(impersonator.collection, impersonator.record)
         : null,
+      methods: [...new Set(methods)],
     })
     .all<Session>();
   return { token, session: session as Session };
@@ -130,6 +149,7 @@ interface SessionRow {
   expires: Date;
   userAgent: string;
   impersonatedBy: string | null;
+  methods: SignInMethod[];
   keyHash: string;
   impersonatorKeyHash: string | null;
   /** The impersonator's current tokenKey; null once they are deleted. */
@@ -185,7 +205,7 @@ async function readSessions(
       `SELECT m.schema_version AS "schemaVersion",
               s.id, s.collection_id AS "collectionId", s.record_id AS "recordId",
               s.created, s.expires, s.user_agent AS "userAgent",
-              s.impersonator_id AS "impersonatedBy",
+              s.impersonator_id AS "impersonatedBy", s.methods,
               s.key_hash AS "keyHash",
               s.impersonator_key_hash AS "impersonatorKeyHash",
               (SELECT su."tokenKey" FROM {{${table(SUPERUSERS)}}} su
@@ -369,6 +389,16 @@ async function activeSession(
             .all()
         )[0];
   if (!record || sessionKey(collection, record) !== keyHash) return undefined;
+  // Sessions from before verification was required end with it, as a new
+  // sign-in would be refused. A superuser acting as the account is not.
+  if (
+    collection.emailVerification.required &&
+    session.impersonatedBy === null &&
+    record.email !== '' &&
+    record.emailVerified !== true
+  ) {
+    return undefined;
+  }
   return { session, collection, record };
 }
 
@@ -461,6 +491,22 @@ export async function rekeySessions(
   }
 }
 
+/** Records one more way the session proved who it is, such as `totp`. */
+export async function addSessionMethod(
+  q: Builder,
+  id: string,
+  method: SignInMethod,
+): Promise<void> {
+  await q
+    .newQuery(
+      `UPDATE {{${table('_sessions')}}}
+       SET methods = array_append(methods, {:method})
+       WHERE id = {:id} AND NOT ({:method} = ANY(methods))`,
+    )
+    .bind({ id, method })
+    .execute();
+}
+
 export function sessionModel(session: Session, current: boolean): SessionModel {
   return {
     id: session.id,
@@ -468,6 +514,7 @@ export function sessionModel(session: Session, current: boolean): SessionModel {
     expires: session.expires.toISOString(),
     userAgent: session.userAgent,
     current,
+    methods: [...session.methods],
     ...(session.impersonatedBy !== null && {
       impersonatedBy: session.impersonatedBy,
     }),
@@ -494,6 +541,31 @@ export function sessionCookie(request: Request): string | undefined {
     request,
     isSecure(request) ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
   );
+}
+
+/** The pending second sign-in step of an OAuth2 sign-in in this browser. */
+export function mfaCookie(request: Request): string | undefined {
+  const value = readCookie(
+    request,
+    isSecure(request) ? MFA_COOKIES.secure : MFA_COOKIES.plain,
+  );
+  return value === '' ? undefined : value;
+}
+
+/** Removes the cookie when `pending` is undefined. */
+export function setMfaCookie(
+  request: Request,
+  pending?: { mfaId: string; maxAge: number },
+): string {
+  const secure = isSecure(request);
+  return [
+    `${secure ? MFA_COOKIES.secure : MFA_COOKIES.plain}=${pending?.mfaId ?? ''}`,
+    'Path=/',
+    `Max-Age=${pending?.maxAge ?? 0}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    ...(secure ? ['Secure'] : []),
+  ].join('; ');
 }
 
 /** The superuser session kept while impersonating in this browser. */

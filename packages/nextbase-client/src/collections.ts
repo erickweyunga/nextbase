@@ -3,8 +3,10 @@ import type { ListResult } from './shared/api.ts';
 import type {
   AuthCollection,
   Collection,
+  EmailVerificationConfig,
   Field,
   Index,
+  MfaConfig,
   TokenConfig,
   TokenType,
 } from './shared/schema.ts';
@@ -14,7 +16,10 @@ import type {
  * default; fields without an `id` are new.
  */
 export type CollectionInput = Partial<
-  Omit<AuthCollection, 'type' | 'fields' | 'indexes' | 'tokens'>
+  Omit<
+    AuthCollection,
+    'type' | 'fields' | 'indexes' | 'tokens' | 'mfa' | 'emailVerification'
+  >
 > & {
   type?: Collection['type'];
   fields?: Partial<Field>[];
@@ -22,6 +27,8 @@ export type CollectionInput = Partial<
   /** View collections only: the SELECT their records come from. */
   viewQuery?: string;
   tokens?: Partial<Record<TokenType, Partial<TokenConfig>>>;
+  mfa?: Partial<MfaConfig>;
+  emailVerification?: Partial<EmailVerificationConfig>;
 };
 
 /** Collection definitions. Every method needs a superuser. */

@@ -102,8 +102,9 @@ A signed-in user adds or changes their number by proving they receive texts
 on it:
 
 ```ts
-await users.requestPhoneVerification("+255712345678");
-await users.confirmPhoneVerification("+255712345678", "123456");
+// A new or changed phone needs the current password.
+await users.requestPhoneVerification("+255712345678", { password });
+await users.confirmPhoneVerification("+255712345678", "123456", { password });
 ```
 
 A new number is a new way into the account, so the account's other devices are

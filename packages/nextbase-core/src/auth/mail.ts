@@ -15,22 +15,37 @@ export type MailKind =
   | 'verification'
   | 'passwordReset'
   | 'emailChange'
+  | 'emailChangeApproval'
+  | 'accountDeletion'
+  | 'signUpAttempt'
   | 'passwordChanged'
   | 'emailChanged'
   | 'oauth2Linked'
   | 'oauth2Unlinked'
-  | 'phoneChanged';
+  | 'phoneChanged'
+  | 'signInCode'
+  | 'totpEnabled'
+  | 'totpDisabled'
+  | 'recoveryCodeUsed'
+  | 'mfaCleared'
+  | 'mfaCodesPaused';
 
 export interface MailContext {
   kind: MailKind;
   /** The auth collection name. */
   collection: string;
   to: string;
-  /** Link with the token, for verification, reset and email change. */
+  /** Link with the token, for verification, reset, email change and deletion. */
   url?: string;
   token?: string;
   /** Set for `oauth2Linked` and `oauth2Unlinked`. */
   provider?: string;
+  /** The code to enter, for `signInCode`. */
+  code?: string;
+  /** Recovery codes left, for `recoveryCodeUsed`. */
+  remaining?: number;
+  /** Where the password was reset, for `mfaCodesPaused`. */
+  channel?: 'email' | 'phone';
 }
 
 export type MailTemplate = (context: MailContext) => {
@@ -44,8 +59,9 @@ export interface MailOptions {
   /** Sends one email through any provider (SMTP, Resend, SES, Postmark...). */
   send(message: MailMessage): Promise<void>;
   /**
-   * Base URL of `/verify-email`, `/reset-password` and `/confirm-email-change`
-   * (each with `?token=`). Defaults to the `appUrl` option.
+   * Base URL of `/verify-email`, `/reset-password`, `/approve-email-change`,
+   * `/confirm-email-change` and `/delete-account` (each with `?token=`).
+   * Defaults to the `appUrl` option.
    */
   appUrl?: string;
   templates?: Partial<Record<MailKind, MailTemplate>>;
@@ -55,6 +71,8 @@ const PATHS: Partial<Record<MailKind, string>> = {
   verification: '/verify-email',
   passwordReset: '/reset-password',
   emailChange: '/confirm-email-change',
+  emailChangeApproval: '/approve-email-change',
+  accountDeletion: '/delete-account',
 };
 
 const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
@@ -69,6 +87,18 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   emailChange: ({ url }) => ({
     subject: 'Confirm your new email',
     text: `Open this link to make this your account's email:\n\n${url}\n\nIf you did not ask for this, ignore this email.`,
+  }),
+  emailChangeApproval: ({ url }) => ({
+    subject: 'Approve the change of your email',
+    text: `Someone signed in to your account asked to move it to another email. Open this link to approve it, and the new address will get a link to confirm:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
+  }),
+  accountDeletion: ({ url }) => ({
+    subject: 'Confirm the deletion of your account',
+    text: `Someone signed in to your account asked to delete it. Open this link and confirm there; the account and its data are then deleted for good:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
+  }),
+  signUpAttempt: () => ({
+    subject: 'Someone tried to sign up with your email',
+    text: 'Someone just tried to create an account with this email, which already has one. If it was you, sign in, or reset your password if you forgot it. If not, you can ignore this email.',
   }),
   passwordChanged: () => ({
     subject: 'Your password was changed',
@@ -89,6 +119,30 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   oauth2Unlinked: ({ provider }) => ({
     subject: 'A way to sign in was removed',
     text: `Your account can no longer sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
+  }),
+  signInCode: ({ code }) => ({
+    subject: 'Your sign-in code',
+    text: `${code} is your sign-in code. It expires in a few minutes. Do not share it.\n\nIf you did not try to sign in, change your password right away.`,
+  }),
+  totpEnabled: () => ({
+    subject: 'Two-step sign-in was turned on',
+    text: 'Your account now asks for a code from your authenticator app when you sign in, and other devices were signed out. If this was not you, contact support right away.',
+  }),
+  totpDisabled: () => ({
+    subject: 'Two-step sign-in was turned off',
+    text: 'Your account no longer asks for a code from your authenticator app. If this was not you, reset your password and contact support right away.',
+  }),
+  mfaCleared: () => ({
+    subject: 'Two-step sign-in was reset',
+    text: 'A superuser removed the authenticator app and recovery codes of your account. If you did not ask for this, contact support right away.',
+  }),
+  mfaCodesPaused: ({ channel }) => ({
+    subject: 'Sign-in codes paused after your password reset',
+    text: `Your password was just reset through your ${channel === 'phone' ? 'phone' : 'email'}. For the next 24 hours, codes sent to your ${channel === 'phone' ? 'phone' : 'email'} will not count as your second sign-in step. If this was not you, contact support right away.`,
+  }),
+  recoveryCodeUsed: ({ remaining }) => ({
+    subject: 'A recovery code was used',
+    text: `A recovery code was just used for your account. You have ${remaining} left. If this was not you, reset your password and contact support right away.`,
   }),
 };
 
@@ -137,7 +191,19 @@ export class Mailer {
     kind: MailKind,
     collection: string,
     to: string,
-    { token, provider }: { token?: string; provider?: string } = {},
+    {
+      token,
+      provider,
+      code,
+      remaining,
+      channel,
+    }: {
+      token?: string;
+      provider?: string;
+      code?: string;
+      remaining?: number;
+      channel?: 'email' | 'phone';
+    } = {},
   ): void {
     const path = PATHS[kind];
     const url =
@@ -151,6 +217,9 @@ export class Mailer {
       ...(url !== undefined && { url }),
       ...(token !== undefined && { token }),
       ...(provider !== undefined && { provider }),
+      ...(code !== undefined && { code }),
+      ...(remaining !== undefined && { remaining }),
+      ...(channel !== undefined && { channel }),
     };
     const template =
       this.#options?.templates?.[kind] ?? DEFAULT_TEMPLATES[kind];

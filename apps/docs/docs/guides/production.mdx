@@ -168,6 +168,32 @@ one hour, until the first superuser exists. Only someone who can read your
 logs can claim the deployment. Create the superuser right after the first
 deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 
+## Secret key
+
+Authenticator app secrets for [multi-factor sign-in](/docs/guides/auth/mfa)
+are stored encrypted, with AES-256-GCM, under a key you keep out of the
+database. Make one and set it in the environment:
+
+```sh
+openssl rand -base64 32
+# NEXTBASE_SECRET_KEY=Zm9v...44 characters
+```
+
+Or pass it as the `secretKey` option. An invalid key fails when
+`new NextBase()` runs. Without one, other sign-in steps work, but
+authenticator apps cannot be set up.
+
+To rotate it, put the new key first, separated by a comma, and keep the old
+one: secrets are not encrypted again, so apps set up before the rotation
+still need it.
+
+```sh
+NEXTBASE_SECRET_KEY=<new key>,<old key>
+```
+
+The first key encrypts; every key decrypts. Losing every key that encrypted a
+secret means its account must use a recovery code, and set the app up again.
+
 ## Security checklist
 
 - Serve the app over HTTPS. In production the session cookie is
@@ -181,6 +207,11 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
   first request a rule naming a collection could match, can add a schema
   read.
 - Review every collection's rules. New collections default to superuser-only.
+- Set `NEXTBASE_SECRET_KEY` before turning on
+  [multi-factor sign-in](/docs/guides/auth/mfa) or an OAuth2 provider's
+  [`storeTokens`](/docs/guides/auth/oauth2#call-the-providers-api), and keep
+  it in your secret store, never in the repository. Losing it loses the
+  authenticator apps and provider tokens it sealed.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.
 - Request bodies are limited to 1 MiB, or 32 MiB for form data carrying

@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
-import { links } from '@/lib/links';
 import { nb } from '@/lib/nextbase';
 import { OAUTH2_ERRORS } from '@/lib/oauth2-errors';
+import { LinkButton } from './link-button';
 import { UnlinkButton } from './unlink-button';
 
 // proxy.ts redirects signed-out visitors; collection rules decide what this user may read.
@@ -48,14 +48,11 @@ export default async function Dashboard({
         ))}
         {unlinked.map((provider) => (
           <li key={provider.name}>
-            <a
-              href={links.collection(collection).oauth2Url(provider.name, {
-                link: true,
-                redirect: '/dashboard',
-              })}
-            >
-              Connect {provider.displayName}
-            </a>
+            <LinkButton
+              collection={collection}
+              provider={provider.name}
+              label={provider.displayName}
+            />
           </li>
         ))}
       </ul>

@@ -1,0 +1,83 @@
+---
+title: Account deletion
+---
+
+# Account deletion
+
+A user deletes their own account by deleting their record, when the
+collection's `deleteRule` lets them, for example `id = @request.auth.id`. A
+session alone is not enough, since it may be stolen: the user also confirms
+in one of three ways.
+
+## With the password
+
+```ts
+await nb.collection("users").delete(user.id, { password });
+```
+
+The password is checked like a sign-in, and counted against the account. It
+never reaches the `deleteRule` or the record's hooks.
+
+## With a recent sign-in
+
+A session that signed in within the last day can delete its account without
+the password:
+
+```ts
+await nb.collection("users").delete(user.id);
+```
+
+After a day, the same call answers `400` with `data.password.code`
+`validation_required`: the page asks for the password, or has the user sign
+in again, which starts a new session.
+
+## By email
+
+An account that signed up through a provider or by phone has a password
+nobody chose. Once its session is older than a day, it confirms from its
+verified email instead:
+
+```ts
+await nb.collection("users").requestAccountDeletion();
+```
+
+A link goes to `/delete-account?token=...` in your app (see
+[email sending](/docs/guides/auth/email)). That page asks the user to confirm,
+and only their click deletes the account:
+
+```ts
+await nb.collection("users").confirmAccountDeletion(token);
+```
+
+Never call it when the page loads: email security scanners open links, some
+running their JavaScript, and would delete the account without the user.
+
+The link deletes as the owner, so the `deleteRule` still decides, and works
+until it has deleted the account, like the email verification link for 3
+days by default (the collection's `verification` token duration). It stops
+working if the account's email changes first. Without a verified email, such
+as for an account that signs in by phone, `requestAccountDeletion` answers
+`400`, and signing in again is the way.
+
+## With an authenticator app
+
+With an [authenticator app](/docs/guides/auth/mfa), each way also needs
+`{ mfaCode }`, a code from it or a recovery code:
+
+```ts
+await nb.collection("users").delete(user.id, { mfaCode });
+await nb.collection("users").confirmAccountDeletion(token, { mfaCode });
+```
+
+## Who else can delete
+
+Superusers, and callers the `deleteRule` lets delete other records, delete
+without any of this. A delete that would reach the caller's own account
+through a [cascade](/docs/guides/collections#relations) asks the same as
+deleting it directly. The `deleteRule` is checked first, so a caller it
+refuses is never asked for a password. An [impersonation](/docs/guides/auth/impersonation)
+session cannot delete the account it acts as.
+
+The account's sessions, linked providers and authenticator app are deleted
+with it. Use [hooks](/docs/guides/hooks) for work of your own before or
+after a delete.

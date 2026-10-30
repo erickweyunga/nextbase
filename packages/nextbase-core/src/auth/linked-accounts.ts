@@ -15,7 +15,13 @@ import { newRecord, systemContext, updateRecord } from '../records/service.ts';
 import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
 import { findByEmail } from './identity.ts';
-import { type Identity, OAuth2Error } from './oauth2.ts';
+import { takesSecondStep } from './mfa.ts';
+import {
+  type Identity,
+  OAuth2Error,
+  type OAuth2ProviderOptions,
+} from './oauth2.ts';
+import { setPasswordOrigin } from './password-origins.ts';
 
 // Sign-ins find their record by the provider's permanent account id, never by
 // email. A new provider account is auto-linked to an existing record by email
@@ -46,10 +52,19 @@ export interface Account {
  * only once they are committed: a failed sign-in is answered with a
  * redirect, not an error, so the request would otherwise still do it.
  */
+/** How a provider makes accounts: see `OAuth2ProviderOptions`. */
+export interface SignUpPolicy {
+  name: string;
+  disableSignUp: boolean;
+  mapProfile: OAuth2ProviderOptions['mapProfile'];
+  /** What the app passed to the sign-in, for `mapProfile`. */
+  data: Record<string, unknown> | null;
+}
+
 export async function accountFor(
   ctx: AccountContext,
   collection: AuthCollection,
-  provider: string,
+  provider: SignUpPolicy,
   identity: Identity,
   linkRecordId: string | null,
 ): Promise<Account> {
@@ -74,10 +89,11 @@ async function findAccount(
   ctx: AccountContext,
   tx: Tx,
   collection: AuthCollection,
-  provider: string,
+  policy: SignUpPolicy,
   identity: Identity,
   linkRecordId: string | null,
 ): Promise<Account> {
+  const provider = policy.name;
   const linked = await findLinked(tx, collection, provider, identity.id);
   if (linkRecordId !== null) {
     if (linked) {
@@ -114,7 +130,19 @@ async function findAccount(
   }
   const existing = await findByEmail(tx, collection, identity.email);
   if (existing) {
-    if (existing.emailVerified !== true) {
+    // A provider linked here would be a second factor proven by the same
+    // inbox as an email code or reset password, so an account with a second
+    // step links one only from inside, after re-entering its password.
+    if (
+      existing.emailVerified !== true ||
+      !collection.implicitLinking ||
+      (await takesSecondStep(
+        ctx.db,
+        ctx.schema,
+        collection,
+        existing.id as string,
+      ))
+    ) {
       throw new OAuth2Error(
         'account_exists',
         'An account with this email exists. Sign in to it, then link this provider.',
@@ -123,7 +151,13 @@ async function findAccount(
     await link(tx, collection, existing.id as string, provider, identity.id);
     return { record: existing, linkedTo: existing.email as string };
   }
-  const record = await signUp({ ...ctx, tx }, collection, identity);
+  if (policy.disableSignUp) {
+    throw new OAuth2Error(
+      'sign_up_disabled',
+      'This provider signs in existing accounts only. Sign up another way first.',
+    );
+  }
+  const record = await signUp({ ...ctx, tx }, collection, identity, policy);
   await link(tx, collection, record.id as string, provider, identity.id);
   return { record };
 }
@@ -180,7 +214,11 @@ export async function unlinkUnproven(
     .execute();
 }
 
-async function findLinked(
+/**
+ * The record a provider account is linked to, if any. Never links or signs
+ * up, for a sign-in step that only proves an existing link.
+ */
+export async function findLinked(
   q: Builder,
   collection: AuthCollection,
   provider: string,
@@ -245,14 +283,36 @@ async function link(
 }
 
 // The random password is never shown; the owner can set one via password reset.
+/** Sign-in fields NextBase sets itself, never from a provider's profile. */
+const SIGN_IN_FIELDS = new Set([
+  'id',
+  'email',
+  'emailVerified',
+  'password',
+  'passwordConfirm',
+  'oldPassword',
+  'tokenKey',
+  'phone',
+  'phoneVerified',
+]);
+
 async function signUp(
   ctx: AccountContext & { tx: Tx },
   collection: AuthCollection,
   identity: Identity,
+  policy: SignUpPolicy,
 ): Promise<Row> {
   const id = newId();
   const password = randomPassword(collection);
+  const mapped = policy.mapProfile
+    ? await policy.mapProfile(identity.profile, {
+        data: policy.data ?? undefined,
+      })
+    : {};
   const input = {
+    ...Object.fromEntries(
+      Object.entries(mapped ?? {}).filter(([key]) => !SIGN_IN_FIELDS.has(key)),
+    ),
     id,
     email: identity.email,
     password,
@@ -298,5 +358,7 @@ async function signUp(
     }
     throw error;
   }
+  // Nobody knows the generated password, so it is never a sign-in step.
+  await setPasswordOrigin(tx, collection.id, id, 'random');
   return (await findRecord(tx, collection, id)) as Row;
 }

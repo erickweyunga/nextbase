@@ -842,12 +842,11 @@ describe('impersonation', () => {
     it('links and unlinks no provider', async () => {
       const token = await actAs(ids.ann);
       forbidden(
-        await call(
-          nextbase,
-          'GET',
-          '/collections/users/auth-with-oauth2/google?link=true&redirect=/',
-          { token, headers: { origin } },
-        ),
+        await call(nextbase, 'POST', '/collections/users/link-oauth2/google', {
+          token,
+          headers: { origin },
+          body: { password: PASSWORD, redirect: '/' },
+        }),
         'link a provider',
       );
       forbidden(
@@ -855,7 +854,7 @@ describe('impersonation', () => {
           nextbase,
           'DELETE',
           `/collections/users/records/${ids.ann}/linked-accounts/google`,
-          { token },
+          { token, body: { password: PASSWORD } },
         ),
         'unlink a provider',
       );

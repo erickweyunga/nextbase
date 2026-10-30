@@ -176,7 +176,43 @@ export interface AuthCollection extends CollectionBase {
   identityFields: string[];
   /** Sign-in with SMS codes; records may then have a phone instead of an email. */
   phoneSignIn: boolean;
+  /**
+   * Links a provider account to an existing account with the same email when
+   * both verified it, at the first sign-in with it. `false`: such a sign-in
+   * answers `account_exists`, and the owner links the provider from their
+   * account. Never done for an account that takes a second sign-in step.
+   */
+  implicitLinking: boolean;
   tokens: Record<TokenType, TokenConfig>;
+  /** A second sign-in step. */
+  mfa: MfaConfig;
+  /** When the email must be verified, and when the verification email goes out. */
+  emailVerification: EmailVerificationConfig;
+}
+
+export interface EmailVerificationConfig {
+  /**
+   * Accounts with an unverified email cannot sign in. A sign-up with an
+   * email that is already registered answers as a new one does, and the
+   * owner is told.
+   */
+  required: boolean;
+  /** Sends the verification email when an account signs up. */
+  sendOnSignUp: boolean;
+  /** Sends it again when an unverified account signs in with its password. */
+  sendOnSignIn: boolean;
+}
+
+/** Which accounts of an auth collection must take a second sign-in step. */
+export interface MfaConfig {
+  enabled: boolean;
+  /**
+   * `null`: only accounts with an authenticator app. `""`: every account.
+   * A filter: matching accounts, and those with an authenticator app.
+   */
+  rule: Rule;
+  /** Seconds a sign-in waits for its second step, 60 to 3600. */
+  duration: number;
 }
 
 /** A read-only collection backed by a SQL query; fields come from its columns. */

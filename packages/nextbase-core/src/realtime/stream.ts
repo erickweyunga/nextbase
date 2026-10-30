@@ -868,6 +868,8 @@ class Stream implements HubStream {
       ...this.#principal,
       collection: active.collection,
       record: active.record,
+      // Its methods change when it confirms an authenticator app.
+      session: active.session,
     };
     return true;
   }

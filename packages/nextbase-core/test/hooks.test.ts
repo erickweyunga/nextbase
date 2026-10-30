@@ -939,6 +939,9 @@ describe('record hooks', () => {
         .signInWithPassword(email, 'a new password 1');
       await owner.collection('users').requestEmailChange('moved@example.com');
       await flush();
+      // The verified inbox approves it first.
+      await users.approveEmailChange(tokenIn(email));
+      await flush();
       await users.confirmEmailChange(
         tokenIn('moved@example.com'),
         'a new password 1',
@@ -954,7 +957,9 @@ describe('record hooks', () => {
         .collection('users')
         .signInWithPassword('moved@example.com', 'a new password 1');
       const newPhone = '+255712345679';
-      await moved.collection('users').requestPhoneVerification(newPhone);
+      await moved
+        .collection('users')
+        .requestPhoneVerification(newPhone, { password: 'a new password 1' });
       await flush();
       const text = texts.filter((m) => m.to === newPhone).at(-1)?.text ?? '';
       await moved
@@ -962,6 +967,7 @@ describe('record hooks', () => {
         .confirmPhoneVerification(
           newPhone,
           /\b(\d{6})\b/.exec(text)?.[1] ?? '',
+          { password: 'a new password 1' },
         );
       await flush();
       expect(seen.splice(0)).toEqual([

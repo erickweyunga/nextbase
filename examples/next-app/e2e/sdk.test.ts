@@ -104,7 +104,7 @@ async function signUp(name: string): Promise<NextBaseClient> {
     password: 'password 123 456',
     passwordConfirm: 'password 123 456',
   });
-  expect(signedUp?.record.email).toBe(email);
+  expect(signedUp?.record?.email).toBe(email);
   return nb;
 }
 

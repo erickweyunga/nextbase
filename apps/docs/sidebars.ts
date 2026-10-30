@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'guides/auth/verification',
         'guides/auth/password-reset',
         'guides/auth/email-change',
+        'guides/auth/account-deletion',
       ],
     },
     {
@@ -43,6 +44,7 @@ const sidebars: SidebarsConfig = {
         doc('guides/auth/email-password', 'Email & Password', 'mail'),
         doc('guides/auth/oauth2', 'OAuth2', 'key'),
         doc('guides/auth/phone', 'Phone', 'phone'),
+        doc('guides/auth/mfa', 'Multi-factor', 'key'),
         doc('guides/auth/impersonation', 'Impersonation', 'user'),
       ],
     },

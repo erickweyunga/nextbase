@@ -20,6 +20,8 @@ interface Account {
   emailVerified?: boolean;
   /** Overrides the nonce in the ID token. */
   nonce?: string;
+  /** More claims for the ID token, such as `name`. */
+  claims?: Record<string, unknown>;
 }
 
 interface Grant {
@@ -38,6 +40,10 @@ describe('OAuth2 sign-in', () => {
   const grants = new Map<string, Grant>();
   /** The record hooks that ran for `users`, with their source. */
   const hooked: string[] = [];
+  /** Refresh grants the fake provider answered. */
+  let refreshes = 0;
+  /** Makes the next refresh answer a token type NextBase refuses. */
+  let badRefresh = false;
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -67,6 +73,29 @@ describe('OAuth2 sign-in', () => {
       url.href === 'https://github.com/login/oauth/access_token';
     if (tokenEndpoint && request.method === 'POST') {
       const body = new URLSearchParams(await request.text());
+      if (body.get('grant_type') === 'refresh_token') {
+        const refresh = body.get('refresh_token') ?? '';
+        if (
+          !refresh.startsWith('rt-') ||
+          body.get('client_secret') !== 'secret'
+        ) {
+          return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        }
+        refreshes++;
+        if (badRefresh) {
+          badRefresh = false;
+          return Response.json({
+            access_token: 'at-leaked',
+            token_type: 'mac',
+            refresh_token: `rt-rotated-${refresh.slice(3)}`,
+          });
+        }
+        return Response.json({
+          access_token: `at${refreshes}-${refresh.slice(3)}`,
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+      }
       const grant = grants.get(body.get('code') ?? '');
       grants.delete(body.get('code') ?? '');
       const verifier = createHash('sha256')
@@ -89,6 +118,7 @@ describe('OAuth2 sign-in', () => {
         });
       }
       const idToken = await new SignJWT({
+        ...grant.account.claims,
         ...(grant.account.email !== undefined && {
           email: grant.account.email,
           email_verified: grant.account.emailVerified ?? true,
@@ -106,6 +136,8 @@ describe('OAuth2 sign-in', () => {
         access_token: accessToken,
         token_type: 'Bearer',
         id_token: idToken,
+        expires_in: 3600,
+        refresh_token: `rt-${grant.account.sub}`,
       });
     }
     if (url.hostname === 'api.github.com') {
@@ -166,15 +198,42 @@ describe('OAuth2 sign-in', () => {
       signedOut?: boolean;
     } = {},
   ): Promise<Response> => {
-    const start = await raw(
-      'GET',
-      `/collections/users/auth-with-oauth2/${providerName}${query}`,
-      {
-        ...(cookie && { cookie, 'sec-fetch-site': 'same-origin' }),
-      },
+    // A link starts with the password, by a POST that answers the URL.
+    const params = new URLSearchParams(query.replace(/^\?/, ''));
+    const linking = params.get('link') === 'true';
+    const start = linking
+      ? await nextbase.handle(
+          new Request(
+            `${origin}/api/nextbase/collections/users/link-oauth2/${providerName}`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                ...(cookie && { cookie }),
+                'sec-fetch-site': 'same-origin',
+              },
+              body: JSON.stringify({
+                password: PASSWORD,
+                ...(params.has('redirect') && {
+                  redirect: params.get('redirect'),
+                }),
+              }),
+            },
+          ),
+        )
+      : await raw(
+          'GET',
+          `/collections/users/auth-with-oauth2/${providerName}${query}`,
+          {
+            ...(cookie && { cookie, 'sec-fetch-site': 'same-origin' }),
+          },
+        );
+    expect(start.status).toBe(linking ? 200 : 302);
+    const authorize = new URL(
+      linking
+        ? ((await start.json()) as { url: string }).url
+        : (start.headers.get('location') ?? ''),
     );
-    expect(start.status).toBe(302);
-    const authorize = new URL(start.headers.get('location') ?? '');
     const redirectUri = authorize.searchParams.get('redirect_uri') ?? '';
     expect(redirectUri).toBe(callbackOf(providerName));
     expect(authorize.searchParams.get('code_challenge_method')).toBe('S256');
@@ -271,9 +330,42 @@ describe('OAuth2 sign-in', () => {
     nextbase = new NextBase({
       database: t.pool,
       appUrl: origin,
+      secretKey: randomBytes(32).toString('base64'),
       oauth2: {
         idp: { issuer: ISSUER, clientId: 'client', clientSecret: 'secret' },
         github: { clientId: 'client', clientSecret: 'secret' },
+        shop: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          scopes: ['offline_access', 'email'],
+          prompt: 'select_account',
+          params: { hd: 'example.com' },
+          mapProfile: (profile, { data }) => ({
+            name: `${String(profile.name)} via ${String(data?.ref ?? 'none')}`,
+            // Never taken from a profile.
+            email: 'someone@else.example',
+            emailVerified: false,
+          }),
+        },
+        closed: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          disableSignUp: true,
+        },
+        mobile: {
+          issuer: ISSUER,
+          clientId: ['web', 'ios', 'android'],
+          clientSecret: 'secret',
+        },
+        vault: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          scopes: ['offline_access'],
+          storeTokens: true,
+        },
       },
       mail: {
         from: 'app@example.com',
@@ -302,6 +394,7 @@ describe('OAuth2 sign-in', () => {
       type: 'auth',
       createRule: '',
       viewRule: 'id = @request.auth.id',
+      fields: [{ name: 'name', type: 'text' }],
     });
   });
   afterAll(async () => {
@@ -320,6 +413,10 @@ describe('OAuth2 sign-in', () => {
       providers: [
         { name: 'idp', displayName: 'idp' },
         { name: 'github', displayName: 'GitHub' },
+        { name: 'shop', displayName: 'shop' },
+        { name: 'closed', displayName: 'closed' },
+        { name: 'mobile', displayName: 'mobile' },
+        { name: 'vault', displayName: 'vault' },
       ],
     });
     const superusers = await nextbase
@@ -327,6 +424,413 @@ describe('OAuth2 sign-in', () => {
       .collection('_superusers')
       .listAuthMethods();
     expect(superusers.oauth2).toEqual({ enabled: false, providers: [] });
+  });
+
+  it('asks the provider for its scopes, prompt and parameters', async () => {
+    const start = await raw(
+      'GET',
+      `/collections/users/auth-with-oauth2/shop?params=${encodeURIComponent(
+        JSON.stringify({ login_hint: 'pat@example.com', hd: 'other.com' }),
+      )}`,
+    );
+    const authorize = new URL(start.headers.get('location') ?? '');
+    expect(authorize.searchParams.get('scope')).toBe(
+      'openid email offline_access',
+    );
+    expect(authorize.searchParams.get('prompt')).toBe('select_account');
+    // A sign-in's own parameters win over the provider's.
+    expect(authorize.searchParams.get('hd')).toBe('other.com');
+    expect(authorize.searchParams.get('login_hint')).toBe('pat@example.com');
+
+    for (const params of [
+      { state: 'x' },
+      { redirect_uri: 'x' },
+      { Redirect_URI: 'x' },
+      { response_mode: 'form_post' },
+      { request_uri: 'https://evil.example/r' },
+      { 'bad name': 'x' },
+      { n: 1 },
+    ]) {
+      const refused = await raw(
+        'GET',
+        `/collections/users/auth-with-oauth2/shop?params=${encodeURIComponent(
+          JSON.stringify(params),
+        )}`,
+      );
+      expect(refused.status).toBe(400);
+    }
+    expect(
+      (await raw('GET', '/collections/users/auth-with-oauth2/shop?data=nope'))
+        .status,
+    ).toBe(400);
+    expect(
+      () =>
+        new NextBase({
+          appUrl: origin,
+          oauth2: {
+            bad: {
+              issuer: ISSUER,
+              clientId: 'a',
+              clientSecret: 'b',
+              params: { client_id: 'c' },
+            },
+          },
+        }),
+    ).toThrow(/client_id/);
+  });
+
+  it('fills a new account from the profile and the data the app passed', async () => {
+    const response = await signIn(
+      'shop',
+      { sub: 'pat', email: 'pat@example.com', claims: { name: 'Pat' } },
+      {
+        query: `?data=${encodeURIComponent(JSON.stringify({ ref: 'spring' }))}`,
+      },
+    );
+    expect(errorOf(response)).toBeNull();
+    const { rows } = await t.pool.query(
+      `SELECT name, email, "emailVerified" FROM nextbase.users WHERE email = 'pat@example.com'`,
+    );
+    expect(rows).toEqual([
+      { name: 'Pat via spring', email: 'pat@example.com', emailVerified: true },
+    ]);
+  });
+
+  it('signs in existing accounts only, with a provider that creates none', async () => {
+    const response = await signIn('closed', {
+      sub: 'nobody',
+      email: 'nobody@example.com',
+    });
+    expect(errorOf(response)).toBe('sign_up_disabled');
+    expect(
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase.users WHERE email = 'nobody@example.com'",
+        )
+      ).rows,
+    ).toEqual([]);
+  });
+
+  describe('stored provider tokens', () => {
+    /** Makes the account's tokens a minute old, so a forced refresh runs. */
+    const settle = async (sub: string): Promise<void> => {
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET tokens_saved = now() - interval '1 minute' WHERE provider_id = $1",
+        [sub],
+      );
+    };
+    const tokenOf = async (
+      cookie: string,
+      id: string,
+      provider = 'vault',
+      query = '',
+    ) => {
+      const response = await raw(
+        'GET',
+        `/collections/users/records/${id}/linked-accounts/${provider}/token${query}`,
+        { cookie },
+      );
+      return {
+        status: response.status,
+        body: (await response.json()) as Record<string, unknown>,
+      };
+    };
+
+    it('keeps the tokens sealed, and hands out the access token to its owner', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v1', email: 'vera@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      const { rows } = await t.pool.query(
+        "SELECT access_token, refresh_token FROM nextbase._linked_accounts WHERE provider = 'vault' AND provider_id = 'v1'",
+      );
+      expect(rows[0].access_token).not.toContain('at-v1');
+      expect(rows[0].refresh_token).not.toContain('rt-v1');
+      const token = await tokenOf(cookie, id);
+      expect(token.status).toBe(200);
+      expect(token.body).toMatchObject({
+        accessToken: 'at-v1',
+        scopes: ['openid', 'email', 'offline_access'],
+      });
+      expect(typeof token.body.expiresAt).toBe('string');
+
+      // Other accounts, and providers that keep no tokens, get none.
+      const other = sessionOf(
+        await signIn('vault', { sub: 'v2', email: 'walt@example.com' }),
+      );
+      expect((await tokenOf(other, id)).status).toBe(404);
+      expect((await tokenOf(cookie, id, 'idp')).status).toBe(400);
+      expect((await tokenOf(cookie, id, 'nope')).status).toBe(404);
+    });
+
+    it('refreshes a token that is due, once for requests that come together', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v3', email: 'xena@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET token_expires = now() - interval '1 minute' WHERE provider_id = 'v3'",
+      );
+      const before = refreshes;
+      const tokens = await Promise.all(
+        Array.from({ length: 5 }, () => tokenOf(cookie, id)),
+      );
+      expect(refreshes).toBe(before + 1);
+      const fresh = `at${before + 1}-v3`;
+      for (const token of tokens) {
+        expect(token.body.accessToken).toBe(fresh);
+      }
+      // `refresh` forces one, once the last is a few seconds old; the
+      // refresh token is kept for the next.
+      await settle('v3');
+      const forced = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(forced.body.accessToken).toBe(`at${before + 2}-v3`);
+    });
+
+    it('never logs tokens, keeps a rotated refresh token, and forces one refresh at a time', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v4', email: 'yan@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await settle('v4');
+      badRefresh = true;
+      const refused = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(refused.status).toBe(400);
+      const logged = JSON.stringify(errors.mock.calls);
+      errors.mockRestore();
+      expect(logged).not.toContain('at-leaked');
+      expect(logged).not.toContain('rt-rotated');
+      // The next refresh spends the rotated refresh token.
+      await settle('v4');
+      const next = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(next.body.accessToken).toMatch(/-rotated-v4$/);
+      // Forced again right after: answered without another refresh.
+      const before = refreshes;
+      const again = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(refreshes).toBe(before);
+      expect(again.body.accessToken).toBe(next.body.accessToken);
+    });
+
+    it('keeps the scopes the sign-in asked for when the provider names none', async () => {
+      const cookie = sessionOf(
+        await signIn(
+          'vault',
+          { sub: 'v5', email: 'zed@example.com' },
+          { query: '?scopes=drive.file' },
+        ),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      expect((await tokenOf(cookie, id)).body.scopes).toEqual([
+        'openid',
+        'email',
+        'offline_access',
+        'drive.file',
+      ]);
+    });
+
+    it('drops tokens it can no longer use', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v6', email: 'amy@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      // Sealed with a key no longer configured.
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET access_token = 'v1.unknown.x.y.z' WHERE provider_id = 'v6'",
+      );
+      expect((await tokenOf(cookie, id)).status).toBe(404);
+      const { rows } = await t.pool.query(
+        "SELECT access_token FROM nextbase._linked_accounts WHERE provider_id = 'v6'",
+      );
+      expect(rows[0].access_token).toBeNull();
+      // Kept by a provider whose storeTokens was turned off since.
+      sessionOf(
+        await signIn('idp', { sub: 'idp-drop', email: 'drop@example.com' }),
+      );
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET access_token = 'sealed' WHERE provider_id = 'idp-drop'",
+      );
+      sessionOf(
+        await signIn('idp', { sub: 'idp-drop', email: 'drop@example.com' }),
+      );
+      const idp = await t.pool.query(
+        "SELECT access_token FROM nextbase._linked_accounts WHERE provider_id = 'idp-drop'",
+      );
+      expect(idp.rows[0]?.access_token ?? null).toBeNull();
+    });
+
+    it('asks for more scopes on a new link, and keeps the scopes granted', async () => {
+      const start = await raw(
+        'GET',
+        `/collections/users/auth-with-oauth2/vault?scopes=${encodeURIComponent(
+          'drive.file calendar',
+        )}`,
+      );
+      expect(
+        new URL(start.headers.get('location') ?? '').searchParams.get('scope'),
+      ).toBe('openid email offline_access drive.file calendar');
+      const refused = await raw(
+        'GET',
+        '/collections/users/auth-with-oauth2/vault?scopes=%22quoted%22',
+      );
+      expect(refused.status).toBe(400);
+    });
+
+    it('needs the secret key to store tokens', () => {
+      expect(
+        () =>
+          new NextBase({
+            appUrl: origin,
+            oauth2: {
+              vault: {
+                issuer: ISSUER,
+                clientId: 'a',
+                clientSecret: 'b',
+                storeTokens: true,
+              },
+            },
+          }),
+      ).toThrow(/secretKey/);
+    });
+  });
+
+  describe('ID tokens from native apps', () => {
+    /** An ID token as the fake provider's native SDK would issue it. */
+    const idToken = async (
+      claims: Record<string, unknown>,
+      {
+        audience = 'ios',
+        key = keys.privateKey,
+        expires = '5m',
+      }: {
+        audience?: string;
+        key?: typeof keys.privateKey;
+        expires?: string | number;
+      } = {},
+    ): Promise<string> =>
+      new SignJWT(claims)
+        .setProtectedHeader({ alg: 'RS256' })
+        .setIssuer(ISSUER)
+        .setAudience(audience)
+        .setIssuedAt()
+        .setExpirationTime(expires)
+        .sign(key);
+    const signInWith = (
+      provider: string,
+      body: Record<string, unknown>,
+    ): ReturnType<typeof call> =>
+      call(
+        nextbase,
+        'POST',
+        `/collections/users/auth-with-id-token/${provider}`,
+        {
+          body,
+        },
+      );
+
+    it('signs up and in with a token issued to any of the client ids, once', async () => {
+      const token = await idToken({
+        sub: 'native-1',
+        email: 'native@example.com',
+        // As Apple sends it.
+        email_verified: 'true',
+        name: 'Nat',
+      });
+      const reply = await signInWith('mobile', { token });
+      expect(reply.status).toBe(200);
+      expect(reply.body).toMatchObject({
+        record: { email: 'native@example.com', emailVerified: true },
+        methods: ['oauth2'],
+      });
+      expect(typeof reply.body.token).toBe('string');
+      const again = await signInWith('mobile', { token });
+      expect(again.status).toBe(400);
+      expect(again.body.message).toBe('The ID token was already used.');
+      // Nor another spelling of its signature's spare bits.
+      const last = token.at(-1) as string;
+      const respelled = `${token.slice(0, -1)}${last === 'A' ? 'B' : 'A'}`;
+      expect((await signInWith('mobile', { token: respelled })).status).toBe(
+        400,
+      );
+      // The same account, with a new token from another of the apps.
+      const android = await signInWith('mobile', {
+        token: await idToken(
+          {
+            sub: 'native-1',
+            email: 'native@example.com',
+            email_verified: true,
+          },
+          { audience: 'android' },
+        ),
+      });
+      expect(android.body.record).toMatchObject({
+        id: (reply.body.record as { id: string }).id,
+      });
+    });
+
+    it('refuses a token of another app, expired, or not signed by the provider', async () => {
+      const other = await generateKeyPair('RS256');
+      for (const token of [
+        await idToken({ sub: 'x1' }, { audience: 'someone-else' }),
+        await idToken(
+          { sub: 'x2' },
+          { expires: Math.floor(Date.now() / 1000) - 120 },
+        ),
+        await idToken({ sub: 'x3' }, { key: other.privateKey }),
+        'not.a.token',
+      ]) {
+        const reply = await signInWith('mobile', { token });
+        expect(reply.status).toBe(400);
+        expect(reply.body.data).toMatchObject({
+          token: { code: 'validation_invalid_token' },
+        });
+      }
+      expect((await signInWith('mobile', {})).status).toBe(400);
+      expect((await signInWith('github', { token: 'x' })).status).toBe(400);
+    });
+
+    it('checks the nonce, as is or hashed', async () => {
+      const nonce = 'n-123';
+      const hashed = createHash('sha256').update(nonce).digest('hex');
+      const ok = await signInWith('mobile', {
+        nonce,
+        token: await idToken({
+          sub: 'nonce-1',
+          email: 'nonce@example.com',
+          email_verified: true,
+          nonce: hashed,
+        }),
+      });
+      expect(ok.status).toBe(200);
+      const wrong = await signInWith('mobile', {
+        nonce: 'other',
+        token: await idToken({ sub: 'nonce-1', nonce }),
+      });
+      expect(wrong.status).toBe(400);
+    });
+
+    it('answers the browser sign-in errors as JSON', async () => {
+      const closed = await signInWith('closed', {
+        token: await idToken(
+          { sub: 'closed-1', email: 'shut@example.com', email_verified: true },
+          { audience: 'client' },
+        ),
+      });
+      expect(closed.status).toBe(400);
+      expect(closed.body.data).toMatchObject({
+        token: { code: 'sign_up_disabled' },
+      });
+      const unverified = await signInWith('mobile', {
+        token: await idToken({
+          sub: 'unverified-1',
+          email: 'unverified@example.com',
+          email_verified: false,
+        }),
+      });
+      expect(unverified.body.data).toMatchObject({
+        token: { code: 'email_not_verified' },
+      });
+    });
   });
 
   it('signs up a new account with the email the provider verified', async () => {
@@ -519,6 +1023,56 @@ describe('OAuth2 sign-in', () => {
     });
   });
 
+  it('links by email neither when the collection says not to, nor for an account with a second step', async () => {
+    const users = admin.collection('users');
+    await users.create({
+      email: 'nolink@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      emailVerified: true,
+    });
+    const provider = {
+      sub: 'u-nolink',
+      email: 'nolink@example.com',
+      emailVerified: true,
+    };
+    const linked = async (): Promise<number> =>
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase._linked_accounts WHERE provider_id = 'u-nolink'",
+        )
+      ).rows.length;
+
+    await admin.collections.update('users', { implicitLinking: false });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', { implicitLinking: true });
+    }
+
+    // Whoever holds the inbox could otherwise link a provider and count it
+    // as a second step alongside an email code.
+    await admin.collections.update('users', {
+      mfa: {
+        enabled: true,
+        rule: 'email = "nolink@example.com"',
+        duration: 300,
+      },
+    });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', {
+        mfa: { enabled: false, rule: null, duration: 300 },
+      });
+    }
+    // With neither, the same sign-in links as before.
+    expect(errorOf(await signIn('idp', provider))).toBeNull();
+    expect(await linked()).toBe(1);
+  });
+
   it('links and unlinks a provider for the signed-in account', async () => {
     const { token, record } = await passwordAccount('fay@example.com');
     const linked = await signIn(
@@ -554,18 +1108,32 @@ describe('OAuth2 sign-in', () => {
     expect(
       (await call(nextbase, 'DELETE', unlink, { token: other })).status,
     ).toBe(404);
-    expect((await call(nextbase, 'DELETE', unlink, { token })).status).toBe(
-      204,
-    );
+    // The owner needs the password: a stolen session cannot remove it.
+    expect(
+      (await call(nextbase, 'DELETE', unlink, { token, body: {} })).status,
+    ).toBe(400);
+    expect(
+      (
+        await call(nextbase, 'DELETE', unlink, {
+          token,
+          body: { password: PASSWORD },
+        })
+      ).status,
+    ).toBe(204);
     await Promise.all(pending.splice(0));
     expect(sent.at(-1)).toMatchObject({
       to: 'fay@example.com',
       subject: 'A way to sign in was removed',
     });
     expect(sent.at(-1)?.text).toContain('GitHub');
-    expect((await call(nextbase, 'DELETE', unlink, { token })).status).toBe(
-      404,
-    );
+    expect(
+      (
+        await call(nextbase, 'DELETE', unlink, {
+          token,
+          body: { password: PASSWORD },
+        })
+      ).status,
+    ).toBe(404);
   });
 
   it('refuses to link a provider account another record already has', async () => {
@@ -595,19 +1163,43 @@ describe('OAuth2 sign-in', () => {
     expect(errorOf(response)).toBe('oauth2_failed');
   });
 
-  it('does not start a link for a signed-out caller or from another site', async () => {
-    const signedOut = await raw(
+  it('does not start a link for a signed-out caller, from another site, or without the password', async () => {
+    const link = (
+      headers: Record<string, string>,
+      body: Record<string, unknown> = { password: PASSWORD },
+    ) =>
+      nextbase.handle(
+        new Request(
+          `${origin}/api/nextbase/collections/users/link-oauth2/idp`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...headers },
+            body: JSON.stringify(body),
+          },
+        ),
+      );
+    expect((await link({ 'sec-fetch-site': 'same-origin' })).status).toBe(401);
+    expect((await link({ 'sec-fetch-site': 'cross-site' })).status).toBe(403);
+    // A stolen session, without the password, cannot add a way in.
+    await passwordAccount('kit@example.com');
+    const cookie = await cookieSignIn('kit@example.com');
+    const noPassword = await link(
+      { cookie, 'sec-fetch-site': 'same-origin' },
+      {},
+    );
+    expect(noPassword.status).toBe(400);
+    const wrong = await link(
+      { cookie, 'sec-fetch-site': 'same-origin' },
+      { password: 'not the password!' },
+    );
+    expect(wrong.status).toBe(400);
+    // A link is never started by a URL.
+    const byUrl = await raw(
       'GET',
       '/collections/users/auth-with-oauth2/idp?link=true',
       { 'sec-fetch-site': 'same-origin' },
     );
-    expect(signedOut.status).toBe(401);
-    const crossSite = await raw(
-      'GET',
-      '/collections/users/auth-with-oauth2/idp?link=true',
-      { 'sec-fetch-site': 'cross-site' },
-    );
-    expect(crossSite.status).toBe(403);
+    expect(byUrl.status).toBe(400);
   });
 
   it('only returns to paths on the app', async () => {

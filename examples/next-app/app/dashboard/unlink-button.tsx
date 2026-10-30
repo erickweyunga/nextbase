@@ -20,8 +20,13 @@ export function UnlinkButton({
   const [error, setError] = useState<string | null>(null);
   const unlink = () =>
     startTransition(async () => {
+      // Removing a way in asks for the password too.
+      const password = window.prompt('Your password, to unlink it:');
+      if (!password) return;
       try {
-        await nb.collection(collection).unlinkAccount(recordId, provider);
+        await nb
+          .collection(collection)
+          .unlinkAccount(recordId, provider, { password });
         setError(null);
         router.refresh();
       } catch (cause) {

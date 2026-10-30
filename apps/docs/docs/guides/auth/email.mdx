@@ -49,7 +49,9 @@ Links open pages in your app, at these paths under `appUrl`, with the token in
 | ----- | ---- | ----- |
 | Verify your email | `/verify-email` | [Email verification](/docs/guides/auth/verification) |
 | Reset your password | `/reset-password` | [Password reset](/docs/guides/auth/password-reset) |
+| Approve the change of your email | `/approve-email-change` | [Email change](/docs/guides/auth/email-change) |
 | Confirm your new email | `/confirm-email-change` | [Email change](/docs/guides/auth/email-change) |
+| Confirm the deletion of your account | `/delete-account` | [Account deletion](/docs/guides/auth/account-deletion) |
 
 The link's address always comes from `appUrl`, never from the request, so an
 attacker cannot make NextBase send links to their own site.
@@ -78,9 +80,17 @@ mail: {
 },
 ```
 
-The kinds are `verification`, `passwordReset`, `emailChange`,
+These kinds carry a link, in `url` and `token`: `verification`,
+`passwordReset`, `emailChangeApproval`, `emailChange` and `accountDeletion`.
+
+`signInCode` carries the `code` of a [second sign-in step](/docs/guides/auth/mfa).
+
+The rest tell the owner that something changed, once it is saved:
 `passwordChanged`, `emailChanged`, `phoneChanged`, `oauth2Linked` and
-`oauth2Unlinked`. The last five carry no link: they tell the owner that their
-password, email or phone changed, or that an
-[OAuth2 provider](/docs/guides/auth/oauth2) was linked or unlinked, which
-templates get as `provider`. They are sent only once the change is saved.
+`oauth2Unlinked` (with the [provider](/docs/guides/auth/oauth2) as
+`provider`), `totpEnabled`, `totpDisabled`, `mfaCleared`, `recoveryCodeUsed`
+(with the codes left as `remaining`) and `mfaCodesPaused` (with `channel`,
+`email` or `phone`).
+
+`signUpAttempt` tells the owner that someone tried to sign up with their
+email, when [verification is required](/docs/guides/auth/verification#options).

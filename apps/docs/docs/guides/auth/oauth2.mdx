@@ -47,10 +47,16 @@ first sign-in creates their account; later ones sign in to it.
 
 | Option | Description |
 | ------ | ----------- |
-| `clientId` | Required. From the provider's OAuth app. |
+| `clientId` | Required. From the provider's OAuth app. A list, such as your web, iOS and Android apps' ids, accepts [ID tokens](#native-apps) issued to any of them; the browser sign-in uses the first. |
 | `clientSecret` | Required. Keep it in an environment variable, never in code. |
 | `issuer` | Required except for `google` and `github`. The provider's OpenID Connect issuer; NextBase discovers its endpoints from it. |
 | `displayName` | Optional. The name to show on sign-in buttons. |
+| `scopes` | Optional. Scopes to ask for besides those NextBase needs to know the account (`openid email`, or GitHub's `read:user user:email`). |
+| `prompt` | Optional. The provider's `prompt`, such as `select_account` or `consent`. |
+| `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself, or that change how the provider answers (`client_id`, `redirect_uri`, `response_type`, `response_mode`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`, `request`, `request_uri`, in any case), are refused, as are names other than letters, digits, `_`, `.` and `-`. |
+| `disableSignUp` | Optional. Signs in, or links, existing accounts only; a new one fails with `sign_up_disabled`. |
+| `mapProfile` | Optional. Fills a new account's fields from the provider's profile; see [New accounts](#new-accounts). |
+| `storeTokens` | Optional. Keeps each linked account's access and refresh tokens, encrypted, for [calling the provider's API](#call-the-providers-api). Needs `secretKey`. |
 
 `appUrl` must be the address users open your app at, and serve NextBase: the
 sign-in starts and ends there. Redirects are always built from it, never from
@@ -85,6 +91,17 @@ export function SignInWithGoogle() {
 }
 ```
 
+A sign-in can add parameters for the provider's page, over the provider's
+own, and pass data of its own to `mapProfile`:
+
+```ts
+nb.collection("users").signInWithOAuth2("google", {
+  redirect: "/dashboard",
+  params: { login_hint: "ann@example.com" },
+  data: { referral: "spring-sale" },
+});
+```
+
 `oauth2Url(provider, options)` returns the same URL for a plain link. To build
 buttons from the providers you set up, read them from `listAuthMethods()`:
 
@@ -92,6 +109,34 @@ buttons from the providers you set up, read them from `listAuthMethods()`:
 const { oauth2 } = await nb.collection("users").listAuthMethods();
 // oauth2.providers: [{ name: "google", displayName: "Google" }, ...]
 ```
+
+## Native apps
+
+A React Native or Expo app signs in with the provider's own SDK, such as
+Google Sign-In or Sign in with Apple, which hands it an ID token. Send that
+token to NextBase:
+
+```ts
+const { token, record } = await nb
+  .collection("users")
+  .signInWithIdToken("google", idToken, { nonce });
+```
+
+The token must be signed by the provider (its keys come from its OpenID
+Connect issuer), issued to one of the provider's `clientId`s, unexpired, and
+is accepted once. Pass the `nonce` you gave the SDK, if any: the token must
+carry it, as is or as its SHA-256 hex, which Apple's SDK sends. That only
+checks the token came from your app's own request, since whoever holds a
+token can read its nonce; what keeps a leaked token from signing in again
+is that each signs in once. Apple is set
+up by its issuer, `https://appleid.apple.com`, with your app's bundle id
+among the `clientId`s.
+
+The account is found, linked or created as on the browser sign-in, with
+`mapProfile` and its `data`, then signed in with a Bearer token, or a cookie
+with `cookie: true`. A sign-in that fails answers `400`, with the codes
+below in `data.token.code`. With an `mfaId`, it is the second step of a
+sign-in, by a provider account linked to it. GitHub has no ID tokens.
 
 ## When a sign-in fails
 
@@ -106,7 +151,7 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 | `account_exists` | An account with this email exists but cannot be linked automatically (see below). Sign in to it, then link the provider. |
 | `email_required` | The provider did not share an email address, which a new account needs. |
 | `email_not_verified` | The provider did not verify the email it shared, or the account linking a provider has not verified its email. |
-| `sign_up_disabled` | The collection's `createRule` does not allow this sign-up. |
+| `sign_up_disabled` | The collection's `createRule` does not allow this sign-up, or the provider has `disableSignUp`. |
 | `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
 | `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
 | `already_linked` | The provider account belongs to another user, or this user already linked one from this provider. |
@@ -120,6 +165,32 @@ with `email_not_verified`. The account gets a random password that nobody
 knows; to sign in with a password too, the user sets one through
 [password reset](/docs/guides/auth/password-reset).
 
+To fill other fields, give the provider a `mapProfile`. It gets the
+provider's profile, the ID token's claims or GitHub's user, and the `data`
+the sign-in passed:
+
+```ts title="lib/nextbase.ts"
+oauth2: {
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID!,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    scopes: ["profile"],
+    mapProfile: (profile, { data }) => ({
+      name: profile.name,
+      avatarUrl: profile.picture,
+      referral: typeof data?.referral === "string" ? data.referral : "",
+    }),
+  },
+},
+```
+
+It runs only when the sign-in creates an account. The fields go through the
+`createRule` and the fields' checks, as a sign-up's do, and a value they
+refuse fails the sign-in with `sign_up_failed`. Sign-in fields (`email`,
+`emailVerified`, `password`, `phone`, `phoneVerified`, `tokenKey`, `id`) are
+never taken from it. `data` comes from the browser, as JSON of at most 2 KB:
+check it as you would any user input.
+
 ## Existing accounts with the same email
 
 A user is found by the provider's permanent account id, never by email. When
@@ -132,13 +203,30 @@ they usually do and links the provider from their account.
 This keeps someone who controls a provider account claiming your email from
 signing in to your account.
 
-## Link and unlink providers
+Two cases never link automatically, and answer `account_exists` instead:
 
-A signed-in user can link a provider to their account. The sign-in session
-stays as it is:
+- an account that takes a [second sign-in step](/docs/guides/auth/mfa):
+  whoever holds its inbox could otherwise add a provider and count it as a
+  second step beside an email code;
+- every account of a collection with `implicitLinking: false`, for apps that
+  want users to link providers only from a settings page:
 
 ```ts
-nb.collection("users").linkOAuth2("github", { redirect: "/settings" });
+await superuser.collections.update("users", { implicitLinking: false });
+```
+
+New users can still sign up through a provider either way.
+
+## Link and unlink providers
+
+A signed-in user, with a cookie session, can link a provider to their
+account. The sign-in session stays as it is:
+
+```ts
+await nb.collection("users").linkOAuth2("github", {
+  password, // the current one
+  redirect: "/settings",
+});
 ```
 
 The account's email must be [verified](/docs/guides/auth/verification) first,
@@ -153,8 +241,60 @@ so its owner hears of a change they did not make:
 const users = nb.collection("users");
 const linked = await users.listLinkedAccounts(user.id);
 // [{ id: "...", provider: "github", created: "2026-10-19T12:00:00.000Z" }]
-await users.unlinkAccount(user.id, "github");
+await users.unlinkAccount(user.id, "github", { password });
 ```
+
+Linking and unlinking need the current password, and with an
+[authenticator app](/docs/guides/auth/mfa) a code from it as `mfaCode`, so
+someone who took over a session cannot add or remove a way in. A superuser
+unlinking another account's provider needs neither. The link starts with a
+`POST`, which answers the provider's URL; `linkOAuth2` opens it, and
+`oauth2LinkUrl` returns it.
+
+## Call the provider's API
+
+With `storeTokens`, each sign-in and link keeps the account's access and
+refresh tokens, encrypted with the [`secretKey`](/docs/guides/production)
+option (`NEXTBASE_SECRET_KEY`). The account, or server code, then gets an
+access token to call the provider's API with:
+
+```ts
+// In the app, for the signed-in account:
+const { accessToken, expiresAt, scopes } = await nb
+  .collection("users")
+  .getAccessToken(user.id, "google");
+
+// In server code, such as a scheduled job:
+const token = await nextbase.getAccessToken("users", userId, "google");
+```
+
+A token that expires within a minute is refreshed first, and
+`{ refresh: true }` refreshes it anyway, unless it was refreshed in the last
+10 seconds. Concurrent requests refresh it once: one asks the provider while
+the others wait for its answer, with no database connection held meanwhile.
+Turning `storeTokens` off deletes an account's stored tokens at its next
+sign-in with the provider.
+A provider gives a refresh token only when asked: Google, for example, with
+`params: { access_type: "offline", prompt: "consent" }`, others with the
+`offline_access` scope. Without one, an expired token answers `400`, and the
+user signs in with the provider again.
+
+Ask for more scopes when the app needs them, by linking the provider again
+with them; the user approves them at the provider, and the stored tokens and
+`scopes` are updated:
+
+```ts
+await nb.collection("users").linkOAuth2("google", {
+  password,
+  scopes: ["https://www.googleapis.com/auth/drive.file"],
+  redirect: "/settings",
+});
+```
+
+A browser sign-in takes `scopes` too. Only the account itself, or a
+superuser, gets its tokens, never a superuser
+[impersonating](/docs/guides/auth/impersonation) it. Unlinking the provider,
+or deleting the account, deletes them.
 
 ## Protections
 

@@ -44,8 +44,11 @@ The session, as when [signing in with a password](#sign-in-with-a-password).
 </TabItem>
 <TabItem value="202" label="202">
 
-No body: the account was created, but the `authRule` does not let it sign in
-yet, such as before its email is verified. The SDK returns `null`.
+The account was created, but cannot sign in yet. Without a body, the
+`authRule` does not let it, such as before its email is verified; the SDK
+returns `null`. With `{ "mfa": "verify" }`, it must take a
+[second step](#multi-factor-sign-in) and has none yet, such as a verified
+email; the SDK returns that object.
 
 </TabItem>
 <TabItem value="400" label="400">
@@ -73,9 +76,13 @@ GET /collections/{collection}/auth-methods
 {
   "password": { "enabled": true, "identityFields": ["email"] },
   "oauth2": { "enabled": true, "providers": [{ "name": "google", "displayName": "Google" }] },
-  "phone": { "enabled": false }
+  "phone": { "enabled": false },
+  "mfa": { "enabled": true, "duration": 300 }
 }
 ```
+
+`mfa` says whether some accounts may have to take a
+[second sign-in step](/docs/guides/auth/mfa), and how many seconds it may take.
 
 ## Sign in with a password
 
@@ -120,6 +127,7 @@ POST /collections/{collection}/auth-with-password
 | `identity` | string | Required. The email (matched regardless of case), or another identity field. |
 | `password` | string | Required. |
 | `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token. The request must then send an `Origin` header naming this site. |
+| `mfaId` | string | Optional. Makes the password the [second step](#multi-factor-sign-in) of this sign-in. |
 
 **Query parameters:** `expand` and `fields`, applied to `record`.
 
@@ -131,6 +139,7 @@ POST /collections/{collection}/auth-with-password
 ```json
 {
   "token": "yK2v0Xo8...43 characters",
+  "methods": ["password"],
   "record": {
     "collectionId": "c9d8e7f6a5b4c3d",
     "collectionName": "users",
@@ -167,6 +176,15 @@ In development over plain HTTP, the cookie is `nextbase_session`, without
 { "status": 403, "message": "This account does not meet the requirements to sign in.", "data": {} }
 ```
 The password matched, but the `authRule` did not.
+
+</TabItem>
+<TabItem value="401" label="401">
+
+```json
+{ "status": 401, "message": "This sign-in needs a second step.", "data": {}, "mfaId": "kQ9...43 characters", "methods": ["totp", "recoveryCode"] }
+```
+The password matched, and the account must take a
+[second step](#multi-factor-sign-in). No session started.
 
 </TabItem>
 <TabItem value="429" label="429">
@@ -217,7 +235,10 @@ GET /collections/{collection}/auth-with-oauth2/{provider}
 | ----- | ---- | ----------- |
 | `redirect` | string | Optional. A path on your app to return to, such as `/dashboard`. Defaults to `appUrl`. |
 | `errorRedirect` | string | Optional. A path to return to with `?error=` when the sign-in fails, such as `/sign-in`. Defaults to `redirect`. |
-| `link` | boolean | Optional. `true` links the provider to the signed-in record instead of signing in. Needs a session cookie, and must come from this site. |
+| `mfaId` | string | Optional. Makes this the [second step](#multi-factor-sign-in) of a sign-in: the provider account must already be linked to the account signing in. Nothing is linked or signed up. |
+| `params` | string | Optional. A JSON object of strings for the provider's page, such as `{"login_hint":"ann@example.com"}`, over the provider's own `params`. Those NextBase sets itself answer `400`. |
+| `data` | string | Optional. A JSON object, at most 2 KB, passed to the provider's `mapProfile` when the sign-in creates an account. |
+| `scopes` | string | Optional. Scopes to ask for besides the provider's, separated by spaces. |
 
 **Responses**
 
@@ -245,6 +266,33 @@ Also returned for the superusers collection.
 </TabItem>
 </Tabs>
 
+## Sign in with an ID token
+
+Signs in with an ID token a native app got from the provider's SDK. See
+[Native apps](/docs/guides/auth/oauth2#native-apps).
+
+```ts
+await nb.collection("users").signInWithIdToken("google", idToken, { nonce });
+```
+
+```http
+POST /collections/{collection}/auth-with-id-token/{provider}
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. The ID token. |
+| `nonce` | string | Optional. The nonce given to the SDK; the token must carry it, or its SHA-256 hex. |
+| `data` | object | Optional. Passed to the provider's `mapProfile` when the sign-in creates an account. |
+| `cookie` | boolean | Optional. Puts the session in a cookie instead of the response. |
+| `mfaId` | string | Optional. Makes this the second step of a sign-in. |
+
+Answers like [Sign in with a password](#sign-in-with-a-password). An
+invalid, expired, foreign or used token answers `400` with
+`data.token.code` `validation_invalid_token`; the browser sign-in's errors,
+such as `email_not_verified` or `sign_up_disabled`, answer `400` with that
+code in `data.token.code`.
+
 ## OAuth2 callback
 
 Where providers send the browser back: register
@@ -259,6 +307,14 @@ GET /callback/{provider}
 ```
 
 A provider that is not set up answers `404`, with no redirect.
+
+When the account must take a [second step](#multi-factor-sign-in), no session
+starts: the callback sets an `HttpOnly` cookie, `__Host-nextbase_mfa`
+(`nextbase_mfa` over plain HTTP), that lasts the collection's `mfa.duration`,
+and redirects to `redirect` with `mfa=required` added to its query; the page
+reads the methods with [`GET /collections/{collection}/mfa`](#the-methods-of-an-oauth2-sign-in).
+A second step that fails returns to `errorRedirect` with
+`?error=mfa_failed`.
 
 ## List linked accounts
 
@@ -318,13 +374,73 @@ Also returned for another user's record.
 </TabItem>
 </Tabs>
 
+## Link a provider
+
+Starts linking a provider to the signed-in record, which needs a session
+cookie, and answers the provider's URL to open in this browser. It needs the
+current password, so a stolen session cannot add a way in, and must come
+from this site.
+
+```ts
+await nb.collection("users").linkOAuth2("github", { password, redirect: "/settings" });
+```
+
+```http
+POST /collections/{collection}/link-oauth2/{provider}
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `password` | string | Required. The current password. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
+| `redirect` | string | Optional. A path on your app to return to. |
+| `errorRedirect` | string | Optional. A path to return to with `?error=`. |
+| `params` | object | Optional. Strings for the provider's page, as on sign-in. |
+| `scopes` | string[] | Optional. Scopes to ask for besides the provider's, such as more of its API. |
+
+```json
+{ "url": "https://github.com/login/oauth/authorize?..." }
+```
+
+It also sets the short-lived cookie that ties the link to this browser. The
+callback then links the provider and returns to `redirect`.
+
+## Get a provider's access token
+
+The access token of a record's linked account, at a provider with
+`storeTokens`, refreshed first when it expires within a minute. Only its own
+record, unless a superuser; never an impersonation session. See
+[Call the provider's API](/docs/guides/auth/oauth2#call-the-providers-api).
+
+```ts
+const { accessToken } = await nb
+  .collection("users")
+  .getAccessToken(user.id, "google");
+```
+
+```http
+GET /collections/{collection}/records/{id}/linked-accounts/{provider}/token
+```
+
+| Query | Description |
+| ----- | ----------- |
+| `refresh` | Optional. `true` refreshes the token anyway. |
+
+Answers `{ accessToken, expiresAt, scopes }`, with `expiresAt` null when
+the provider did not say. A provider that stores no tokens answers `400`;
+one not linked, or with no token stored yet, `404`; an expired token the
+provider will not refresh, `400`.
+
 ## Unlink a provider
+
+The record's owner sends the current password, and with an authenticator
+app `mfaCode`. A superuser unlinking another record's provider sends neither.
 
 <Tabs groupId="client">
 <TabItem value="sdk" label="SDK">
 
 ```ts
-await nb.collection("users").unlinkAccount("u7v8w9x0y1z2a3b", "github");
+await nb.collection("users").unlinkAccount("u7v8w9x0y1z2a3b", "github", { password });
 ```
 
 </TabItem>
@@ -332,7 +448,8 @@ await nb.collection("users").unlinkAccount("u7v8w9x0y1z2a3b", "github");
 
 ```sh
 curl -X DELETE https://app.example/api/nextbase/collections/users/records/u7v8w9x0y1z2a3b/linked-accounts/github \
-  -H 'authorization: Bearer <token>'
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"password":"a long password"}'
 ```
 
 </TabItem>
@@ -504,8 +621,11 @@ Also returned, with field errors, for a password the field does not accept.
 
 ## Request an email change
 
-Emails `newEmail` a link that moves the signed-in account to it. Whether the
-address is taken is only checked on confirm, so this never reveals it.
+Emails `newEmail` a link that moves the signed-in account to it. When the
+current email is verified, the current address gets a link to
+[approve](#approve-an-email-change) it first, and `newEmail` gets its link
+only then. Whether the address is taken is only checked on confirm, so this
+never reveals it.
 
 ```ts
 await nb.collection("users").requestEmailChange("ann@new.example");
@@ -548,6 +668,29 @@ message.
 </TabItem>
 </Tabs>
 
+## Approve an email change
+
+Opens the link the current, verified address got: `newEmail` then gets its
+link to confirm. The token works once, for the address it was made for, and
+expires with the collection's `emailChange` token duration. Answers `204`.
+
+```ts
+await nb.collection("users").approveEmailChange(token);
+```
+
+```http
+POST /collections/{collection}/approve-email-change
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+| `newEmail` | string | Optional. When set, it must be the address the link names. |
+
+An invalid, used or expired token answers `400` with `data.token.code`
+`validation_invalid_token`. A verified account's change cannot be confirmed
+without this approval.
+
 ## Confirm an email change
 
 Moves the account to the new email with the link's token and the current
@@ -567,6 +710,7 @@ POST /collections/{collection}/confirm-email-change
 | ----- | ---- | ----------- |
 | `token` | string | Required. From the link. |
 | `password` | string | Required. The account's current password. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
 
 **Responses**
 
@@ -594,6 +738,48 @@ taken by then.
 
 </TabItem>
 </Tabs>
+
+## Request an account deletion
+
+Emails the signed-in account a link that deletes it, to
+`/delete-account?token=...` in your app, for an owner who can confirm neither
+with a password nor a recent sign-in. See
+[Account deletion](/docs/guides/auth/account-deletion). Answers `204`.
+
+```ts
+await nb.collection("users").requestAccountDeletion();
+```
+
+```http
+POST /collections/{collection}/request-account-deletion
+```
+
+Needs a signed-in session of an account with a verified email; otherwise
+`401` or `400`. A `deleteRule` of `null`, or an
+[impersonation](/docs/guides/auth/impersonation) session, answers `403`.
+
+## Confirm an account deletion
+
+Deletes the account the link was sent for, as its owner: the collection's
+`deleteRule` still decides. Answers `204`.
+
+```ts
+await nb.collection("users").confirmAccountDeletion(token);
+```
+
+```http
+POST /collections/{collection}/confirm-account-deletion
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
+
+An invalid, used or expired token, or one sent before the account's email
+changed, answers `400` with `data.token.code` `validation_invalid_token`. A
+`deleteRule` of `null` answers `403`, and one the owner does not match `404`;
+the link then still works once the rule lets them.
 
 ## Request a phone code
 
@@ -754,7 +940,7 @@ No body.
 Texts a code that verifies `phone` as the signed-in record's phone, to add or change it. Whether another account has the number is checked on confirming, so this request reveals nothing.
 
 ```ts
-await nb.collection("users").requestPhoneVerification("+255712345678");
+await nb.collection("users").requestPhoneVerification("+255712345678", { password });
 ```
 
 ```http
@@ -766,6 +952,8 @@ POST /collections/{collection}/request-phone-verification
 | Param | Type | Description |
 | ----- | ---- | ----------- |
 | `phone` | string | Required. In international format, such as `+255712345678`. |
+| `password` | string | Required for a new or changed phone. The current password. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
 
 **Responses**
 
@@ -792,7 +980,7 @@ message, and the session stays valid.
 Makes `phone` the signed-in record's verified phone, given the code texted to it. A changed number signs out the record's other sessions and tells the previous number and the email.
 
 ```ts
-await nb.collection("users").confirmPhoneVerification("+255712345678", "123456");
+await nb.collection("users").confirmPhoneVerification("+255712345678", "123456", { password });
 ```
 
 ```http
@@ -805,6 +993,8 @@ POST /collections/{collection}/confirm-phone-verification
 | ----- | ---- | ----------- |
 | `phone` | string | Required. In international format, such as `+255712345678`. |
 | `code` | string | Required. The six-digit code. |
+| `password` | string | Required for a new or changed phone. The current password. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
 
 **Responses**
 
@@ -829,6 +1019,232 @@ No body. A number another account has answers 400 with `validation_not_unique` o
 
 </TabItem>
 </Tabs>
+
+## Multi-factor sign-in
+
+A first step that must be followed by a second, such as a password for an
+account with an authenticator app, answers `401` with an `mfaId` and the
+`methods` the account can use next. No session starts. See the
+[guide](/docs/guides/auth/mfa).
+
+```json
+{ "status": 401, "message": "This sign-in needs a second step.", "data": {}, "mfaId": "kQ9...43 characters", "methods": ["totp", "recoveryCode"] }
+```
+
+The second step is one of the routes below, or a first-step route given the
+`mfaId`: `auth-with-password` and `auth-with-phone-code` in their body,
+`request-phone-code` in its body, and `auth-with-oauth2/{provider}` as a query
+parameter. It must be another method than the first, and once the account
+has an authenticator app, `totp` or `recoveryCode`. It answers like a sign-in,
+with `methods` naming both steps:
+
+```json
+{ "token": "yK2v0Xo8...43 characters", "methods": ["password", "totp"], "record": { "id": "u7v8w9x0y1z2a3b" } }
+```
+
+Without an `mfaId` in the body, the second-step routes use the
+`__Host-nextbase_mfa` cookie an [OAuth2 first step](#oauth2-callback) set, and
+answer with a session cookie; the request must then come from this site.
+Every one takes `cookie: true` for a session cookie, and `expand` and `fields`
+for `record`.
+
+| Error | When |
+| ----- | ---- |
+| `400` with `data.mfaId.code` `validation_invalid_mfa` | The `mfaId` is unknown, used, expired, of another account or collection, or ended by a new password. |
+| `400` with `data.mfaId.code` `validation_mfa_method` | This method cannot be the second step. |
+| `400` with `data.code.code` `validation_invalid_code` | The code is wrong. The fifth wrong code ends the `mfaId`. |
+| `429` | Ten wrong codes for the account within 15 minutes. |
+
+### Sign in with an authenticator app
+
+```ts
+await nb.collection("users").signInWithTotp("123456", { mfaId });
+```
+
+```http
+POST /collections/{collection}/auth-with-totp
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `code` | string | Required. Six digits. |
+| `mfaId` | string | Optional; the cookie is used without it. |
+| `cookie` | boolean | Optional. |
+
+### Sign in with a recovery code
+
+```ts
+await nb.collection("users").signInWithRecoveryCode("7Q2M-K8WD-3HJX-TP9C", { mfaId });
+```
+
+```http
+POST /collections/{collection}/auth-with-recovery-code
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `code` | string | Required. Case, spaces and dashes do not matter. Each works once, and the owner is emailed. |
+| `mfaId` | string | Optional; the cookie is used without it. |
+| `cookie` | boolean | Optional. |
+
+### Request an email code
+
+Emails a six-digit code to the account's verified email. Answers `204`.
+
+```ts
+await nb.collection("users").requestEmailCode({ mfaId });
+```
+
+```http
+POST /collections/{collection}/request-email-code
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `mfaId` | string | Optional; the cookie is used without it. |
+
+### Sign in with an email code
+
+```ts
+await nb.collection("users").signInWithEmailCode("123456", { mfaId });
+```
+
+```http
+POST /collections/{collection}/auth-with-email-code
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `code` | string | Required. The latest code emailed. |
+| `mfaId` | string | Optional; the cookie is used without it. |
+| `cookie` | boolean | Optional. |
+
+### A phone code as the second step
+
+With phone sign-in on and a verified phone, `request-phone-code` and
+`auth-with-phone-code` take an `mfaId` instead of a `phone`, and text the
+account's own phone.
+
+```ts
+await nb.collection("users").requestMfaPhoneCode({ mfaId });
+await nb.collection("users").signInWithMfaPhoneCode("123456", { mfaId });
+```
+
+### The methods of an OAuth2 sign-in
+
+After an OAuth2 first step, the page reads the methods its pending sign-in
+can take, with the `HttpOnly` cookie the callback set:
+
+```ts
+const { methods } = await nb.collection("users").getPendingMfa();
+```
+
+```http
+GET /collections/{collection}/mfa
+```
+
+```json
+{ "methods": ["totp", "recoveryCode"] }
+```
+
+Without the cookie, or once the sign-in ended, it answers `400` with
+`data.mfaId.code` `validation_invalid_mfa`.
+
+## Manage the authenticator app
+
+Only the signed-in record itself, and never an impersonation session
+(`403`). Another record is a `404`. A superuser can only
+[clear](#clear-an-accounts-app) another record's app.
+
+### Get the status
+
+```http
+GET /collections/{collection}/records/{id}/mfa
+```
+
+```json
+{ "totp": true, "recoveryCodesLeft": 10 }
+```
+
+### Start setting up an app
+
+```http
+POST /collections/{collection}/records/{id}/totp
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `password` | string | Required. The current password. |
+
+```json
+{ "secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "uri": "otpauth://totp/app.example:ann%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=app.example&algorithm=SHA1&digits=6&period=30" }
+```
+
+`400` when `mfa.enabled` is off, without the `secretKey` option
+(`data.secretKey.code` `secret_key_not_configured`), without a verified email
+or phone (`data.totp.code` `validation_not_verified`), or when an app is set
+up already. The setup must be confirmed within 15 minutes.
+
+### Confirm the app
+
+```http
+POST /collections/{collection}/records/{id}/totp/confirm
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `code` | string | Required. A code from the app. |
+
+```json
+{ "recoveryCodes": ["7Q2M-K8WD-3HJX-TP9C", "...10 codes"] }
+```
+
+Every other session of the account ends; this one is kept, and its
+`methods` gain `totp`. The owner is emailed.
+
+### Remove the app
+
+```http
+DELETE /collections/{collection}/records/{id}/totp
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `mfaCode` | string | Required. A code from the app, or a recovery code. |
+
+Answers `204`. Sessions are kept, the recovery codes are removed, and the
+owner is emailed.
+
+### Regenerate recovery codes
+
+```http
+POST /collections/{collection}/records/{id}/recovery-codes
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `mfaCode` | string | Required. A code from the app, or a recovery code. |
+
+```json
+{ "recoveryCodes": ["7Q2M-K8WD-3HJX-TP9C", "...10 codes"] }
+```
+
+Every old code stops working.
+
+### Clear an account's app
+
+Superusers only, and never through an impersonation session: removes another
+record's app, recovery codes and pending sign-ins, for an owner who lost
+them, and emails the owner. A superuser's own app is removed with a code
+instead (`400`). Answers `204`, or `404` for no such record.
+
+```ts
+await nb.collection("users").clearMfa(userId);
+```
+
+```http
+DELETE /collections/{collection}/records/{id}/mfa
+```
 
 ## Refresh
 
@@ -1043,9 +1459,12 @@ GET /session
   "expires": "2026-10-26T09:30:00.000Z",
   "userAgent": "Mozilla/5.0 ...",
   "current": true,
+  "methods": ["password", "totp"],
   "record": { "collectionName": "users", "id": "u7v8w9x0y1z2a3b", "email": "ann@example.com" }
 }
 ```
+`methods` are how the session signed in; see
+[multi-factor sign-in](/docs/guides/auth/mfa).
 `null` when signed out. An [impersonation session](/docs/guides/auth/impersonation)
 also has `impersonatedBy`, the superuser's id.
 

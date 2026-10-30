@@ -23,8 +23,20 @@ import {
 // The field caps passwords at 1024 chars; rejecting longer ones bounds hashing cost.
 const MAX_PASSWORD_INPUT = 1024;
 
+/** A sign-in refused until the account's email is verified. */
+export class EmailNotVerified extends ApiError {
+  readonly email: string;
+
+  constructor(email: string) {
+    super(403, 'Verify your email to sign in.');
+    this.email = email;
+  }
+}
+
 /**
  * authRule `null` disables logins, `""` allows all, anything else is a filter.
+ * With `emailVerification.required`, an unverified email is refused too; an
+ * account without an email, such as one that signs in by phone, is not.
  * Call only after the password matched, so the 403 leaks nothing.
  */
 export async function checkAuthRule(
@@ -33,13 +45,41 @@ export async function checkAuthRule(
   collection: AuthCollection,
   id: string,
 ): Promise<void> {
-  if (collection.authRule === '') return;
   const denied = new ApiError(
     403,
     'This account does not meet the requirements to sign in.',
   );
   if (collection.authRule === null) throw denied;
-  const rule = compileFilter(collection.authRule, collection, 't0', {
+  if (
+    collection.authRule !== '' &&
+    !(await recordMatches(db, schema, collection, collection.authRule, id))
+  ) {
+    throw denied;
+  }
+  if (collection.emailVerification.required) {
+    const [record] = await db
+      .select('email', 'emailVerified')
+      .from(table(collection.name))
+      .where(hash({ id }))
+      .all();
+    if (record && record.email !== '' && record.emailVerified !== true) {
+      throw new EmailNotVerified(record.email as string);
+    }
+  }
+}
+
+/**
+ * Whether the record matches a sign-in rule, such as the authRule. The rule
+ * sees no caller: it is about the record signing in.
+ */
+export async function recordMatches(
+  db: DB,
+  schema: Schema,
+  collection: AuthCollection,
+  source: string,
+  id: string,
+): Promise<boolean> {
+  const rule = compileFilter(source, collection, 't0', {
     schema,
     principal: { superuser: false },
     request: { method: 'POST', query: {}, headers: {}, body: {} },
@@ -50,7 +90,7 @@ export async function checkAuthRule(
     .from(`${table(collection.name)} t0`)
     .where(and(hash({ 't0.id': id }), rule))
     .column();
-  if (rows.length === 0) throw denied;
+  return rows.length > 0;
 }
 
 /** Every failure is the same 400, so responses do not reveal which identities exist. */

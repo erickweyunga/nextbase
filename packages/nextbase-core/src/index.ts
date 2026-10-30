@@ -1,5 +1,9 @@
 import adminHtml from '@nextbasejs/admin/index.html?raw';
-import type { AuthCollection, RecordModel } from '@nextbasejs/client';
+import type {
+  AuthCollection,
+  RecordModel,
+  TotpSetup,
+} from '@nextbasejs/client';
 import {
   AuthStore,
   ClientError,
@@ -8,17 +12,25 @@ import {
   type HealthResponse,
   NextBaseClient,
 } from '@nextbasejs/client';
-import { DB, type Pool, type Tx } from '@nextbasejs/dbx';
+import { DB, hash, type Pool, type Row, type Tx } from '@nextbasejs/dbx';
 import { waitUntil as vercelWaitUntil } from '@vercel/functions';
 import { beginRoute, ROUTES, type Route } from './api/routes.ts';
 import { checkAppUrl } from './app-url.ts';
+import { findByEmail } from './auth/identity.ts';
 import { Mailer, type MailOptions } from './auth/mail.ts';
-import { OAuth2, type OAuth2Options } from './auth/oauth2.ts';
+import { checkPassword, Mfa, resetMfa } from './auth/mfa.ts';
+import {
+  type AccessTokenModel,
+  OAuth2,
+  type OAuth2Options,
+} from './auth/oauth2.ts';
 import { type Principal, resolvePrincipal } from './auth/principal.ts';
+import { SecretKeys, secretKeysFromEnv } from './auth/secret-keys.ts';
 import {
   bearerToken,
   checkSameOrigin,
   IMPERSONATOR_COOKIES,
+  MFA_COOKIES,
   type OriginPolicy,
   SESSION_COOKIES,
   sessionCookie,
@@ -36,6 +48,7 @@ import {
 } from './client-ip.ts';
 import { migrate } from './db/migrations.ts';
 import { sharedPool } from './db/pool.ts';
+import { table } from './db/system.ts';
 import { TYPES } from './db/types.ts';
 import { Effects } from './effects.ts';
 import { ApiError } from './errors.ts';
@@ -98,6 +111,12 @@ export type {
   FieldError,
   HealthResponse,
   LinkedAccountModel,
+  MfaConfig,
+  MfaRequired,
+  MfaStatus,
+  RecoveryCodes,
+  SignInMethod,
+  TotpSetup,
 } from '@nextbasejs/client';
 export type { Pool } from '@nextbasejs/dbx';
 export type {
@@ -107,7 +126,11 @@ export type {
   MailOptions,
   MailTemplate,
 } from './auth/mail.ts';
-export type { OAuth2Options, OAuth2ProviderOptions } from './auth/oauth2.ts';
+export type {
+  AccessTokenModel,
+  OAuth2Options,
+  OAuth2ProviderOptions,
+} from './auth/oauth2.ts';
 export type {
   SmsContext,
   SmsKind,
@@ -178,6 +201,14 @@ export interface NextBaseOptions<C extends Collections = Collections> {
   storage?: StorageOptions;
   /** Sends phone sign-in codes. Without it, production answers 400; dev logs them. */
   sms?: SmsOptions;
+  /**
+   * Encrypts secrets NextBase must read back, such as authenticator apps'
+   * secrets: the base64 of 32 random bytes (`openssl rand -base64 32`). Pass
+   * several to rotate: the first encrypts, every one decrypts. Defaults to
+   * `NEXTBASE_SECRET_KEY`, which may list several separated by commas.
+   * Without one, authenticator apps cannot be set up.
+   */
+  secretKey?: string | string[];
   /**
    * Reject new passwords found in known breaches, via Have I Been Pwned (only a
    * 5-character SHA-1 prefix is sent; accepts if unreachable). Defaults to false.
@@ -272,6 +303,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #mailer: Mailer;
   readonly #oauth2: OAuth2;
   readonly #sms: Sms;
+  readonly #mfa: Mfa;
   readonly #rejectBreachedPasswords: boolean;
   readonly #storage: Storage;
   readonly #thumbs: Thumbs;
@@ -338,7 +370,22 @@ export class NextBase<C extends Collections = Collections> {
       (options.mail?.appUrl === undefined
         ? undefined
         : checkAppUrl(options.mail.appUrl, 'mail.appUrl'));
-    this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
+    const secretKeys = new SecretKeys(
+      options.secretKey ?? secretKeysFromEnv(process.env.NEXTBASE_SECRET_KEY),
+    );
+    this.#oauth2 = new OAuth2(
+      options.oauth2,
+      this.#appUrl,
+      this.#basePath,
+      secretKeys,
+    );
+    this.#mfa = new Mfa({
+      secretKeys,
+      mailer: this.#mailer,
+      sms: this.#sms,
+      issuer: this.#appUrl?.hostname ?? 'NextBase',
+      oauth2: this.#oauth2.list().length > 0,
+    });
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -457,6 +504,115 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
+   * Removes a superuser's authenticator app and recovery codes, for one who
+   * lost them; they sign in with their password again. Returns false when
+   * no superuser has that email. For scripts; never expose it to untrusted input.
+   */
+  async resetSuperuserMfa(email: string): Promise<boolean> {
+    const found = await this.#superuser(email);
+    if (!found) return false;
+    await resetMfa(found.db, '_superusers', found.record.id as string);
+    return true;
+  }
+
+  /**
+   * Starts setting up a superuser's authenticator app without their
+   * password, for one who must take a second step and has no app yet.
+   * Undefined when no superuser has that email. Confirm it with
+   * `confirmSuperuserTotp`. For scripts; never expose it to untrusted input.
+   */
+  async startSuperuserTotp(email: string): Promise<TotpSetup | undefined> {
+    const found = await this.#superuser(email);
+    if (!found) return undefined;
+    return this.#mfa.startTotpTrusted(found.db, found.collection, found.record);
+  }
+
+  /**
+   * Turns on the app `startSuperuserTotp` set up with a code from it, and
+   * returns the recovery codes. Every session of the superuser ends.
+   */
+  async confirmSuperuserTotp(email: string, code: string): Promise<string[]> {
+    const found = await this.#superuser(email);
+    if (!found) throw new ApiError(404, 'No superuser has this email.');
+    return this.#mfa.confirmTotp(
+      found.db,
+      found.collection,
+      found.record,
+      undefined,
+      code,
+    );
+  }
+
+  /**
+   * The access token of a record's linked account at a provider with
+   * `storeTokens`, refreshed when due or when `refresh`, for server code
+   * that calls the provider's API, such as a scheduled job.
+   */
+  async getAccessToken(
+    collectionName: string,
+    recordId: string,
+    provider: string,
+    options: { refresh?: boolean } = {},
+  ): Promise<AccessTokenModel> {
+    await this.migrate();
+    const db = this.#connection();
+    const collection = (await this.#schema.get(db)).get(collectionName);
+    if (collection.type !== 'auth') {
+      throw new TypeError(`${collectionName} is not an auth collection.`);
+    }
+    return this.#oauth2.accessToken(
+      db,
+      collection,
+      recordId,
+      provider,
+      options,
+    );
+  }
+
+  /**
+   * Whether `password` is the record's current password, for server code
+   * that confirms a sensitive action of its own, as `delete` does. Counted
+   * against the account like a sign-in: too many wrong ones throw a 429.
+   * False for an auth collection's record that does not exist.
+   */
+  async verifyPassword(
+    collectionName: string,
+    recordId: string,
+    password: string,
+  ): Promise<boolean> {
+    await this.migrate();
+    const db = this.#connection();
+    const collection = (await this.#schema.get(db)).get(collectionName);
+    if (collection.type !== 'auth') {
+      throw new TypeError(`${collectionName} is not an auth collection.`);
+    }
+    const [record] = await db
+      .select()
+      .from(table(collection.name))
+      .where(hash({ id: recordId }))
+      .all();
+    if (!record) return false;
+    try {
+      await checkPassword(db, collection, record, password);
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 400) return false;
+      throw error;
+    }
+  }
+
+  async #superuser(
+    email: string,
+  ): Promise<{ db: DB; collection: AuthCollection; record: Row } | undefined> {
+    await this.migrate();
+    const db = this.#connection();
+    const schema = await this.#schema.get(db);
+    const collection = schema.get('_superusers') as AuthCollection;
+    const record = await findByEmail(db, collection, email);
+    return record && { db, collection, record };
+  }
+
+  /**
    * The verified session of a request's cookie or Bearer token, or null; for
    * `proxy.ts`. Never extends the session or sets cookies. It hits the database,
    * so match only routes that need it; `hasSessionCookie()` does not.
@@ -513,6 +669,8 @@ export class NextBase<C extends Collections = Collections> {
         const sent = [
           secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
           secure ? IMPERSONATOR_COOKIES.secure : IMPERSONATOR_COOKIES.plain,
+          // A sign-in's second step, after an OAuth2 first step.
+          secure ? MFA_COOKIES.secure : MFA_COOKIES.plain,
         ].flatMap((name) => {
           const value = cookies?.get(name)?.value;
           return value ? [`${name}=${value}`] : [];
@@ -753,6 +911,7 @@ export class NextBase<C extends Collections = Collections> {
       mailer: this.#mailer,
       sms: this.#sms,
       oauth2: this.#oauth2,
+      mfa: this.#mfa,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
       thumbs: this.#thumbs,
@@ -1122,6 +1281,7 @@ function applySessionCookie(cookies: CookieStore, response: Response): void {
 const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set([
   ...Object.values(SESSION_COOKIES),
   ...Object.values(IMPERSONATOR_COOKIES),
+  ...Object.values(MFA_COOKIES),
 ]);
 
 /** Writes a session cookie's Set-Cookie header, or the kept impersonator one, to the store; other cookies are left out. */

@@ -380,6 +380,17 @@ class Compiler {
       if (modifier !== undefined) throw unknownModifier();
       return text(this.#context.principal.impersonatedBy ?? '');
     }
+    // Whether the caller's session took two different sign-in steps.
+    if (section === 'mfa' && name === undefined) {
+      if (modifier !== undefined) throw unknownModifier();
+      const { principal } = this.#context;
+      const methods = new Set(principal.session?.methods ?? []);
+      return {
+        kind: 'constant',
+        value: principal.record !== undefined && methods.size >= 2,
+        type: 'bool',
+      };
+    }
     if (name === undefined || extra.length > 0) {
       throw new FilterError(
         `"${operand.path.join('.')}" is not a supported @request value.`,
