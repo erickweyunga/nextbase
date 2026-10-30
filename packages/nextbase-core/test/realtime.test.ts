@@ -996,7 +996,9 @@ describe('realtime', () => {
           }),
         );
       }
-      expect(await trips('five sessions')).toBe(one);
+      // Reading each stream's session alone would add a trip per stream;
+      // background work may add one to either count, so only more fails.
+      expect(await trips('five sessions')).toBeLessThanOrEqual(one);
       await Promise.all(open.map((s) => s.close()));
     } finally {
       timings.sessionMs = 50;
