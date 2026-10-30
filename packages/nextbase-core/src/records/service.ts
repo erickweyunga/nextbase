@@ -14,6 +14,10 @@ import {
 import { checkBreached } from '../auth/breached.ts';
 import { hasAuthenticator, type Mfa } from '../auth/mfa.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
+import {
+  type PasswordOrigin,
+  setPasswordOrigin,
+} from '../auth/password-origins.ts';
 import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
 import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
@@ -76,6 +80,8 @@ export interface RecordsContext {
   hookChain?: readonly string[];
   /** Checks the code a password change needs once an authenticator app is set up. */
   mfa?: Mfa;
+  /** How a system write sets the password; `chosen` otherwise. */
+  passwordOrigin?: PasswordOrigin;
 }
 
 /**
@@ -765,12 +771,7 @@ export async function planUpdateRecord(
   // once the old password matched there.
   const steppedUp =
     old?.matched !== undefined &&
-    (await checkStepUp(
-      ctx,
-      collection,
-      await storedRow(ctx.pool, collection, id),
-      input.mfaCode,
-    ));
+    (await checkStepUp(ctx, collection, old.row, input.mfaCode));
   await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
   await storeFiles(ctx, collection, id, newFiles);
@@ -862,6 +863,21 @@ export async function planUpdateRecord(
           collection: collection.name,
           to: existing.email as string,
         });
+      }
+      // How it was set, for MFA: a reset by email or text does not pair
+      // with a code sent to the same place for a while.
+      if (
+        password &&
+        prepared.values[password.name] !== undefined &&
+        collection.type === 'auth' &&
+        collection.mfa.enabled
+      ) {
+        await setPasswordOrigin(
+          tx,
+          collection.id,
+          id,
+          ctx.passwordOrigin ?? 'chosen',
+        );
       }
       // A new tokenKey ends the record's other sessions; the caller's stays.
       const { tokenKey } = prepared.values;
@@ -1139,7 +1155,7 @@ async function checkOldPasswordFirst(
   collection: Collection,
   id: string,
   input: Record<string, unknown>,
-): Promise<{ matched: string | undefined } | undefined> {
+): Promise<{ matched: string | undefined; row?: Row } | undefined> {
   const { oldPassword } = input;
   const field = passwordField(collection);
   if (
@@ -1167,11 +1183,12 @@ async function checkOldPasswordFirst(
   ) {
     return undefined;
   }
-  const [stored] = await ctx.pool
-    .select('password')
+  const [row] = await ctx.pool
+    .select()
     .from(table(collection.name))
     .where(hash({ id }))
-    .column<string>();
+    .all();
+  const stored = row?.[field.name] as string | undefined;
   if (stored === undefined) return { matched: undefined };
   const matches = await oldPasswordMatches(
     ctx,
@@ -1180,7 +1197,7 @@ async function checkOldPasswordFirst(
     stored,
     oldPassword,
   );
-  return { matched: matches ? stored : undefined };
+  return { matched: matches ? stored : undefined, row };
 }
 
 /**
@@ -1195,8 +1212,10 @@ async function checkStepUp(
   code: unknown,
 ): Promise<boolean> {
   if (collection.type !== 'auth' || !record) return false;
+  // Apps count only while the collection has MFA on.
+  if (!collection.mfa.enabled) return true;
   if (ctx.mfa) {
-    await ctx.mfa.stepUp(ctx.pool, collection, record, code, 'mfaCode');
+    await ctx.mfa.stepUp(ctx.pool, collection, record, code);
     return true;
   }
   if (await hasAuthenticator(ctx.pool, collection.id, record.id as string)) {
@@ -1208,19 +1227,6 @@ async function checkStepUp(
     });
   }
   return true;
-}
-
-async function storedRow(
-  q: Builder,
-  collection: Collection,
-  id: string,
-): Promise<Row | undefined> {
-  const [row] = await q
-    .select()
-    .from(table(collection.name))
-    .where(hash({ id }))
-    .all();
-  return row;
 }
 
 function wrongOldPassword(): ApiError {
@@ -1829,6 +1835,7 @@ async function deleteRows(
       '_mfas',
       '_totp',
       '_recovery_codes',
+      '_password_origins',
     ]) {
       await tx
         .newQuery(

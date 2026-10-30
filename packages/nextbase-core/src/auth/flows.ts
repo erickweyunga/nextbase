@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { AuthCollection, TokenType } from '@nextbasejs/client';
 import { type DB, hash, type Row } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
 import type { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
+import { newId } from '../random.ts';
 import type { Hooks } from '../records/hooks.ts';
 import { planUpdateRecord, systemContext } from '../records/service.ts';
 import { EMAIL_PATTERN } from '../records/values.ts';
@@ -13,6 +15,7 @@ import { unlinkUnproven } from './linked-accounts.ts';
 import type { Mailer } from './mail.ts';
 import type { Mfa } from './mfa.ts';
 import { verifyPassword } from './password.ts';
+import type { PasswordOrigin } from './password-origins.ts';
 import { type Principal, recordIn } from './principal.ts';
 import {
   accountKey,
@@ -38,6 +41,9 @@ export interface FlowContext {
   hooks: Hooks;
   mfa: Mfa;
 }
+
+/** The claim type of the link the current inbox approves an email change with. */
+const APPROVAL = 'emailChangeApproval';
 
 const invalidToken = (): ApiError =>
   new ApiError(400, 'The link is invalid or has expired.', {
@@ -114,11 +120,18 @@ export async function confirmPasswordReset(
     'passwordReset',
   );
   if (claims.email !== record.email) throw invalidToken();
-  await privilegedUpdate(ctx, collection, record, {
-    password: input.password,
-    passwordConfirm: input.passwordConfirm,
-    emailVerified: true,
-  });
+  await privilegedUpdate(
+    ctx,
+    collection,
+    record,
+    {
+      password: input.password,
+      passwordConfirm: input.passwordConfirm,
+      emailVerified: true,
+    },
+    'emailReset',
+  );
+  await ctx.mfa.resetNotice(ctx.db, ctx.schema, collection, record, 'email');
   await clearAttempts(ctx.db, [
     accountKey(collection.id, record.id as string),
     ...collection.identityFields.flatMap((name) =>
@@ -129,14 +142,20 @@ export async function confirmPasswordReset(
   ]);
 }
 
+/**
+ * When the current email is verified, its inbox must approve the change
+ * first: a link goes there, and only once it is opened does the new address
+ * get its own. A stolen session alone cannot move the account to another
+ * inbox. Without a verified email, the new address gets its link at once.
+ */
 export async function requestEmailChange(
   ctx: FlowContext,
   collection: AuthCollection,
   principal: Principal,
-  newEmail: unknown,
+  input: Record<string, unknown>,
 ): Promise<void> {
   const record = recordIn(principal, collection, 'change its email');
-  const address = checkEmail(newEmail, 'newEmail');
+  const address = checkEmail(input.newEmail, 'newEmail');
   if (address.toLowerCase() === String(record.email).toLowerCase()) {
     throw new ApiError(400, 'Failed to request the email change.', {
       newEmail: {
@@ -146,14 +165,88 @@ export async function requestEmailChange(
     });
   }
   ctx.mailer.check();
+  if (record.emailVerified === true) {
+    const current = record.email as string;
+    await countAttempt(ctx.db, [mailKey(collection.id, current)]);
+    ctx.mailer.send('emailChangeApproval', collection.name, current, {
+      token: await token(
+        collection,
+        record,
+        'emailChange',
+        { email: record.email, newEmail: address, jti: newId() },
+        APPROVAL,
+      ),
+    });
+    return;
+  }
+  await sendEmailChange(ctx, collection, record, address, false);
+}
+
+/**
+ * Opens the link the current inbox got: the new address then gets its
+ * own. Each link works once, and only for the address it names.
+ */
+export async function approveEmailChange(
+  ctx: FlowContext,
+  collection: AuthCollection,
+  input: Record<string, unknown>,
+): Promise<void> {
+  const { record, claims } = await verified(
+    ctx.db,
+    collection,
+    input.token,
+    'emailChange',
+    APPROVAL,
+  );
+  if (
+    claims.email !== record.email ||
+    typeof claims.newEmail !== 'string' ||
+    typeof claims.jti !== 'string' ||
+    (input.newEmail !== undefined && input.newEmail !== claims.newEmail)
+  ) {
+    throw invalidToken();
+  }
+  if (!(await spendToken(ctx.db, claims.jti, claims.exp))) throw invalidToken();
+  ctx.mailer.check();
+  await sendEmailChange(ctx, collection, record, claims.newEmail, true);
+}
+
+async function sendEmailChange(
+  ctx: FlowContext,
+  collection: AuthCollection,
+  record: Row,
+  address: string,
+  approved: boolean,
+): Promise<void> {
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   // Uniqueness is checked on confirm, so this request does not reveal it.
   ctx.mailer.send('emailChange', collection.name, address, {
     token: await token(collection, record, 'emailChange', {
       email: record.email,
       newEmail: address,
+      ...(approved && { approved: true }),
     }),
   });
+}
+
+/** Marks a single-use token used; false when it was already. */
+async function spendToken(db: DB, jti: string, exp: unknown): Promise<boolean> {
+  const spent = await db
+    .newQuery(
+      `WITH expired AS (
+         DELETE FROM {{${table('_used_tokens')}}} WHERE expires <= now()
+       )
+       INSERT INTO {{${table('_used_tokens')}}} (id_hash, expires)
+       VALUES ({:idHash}, to_timestamp({:exp}))
+       ON CONFLICT (id_hash) DO NOTHING
+       RETURNING 1`,
+    )
+    .bind({
+      idHash: createHash('sha256').update(jti).digest('hex'),
+      exp: typeof exp === 'number' ? exp : 0,
+    })
+    .column();
+  return spent.length > 0;
 }
 
 /**
@@ -171,7 +264,12 @@ export async function confirmEmailChange(
     input.token,
     'emailChange',
   );
-  if (claims.email !== record.email || typeof claims.newEmail !== 'string') {
+  if (
+    claims.email !== record.email ||
+    typeof claims.newEmail !== 'string' ||
+    // A verified inbox must have approved the change.
+    (record.emailVerified === true && claims.approved !== true)
+  ) {
     throw invalidToken();
   }
   const keys = [accountKey(collection.id, record.id as string)];
@@ -188,7 +286,7 @@ export async function confirmEmailChange(
     });
   }
   await clearAttempts(ctx.db, keys);
-  await ctx.mfa.stepUp(ctx.db, collection, record, input.mfaCode, 'mfaCode');
+  await ctx.mfa.stepUp(ctx.db, collection, record, input.mfaCode);
   await privilegedUpdate(ctx, collection, record, {
     email: claims.newEmail,
     emailVerified: true,
@@ -219,11 +317,17 @@ function token(
   record: Row,
   type: TokenType,
   claims: Record<string, unknown>,
+  claimType: string = type,
 ): Promise<string> {
   const { secret, duration } = collection.tokens[type];
   return signToken(
     `${record.tokenKey as string}${secret}`,
-    { type, id: record.id, collectionId: collection.id, ...claims },
+    {
+      ...claims,
+      type: claimType,
+      id: record.id,
+      collectionId: collection.id,
+    },
     duration,
   );
 }
@@ -233,6 +337,7 @@ async function verified(
   collection: AuthCollection,
   value: unknown,
   type: TokenType,
+  claimType: string = type,
 ): Promise<{ record: Row; claims: Record<string, unknown> }> {
   const tokenText = typeof value === 'string' ? value : '';
   const peeked = peekToken(tokenText);
@@ -246,7 +351,7 @@ async function verified(
   const claims = await verifyToken(
     tokenText,
     `${record.tokenKey as string}${collection.tokens[type].secret}`,
-    type,
+    claimType,
   );
   if (!claims) throw invalidToken();
   return { record, claims };
@@ -263,10 +368,14 @@ async function privilegedUpdate(
   collection: AuthCollection,
   record: Row,
   input: Record<string, unknown>,
+  passwordOrigin?: PasswordOrigin,
 ): Promise<void> {
   const id = record.id as string;
   const apply = await planUpdateRecord(
-    systemContext(ctx, input),
+    {
+      ...systemContext(ctx, input),
+      ...(passwordOrigin !== undefined && { passwordOrigin }),
+    },
     collection,
     id,
     input,

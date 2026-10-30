@@ -32,7 +32,7 @@ is never extended and cannot be refreshed: it ends when it was set to. The
 collection's `authRule` is not checked, so you can also look at an account
 that may not sign in, such as one with an unverified email. Nor is a
 [second sign-in step](/docs/guides/auth/mfa) asked for: the session's
-`methods` are `["impersonation"]`, so `@request.auth.mfa` is `false` in it.
+`methods` are `["impersonation"]`, so `@request.mfa` is `false` in it.
 Superusers cannot be impersonated.
 
 Server code with `client({ superuser: true })` cannot impersonate: there is

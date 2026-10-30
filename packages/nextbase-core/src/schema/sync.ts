@@ -147,6 +147,7 @@ export async function deleteCollection(
         '_mfas',
         '_totp',
         '_recovery_codes',
+        '_password_origins',
       ]) {
         await tx
           .newQuery(

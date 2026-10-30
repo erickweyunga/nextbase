@@ -448,14 +448,6 @@ function parseFields(
   const names = new Set<string>();
   for (const { field, path } of all) {
     const lower = field.name.toLowerCase();
-    // `@request.auth.mfa` says whether the session took a second step.
-    if (type === 'auth' && lower === 'mfa' && path) {
-      r.issues.add(
-        [...path, 'name'],
-        'validation_reserved_name',
-        '"mfa" is reserved in auth collections.',
-      );
-    }
     if (names.has(lower) && path) {
       r.issues.add(
         [...path, 'name'],

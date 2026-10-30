@@ -290,6 +290,42 @@ describe('round trips per request', () => {
     expect(trips()).toBe(6);
   });
 
+  it('takes 13 to change a password, with no MFA lookups while MFA is off', async () => {
+    const admin = nextbase.client({ superuser: true });
+    await admin.collections.create({
+      name: 'people',
+      type: 'auth',
+      updateRule: 'id = @request.auth.id',
+    });
+    const person = await admin.collection('people').create({
+      email: 'sky@example.com',
+      password: 'password 123 456',
+      passwordConfirm: 'password 123 456',
+    });
+    const signIn = await call(
+      nextbase,
+      'POST',
+      '/collections/people/auth-with-password',
+      { body: { identity: 'sky@example.com', password: 'password 123 456' } },
+    );
+    const { other, trips } = await another();
+    const change = await call(
+      other,
+      'PATCH',
+      `/collections/people/records/${person?.id}`,
+      {
+        token: signIn.body.token as string,
+        body: {
+          oldPassword: 'password 123 456',
+          password: 'password 123 457',
+          passwordConfirm: 'password 123 457',
+        },
+      },
+    );
+    expect(change.status).toBe(204);
+    expect(trips()).toBe(13);
+  });
+
   it('sees schema changes made elsewhere on the next read', async () => {
     const { other } = await another();
     const admin = nextbase.client({ superuser: true });

@@ -128,10 +128,10 @@ Auth collections have two more:
   and verified flag. By default only superusers can.
 - `mfa.rule` decides who must take a [second sign-in step](/docs/guides/auth/mfa).
 
-To let in only sessions that took a second step, use `@request.auth.mfa`:
+To let in only sessions that took a second step, use `@request.mfa`:
 
 ```txt
-@request.auth.id != "" && @request.auth.mfa = true
+@request.auth.id != "" && @request.mfa = true
 ```
 
 Changing a rule does not change sessions that already exist.

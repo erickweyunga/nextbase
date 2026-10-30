@@ -15,6 +15,7 @@ export type MailKind =
   | 'verification'
   | 'passwordReset'
   | 'emailChange'
+  | 'emailChangeApproval'
   | 'passwordChanged'
   | 'emailChanged'
   | 'oauth2Linked'
@@ -23,7 +24,9 @@ export type MailKind =
   | 'signInCode'
   | 'totpEnabled'
   | 'totpDisabled'
-  | 'recoveryCodeUsed';
+  | 'recoveryCodeUsed'
+  | 'mfaCleared'
+  | 'mfaCodesPaused';
 
 export interface MailContext {
   kind: MailKind;
@@ -39,6 +42,8 @@ export interface MailContext {
   code?: string;
   /** Recovery codes left, for `recoveryCodeUsed`. */
   remaining?: number;
+  /** Where the password was reset, for `mfaCodesPaused`. */
+  channel?: 'email' | 'phone';
 }
 
 export type MailTemplate = (context: MailContext) => {
@@ -52,8 +57,9 @@ export interface MailOptions {
   /** Sends one email through any provider (SMTP, Resend, SES, Postmark...). */
   send(message: MailMessage): Promise<void>;
   /**
-   * Base URL of `/verify-email`, `/reset-password` and `/confirm-email-change`
-   * (each with `?token=`). Defaults to the `appUrl` option.
+   * Base URL of `/verify-email`, `/reset-password`, `/approve-email-change`
+   * and `/confirm-email-change` (each with `?token=`). Defaults to the
+   * `appUrl` option.
    */
   appUrl?: string;
   templates?: Partial<Record<MailKind, MailTemplate>>;
@@ -63,6 +69,7 @@ const PATHS: Partial<Record<MailKind, string>> = {
   verification: '/verify-email',
   passwordReset: '/reset-password',
   emailChange: '/confirm-email-change',
+  emailChangeApproval: '/approve-email-change',
 };
 
 const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
@@ -77,6 +84,10 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   emailChange: ({ url }) => ({
     subject: 'Confirm your new email',
     text: `Open this link to make this your account's email:\n\n${url}\n\nIf you did not ask for this, ignore this email.`,
+  }),
+  emailChangeApproval: ({ url }) => ({
+    subject: 'Approve the change of your email',
+    text: `Someone signed in to your account asked to move it to another email. Open this link to approve it, and the new address will get a link to confirm:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
   }),
   passwordChanged: () => ({
     subject: 'Your password was changed',
@@ -109,6 +120,14 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   totpDisabled: () => ({
     subject: 'Two-step sign-in was turned off',
     text: 'Your account no longer asks for a code from your authenticator app. If this was not you, reset your password and contact support right away.',
+  }),
+  mfaCleared: () => ({
+    subject: 'Two-step sign-in was reset',
+    text: 'A superuser removed the authenticator app and recovery codes of your account. If you did not ask for this, contact support right away.',
+  }),
+  mfaCodesPaused: ({ channel }) => ({
+    subject: 'Sign-in codes paused after your password reset',
+    text: `Your password was just reset through your ${channel === 'phone' ? 'phone' : 'email'}. For the next 24 hours, codes sent to your ${channel === 'phone' ? 'phone' : 'email'} will not count as your second sign-in step. If this was not you, contact support right away.`,
   }),
   recoveryCodeUsed: ({ remaining }) => ({
     subject: 'A recovery code was used',
@@ -166,11 +185,13 @@ export class Mailer {
       provider,
       code,
       remaining,
+      channel,
     }: {
       token?: string;
       provider?: string;
       code?: string;
       remaining?: number;
+      channel?: 'email' | 'phone';
     } = {},
   ): void {
     const path = PATHS[kind];
@@ -187,6 +208,7 @@ export class Mailer {
       ...(provider !== undefined && { provider }),
       ...(code !== undefined && { code }),
       ...(remaining !== undefined && { remaining }),
+      ...(channel !== undefined && { channel }),
     };
     const template =
       this.#options?.templates?.[kind] ?? DEFAULT_TEMPLATES[kind];

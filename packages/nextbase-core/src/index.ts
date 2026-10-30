@@ -1,5 +1,9 @@
 import adminHtml from '@nextbasejs/admin/index.html?raw';
-import type { AuthCollection, RecordModel } from '@nextbasejs/client';
+import type {
+  AuthCollection,
+  RecordModel,
+  TotpSetup,
+} from '@nextbasejs/client';
 import {
   AuthStore,
   ClientError,
@@ -8,7 +12,7 @@ import {
   type HealthResponse,
   NextBaseClient,
 } from '@nextbasejs/client';
-import { DB, type Pool, type Tx } from '@nextbasejs/dbx';
+import { DB, type Pool, type Row, type Tx } from '@nextbasejs/dbx';
 import { waitUntil as vercelWaitUntil } from '@vercel/functions';
 import { beginRoute, ROUTES, type Route } from './api/routes.ts';
 import { checkAppUrl } from './app-url.ts';
@@ -490,17 +494,49 @@ export class NextBase<C extends Collections = Collections> {
    * no superuser has that email. For scripts; never expose it to untrusted input.
    */
   async resetSuperuserMfa(email: string): Promise<boolean> {
+    const found = await this.#superuser(email);
+    if (!found) return false;
+    await resetMfa(found.db, '_superusers', found.record.id as string);
+    return true;
+  }
+
+  /**
+   * Starts setting up a superuser's authenticator app without their
+   * password, for one who must take a second step and has no app yet.
+   * Undefined when no superuser has that email. Confirm it with
+   * `confirmSuperuserTotp`. For scripts; never expose it to untrusted input.
+   */
+  async startSuperuserTotp(email: string): Promise<TotpSetup | undefined> {
+    const found = await this.#superuser(email);
+    if (!found) return undefined;
+    return this.#mfa.startTotpTrusted(found.db, found.collection, found.record);
+  }
+
+  /**
+   * Turns on the app `startSuperuserTotp` set up with a code from it, and
+   * returns the recovery codes. Every session of the superuser ends.
+   */
+  async confirmSuperuserTotp(email: string, code: string): Promise<string[]> {
+    const found = await this.#superuser(email);
+    if (!found) throw new ApiError(404, 'No superuser has this email.');
+    return this.#mfa.confirmTotp(
+      found.db,
+      found.collection,
+      found.record,
+      undefined,
+      code,
+    );
+  }
+
+  async #superuser(
+    email: string,
+  ): Promise<{ db: DB; collection: AuthCollection; record: Row } | undefined> {
     await this.migrate();
     const db = this.#connection();
     const schema = await this.#schema.get(db);
-    const superuser = await findByEmail(
-      db,
-      schema.get('_superusers') as AuthCollection,
-      email,
-    );
-    if (!superuser) return false;
-    await resetMfa(db, '_superusers', superuser.id as string);
-    return true;
+    const collection = schema.get('_superusers') as AuthCollection;
+    const record = await findByEmail(db, collection, email);
+    return record && { db, collection, record };
   }
 
   /**

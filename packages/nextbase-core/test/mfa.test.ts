@@ -20,6 +20,7 @@ import {
 } from '../src/auth/totp.ts';
 import { type Io, run } from '../src/cli/run.ts';
 import { type MailMessage, NextBase, type SmsMessage } from '../src/index.ts';
+import { timings } from '../src/realtime/timings.ts';
 import { origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
 import { waitFor } from './wait.ts';
@@ -146,7 +147,7 @@ describe('TOTP and secret keys', () => {
         r.pattern.source,
       ),
     );
-    expect(mfaRoutes.length).toBe(12);
+    expect(mfaRoutes.length).toBe(14);
     for (const route of mfaRoutes) expect(route.tags).toEqual(['auth']);
   });
 });
@@ -255,7 +256,7 @@ describe('multi-factor sign-in', () => {
   const enroll = async (email: string, collection = 'users') => {
     const signedIn = await signIn(email, collection);
     const service = signedIn.nb.collection(collection);
-    const setup = await service.startTotp(signedIn.record.id);
+    const setup = await service.startTotp(signedIn.record.id, PASSWORD);
     const recoveryCodes = await service.confirmTotp(
       signedIn.record.id,
       await totp(signedIn.record.id, setup.secret),
@@ -395,10 +396,11 @@ describe('multi-factor sign-in', () => {
     collection: string,
     account: Account,
     query = '',
+    redirect = '/home',
   ): Promise<Response> => {
     const start = await raw(
       'GET',
-      `/collections/${collection}/auth-with-oauth2/idp?redirect=/home${query}`,
+      `/collections/${collection}/auth-with-oauth2/idp?redirect=${encodeURIComponent(redirect)}${query}`,
     );
     expect(start.status).toBe(302);
     const authorize = new URL(start.headers.get('location') ?? '');
@@ -475,8 +477,8 @@ describe('multi-factor sign-in', () => {
       name: 'secrets',
       type: 'base',
       fields: [{ name: 'title', type: 'text' }],
-      listRule: '@request.auth.mfa = true',
-      viewRule: '@request.auth.mfa = true',
+      listRule: '@request.mfa = true',
+      viewRule: '@request.mfa = true',
       createRule: '',
     });
   });
@@ -508,17 +510,9 @@ describe('multi-factor sign-in', () => {
       expect(error.status).toBe(400);
       expect(error.data.mfa).toBeDefined();
     }
-    // `@request.auth.mfa` is the session's, so no auth field may be named so.
-    const named = await failure(
-      admin.collections.update('plain', {
-        fields: [...plain.fields, { name: 'MFA', type: 'bool' }],
-      }),
-    );
-    expect(named.status).toBe(400);
-    await admin.collections.create({
-      name: 'flags',
-      type: 'base',
-      fields: [{ name: 'mfa', type: 'bool' }],
+    // `@request.mfa` names no field, so any collection may have one named so.
+    await admin.collections.update('plain', {
+      fields: [...plain.fields, { name: 'mfa', type: 'bool' }],
     });
     expect(
       (await nextbase.client().collection('users').listAuthMethods()).mfa,
@@ -654,7 +648,7 @@ describe('multi-factor sign-in', () => {
       (await failure(users().requestEmailCode({ mfaId: step.mfaId }))).status,
     ).toBe(400);
     expect(
-      (await failure(users().requestPhoneCode('', { mfaId: step.mfaId })))
+      (await failure(users().requestMfaPhoneCode({ mfaId: step.mfaId })))
         .status,
     ).toBe(400);
     expect(
@@ -819,16 +813,18 @@ describe('multi-factor sign-in', () => {
       "UPDATE nextbase._sessions SET created = now() - interval '11 minutes' WHERE id = $1",
       [session?.id],
     );
-    const stale = await failure(users(nb).startTotp(record.id));
+    // Even a fresh session needs the password: a stolen one would lock the
+    // owner out with an app of its own.
+    const stale = await failure(users(nb).startTotp(record.id, ''));
     expect(stale.status).toBe(400);
     expect(stale.data.password).toMatchObject({ code: 'validation_required' });
     const wrong = await failure(
-      users(nb).startTotp(record.id, { password: 'wrong password!!' }),
+      users(nb).startTotp(record.id, 'wrong password!!'),
     );
     expect(wrong.data.password).toMatchObject({
       code: 'validation_invalid_password',
     });
-    const setup = await users(nb).startTotp(record.id, { password: PASSWORD });
+    const setup = await users(nb).startTotp(record.id, PASSWORD);
     expect(setup.secret).toBeTruthy();
     // The setup expires after 15 minutes.
     await query(
@@ -849,7 +845,9 @@ describe('multi-factor sign-in', () => {
       passwordConfirm: PASSWORD,
     });
     const ivy = await signIn('ivy@example.com');
-    const unverified = await failure(users(ivy.nb).startTotp(ivy.record.id));
+    const unverified = await failure(
+      users(ivy.nb).startTotp(ivy.record.id, PASSWORD),
+    );
     expect(unverified.data.totp).toMatchObject({
       code: 'validation_not_verified',
     });
@@ -857,11 +855,13 @@ describe('multi-factor sign-in', () => {
     await account('jill@example.com', {}, 'plain');
     const jill = await signIn('jill@example.com', 'plain');
     const off = await failure(
-      jill.nb.collection('plain').startTotp(jill.record.id),
+      jill.nb.collection('plain').startTotp(jill.record.id, PASSWORD),
     );
     expect(off.status).toBe(400);
     // Only the record itself.
-    expect((await failure(users(ivy.nb).startTotp(user.id))).status).toBe(404);
+    expect(
+      (await failure(users(ivy.nb).startTotp(user.id, PASSWORD))).status,
+    ).toBe(404);
     expect((await failure(users().getMfa(user.id))).status).toBe(401);
   });
 
@@ -893,7 +893,7 @@ describe('multi-factor sign-in', () => {
             })(),
           )
           .collection('users')
-          .startTotp(kara.record.id),
+          .startTotp(kara.record.id, PASSWORD),
       );
       expect(error.status).toBe(400);
       expect(error.message).toContain('secretKey');
@@ -924,10 +924,10 @@ describe('multi-factor sign-in', () => {
     const user = await account('milo@example.com');
     const { nb, secret } = await enroll('milo@example.com');
     expect(
-      (await failure(users(nb).removeTotp(user.id, ''))).data.code,
+      (await failure(users(nb).removeTotp(user.id, ''))).data.mfaCode,
     ).toMatchObject({ code: 'validation_required' });
     expect(
-      (await failure(users(nb).removeTotp(user.id, '000000'))).data.code,
+      (await failure(users(nb).removeTotp(user.id, '000000'))).data.mfaCode,
     ).toMatchObject({ code: 'validation_invalid_code' });
     await users(nb).removeTotp(user.id, await totp(user.id, secret));
     expect(await users(nb).getMfa(user.id)).toEqual({
@@ -967,6 +967,11 @@ describe('multi-factor sign-in', () => {
       mfaId: after.mfaId,
     });
     await users(fresh).requestEmailChange('nora2@example.com');
+    // The verified inbox approves it first.
+    const approval = (await mailsTo('nora@example.com')).at(-1)?.text ?? '';
+    await users().approveEmailChange(
+      /token=([\w.-]+)/.exec(approval)?.[1] as string,
+    );
     const link = (await mailsTo('nora2@example.com')).at(-1)?.text ?? '';
     const token = /token=([\w.-]+)/.exec(link)?.[1] as string;
     const noCode = await failure(
@@ -1017,9 +1022,9 @@ describe('multi-factor sign-in', () => {
         users().signInWithPassword('pia@example.com', PASSWORD),
       );
       expect(step.methods).toEqual(['emailCode', 'phoneCode']);
-      await users().requestPhoneCode('', { mfaId: step.mfaId });
+      await users().requestMfaPhoneCode({ mfaId: step.mfaId });
       const code = await textedCode('+255712000002');
-      const auth = await users().signInWithPhoneCode('', code, {
+      const auth = await users().signInWithMfaPhoneCode(code, {
         mfaId: step.mfaId,
       });
       expect(auth.methods).toEqual(['password', 'phoneCode']);
@@ -1058,7 +1063,8 @@ describe('multi-factor sign-in', () => {
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });
-    expect(signedUp).toBeNull();
+    // Unlike an authRule refusal, the app learns why.
+    expect(signedUp).toEqual({ mfa: 'verify' });
     const refused = await failure(
       nextbase
         .client()
@@ -1104,7 +1110,7 @@ describe('multi-factor sign-in', () => {
     expect(isMfaRequired(new Error('other'))).toBeUndefined();
   });
 
-  it('reads @request.auth.mfa in rules and realtime', async () => {
+  it('reads @request.mfa in rules and realtime', async () => {
     await account('wes@example.com');
     const plain = await signIn('wes@example.com');
     await account('xia@example.com');
@@ -1160,7 +1166,7 @@ describe('multi-factor sign-in', () => {
     const service = acting.collection('users');
     for (const attempt of [
       () => service.getMfa(user.id),
-      () => service.startTotp(user.id, { password: PASSWORD }),
+      () => service.startTotp(user.id, PASSWORD),
       () => service.confirmTotp(user.id, '123456'),
       () => service.removeTotp(user.id, '123456'),
       () => service.regenerateRecoveryCodes(user.id, '123456'),
@@ -1181,19 +1187,21 @@ describe('multi-factor sign-in', () => {
   });
 
   it('takes the second step after an OAuth2 sign-in, through an HttpOnly cookie', async () => {
-    const response = await oauth2('strict', {
-      sub: 'zoe',
-      email: 'zoe@example.com',
-    });
+    const response = await oauth2(
+      'strict',
+      { sub: 'zoe', email: 'zoe@example.com' },
+      '',
+      '/home?tab=a&mfa=mine',
+    );
     expect(response.status).toBe(302);
     const location = new URL(response.headers.get('location') ?? '');
     expect(location.pathname).toBe('/home');
-    expect(location.searchParams.get('mfa')).toBe('required');
-    expect(location.searchParams.get('methods')).toBe('password,emailCode');
-    // Nothing secret goes in the URL, and no session starts.
-    expect([...location.searchParams.keys()].sort()).toEqual([
-      'methods',
-      'mfa',
+    // Added after the app's own parameters, which stay. Nothing secret goes
+    // in the URL, not even the methods, and no session starts.
+    expect([...location.searchParams.entries()]).toEqual([
+      ['tab', 'a'],
+      ['mfa', 'mine'],
+      ['mfa', 'required'],
     ]);
     expect(cookieOf(response, 'nextbase_session')).toBeUndefined();
     const cookie = cookieOf(response, 'nextbase_mfa') as string;
@@ -1203,6 +1211,13 @@ describe('multi-factor sign-in', () => {
     expect(header).toContain('HttpOnly');
     expect(header).toContain('Max-Age=120');
 
+    // The page reads the methods with the cookie, which only it sends.
+    const pendingMethods = await raw('GET', '/collections/strict/mfa', {
+      cookie,
+    });
+    // Its password was made up at sign-up, so it is no step.
+    expect(await pendingMethods.json()).toEqual({ methods: ['emailCode'] });
+    expect((await raw('GET', '/collections/strict/mfa')).status).toBe(400);
     // Another site cannot use it.
     const crossSite = await raw(
       'POST',
@@ -1423,5 +1438,265 @@ describe('multi-factor sign-in', () => {
     expect(
       (await supers().signInWithPassword('ops@example.com', PASSWORD)).methods,
     ).toEqual(['password']);
+  });
+
+  it('makes superusers take their second step with an app, and the CLI set one up', async () => {
+    await admin.collections.update('_superusers', {
+      mfa: { enabled: true, rule: '' },
+    });
+    vi.stubEnv('NEXTBASE_SECRET_KEY', KEY);
+    try {
+      await nextbase.createSuperuser('new@example.com', PASSWORD);
+      const supers = () => nextbase.client().collection('_superusers');
+      // A verified email is no second step for a superuser.
+      const none = await failure(
+        supers().signInWithPassword('new@example.com', PASSWORD),
+      );
+      expect(none.status).toBe(403);
+      expect(none.message).toContain('nextbase superuser mfa-setup');
+
+      const out: string[] = [];
+      const io: Io = {
+        env: { DATABASE_URL: t.url },
+        out: (line) => out.push(line),
+        err: (line) => out.push(line),
+        // Reads the secret it printed, as an authenticator app would.
+        prompt: async () => {
+          const secret = out
+            .find((line) => line.startsWith('Secret: '))
+            ?.slice(8) as string;
+          return hotp(fromBase32(secret), totpStep(Date.now()));
+        },
+      };
+      expect(await run(['superuser', 'mfa-setup', 'new@example.com'], io)).toBe(
+        0,
+      );
+      expect(out[1]).toMatch(/^otpauth:\/\/totp\//);
+      const secret = out[2]?.slice(8) as string;
+      const record = await admin
+        .collection('_superusers')
+        .getFirstListItem('email = "new@example.com"');
+      lastStep.set(record.id, totpStep(Date.now()));
+      expect(
+        out.slice(-10).every((c) => /^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/.test(c)),
+      ).toBe(true);
+      const step = await challenged(
+        supers().signInWithPassword('new@example.com', PASSWORD),
+      );
+      expect(step.methods).toEqual(['totp', 'recoveryCode']);
+      expect(
+        (await failure(supers().requestEmailCode({ mfaId: step.mfaId })))
+          .status,
+      ).toBe(400);
+      await supers().signInWithTotp(await totp(record.id, secret), {
+        mfaId: step.mfaId,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await admin.collections.update('_superusers', {
+        mfa: { enabled: false, rule: null },
+      });
+    }
+  });
+
+  it("lets a superuser clear another account's app, and tells the owner", async () => {
+    const user = await account('ida@example.com');
+    const { nb } = await enroll('ida@example.com');
+    // Not the owner, nor any other non-superuser.
+    expect((await failure(users(nb).clearMfa(user.id))).status).toBe(403);
+    await admin.collection('users').clearMfa(user.id);
+    expect(await users(nb).getMfa(user.id)).toEqual({
+      totp: false,
+      recoveryCodesLeft: 0,
+    });
+    expect((await mailsTo('ida@example.com')).at(-1)?.subject).toBe(
+      'Two-step sign-in was reset',
+    );
+    expect((await signIn('ida@example.com')).methods).toEqual(['password']);
+    expect(
+      (await failure(admin.collection('users').clearMfa('nosuchrecord12')))
+        .status,
+    ).toBe(404);
+    // A superuser removes their own app with a code, as anyone does.
+    await nextbase.createSuperuser('self@example.com', PASSWORD);
+    const root = nextbase.client();
+    const me = await root
+      .collection('_superusers')
+      .signInWithPassword('self@example.com', PASSWORD);
+    expect(
+      (await failure(root.collection('_superusers').clearMfa(me.record.id)))
+        .status,
+    ).toBe(400);
+    // Nor through an impersonation session.
+    const { client: acting } = await root
+      .collection('users')
+      .impersonate(user.id);
+    expect(
+      (await failure(acting.collection('users').clearMfa(user.id))).status,
+    ).toBe(403);
+  });
+
+  it('pairs no reset by email with an email code, for a day, and says so', async () => {
+    const user = await account('jo@example.com', {}, 'strict');
+    const strict = () => nextbase.client().collection('strict');
+    await strict().requestPasswordReset('jo@example.com');
+    const link = (await mailsTo('jo@example.com')).at(-1)?.text ?? '';
+    const token = /token=([\w.-]+)/.exec(link)?.[1] as string;
+    await strict().confirmPasswordReset(token, `${PASSWORD}!`, `${PASSWORD}!`);
+    const notice = (await mailsTo('jo@example.com')).find((m) =>
+      m.subject.startsWith('Sign-in codes paused'),
+    );
+    expect(notice?.text).toContain('codes sent to your email will not count');
+    // The inbox that reset the password cannot also be its second step.
+    const held = await failure(
+      strict().signInWithPassword('jo@example.com', `${PASSWORD}!`),
+    );
+    expect(held.status).toBe(403);
+    await query(
+      "UPDATE nextbase._password_origins SET set_at = now() - interval '25 hours' WHERE record_id = $1",
+      [user.id],
+    );
+    const later = await challenged(
+      strict().signInWithPassword('jo@example.com', `${PASSWORD}!`),
+    );
+    expect(later.methods).toEqual(['emailCode']);
+  });
+
+  it('pairs no reset by text with a phone code, whichever step comes first', async () => {
+    const user = await account('kim@example.com', {
+      phone: '+255712000009',
+      phoneVerified: true,
+    });
+    await admin.collections.update('users', { mfa: { rule: '' } });
+    try {
+      await users().requestPasswordResetByPhone('+255712000009');
+      await users().confirmPasswordResetByPhone(
+        '+255712000009',
+        await textedCode('+255712000009'),
+        `${PASSWORD}!`,
+        `${PASSWORD}!`,
+      );
+      const first = await challenged(
+        users().signInWithPassword('kim@example.com', `${PASSWORD}!`),
+      );
+      expect(first.methods).toEqual(['emailCode']);
+      await users().requestPhoneCode('+255712000009');
+      const byPhone = await challenged(
+        users().signInWithPhoneCode(
+          '+255712000009',
+          await textedCode('+255712000009'),
+        ),
+      );
+      expect(byPhone.methods).toEqual(['emailCode']);
+      expect(
+        (
+          await failure(
+            users().signInWithPassword('kim@example.com', `${PASSWORD}!`, {
+              mfaId: byPhone.mfaId,
+            }),
+          )
+        ).data.mfaId,
+      ).toMatchObject({ code: 'validation_mfa_method' });
+      // A password the owner chose again pairs with anything.
+      await admin.collection('users').update(user.id, {
+        password: PASSWORD,
+        passwordConfirm: PASSWORD,
+      });
+      const chosen = await challenged(
+        users().signInWithPassword('kim@example.com', PASSWORD),
+      );
+      expect(chosen.methods).toEqual(['emailCode', 'phoneCode']);
+    } finally {
+      await admin.collections.update('users', { mfa: { rule: null } });
+    }
+  });
+
+  it('never offers a password nobody chose', async () => {
+    await admin.collections.update('users', { mfa: { rule: '' } });
+    try {
+      await users().requestPhoneCode('+255712000010');
+      const signUp = await failure(
+        users().signInWithPhoneCode(
+          '+255712000010',
+          await textedCode('+255712000010'),
+        ),
+      );
+      // Its only other step would be its made-up password.
+      expect(signUp.status).toBe(403);
+    } finally {
+      await admin.collections.update('users', { mfa: { rule: null } });
+    }
+  });
+
+  it('moves an account to a new email only once its verified inbox approves', async () => {
+    await account('lou@example.com');
+    const stolen = await signIn('lou@example.com');
+    await users(stolen.nb).requestEmailChange('thief@example.com');
+    // Nothing goes to the new address yet; the owner's inbox is asked.
+    expect(await mailsTo('thief@example.com')).toEqual([]);
+    const approval = (await mailsTo('lou@example.com')).at(-1) as MailMessage;
+    expect(approval.subject).toBe('Approve the change of your email');
+    expect(approval.text).toContain('/approve-email-change?token=');
+    const token = /token=([\w.-]+)/.exec(approval.text)?.[1] as string;
+    // Only for the address it names, and once.
+    const other = await raw(
+      'POST',
+      '/collections/users/approve-email-change',
+      {},
+      { token, newEmail: 'else@example.com' },
+    );
+    expect(other.status).toBe(400);
+    expect(await mailsTo('else@example.com')).toEqual([]);
+    await users().approveEmailChange(token);
+    expect((await mailsTo('thief@example.com')).at(-1)?.subject).toBe(
+      'Confirm your new email',
+    );
+    expect(
+      (await failure(users().approveEmailChange(token))).data.token,
+    ).toMatchObject({ code: 'validation_invalid_token' });
+  });
+
+  it('keeps the one-link email change for an unverified email', async () => {
+    await admin.collection('users').create({
+      email: 'max@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const max = await signIn('max@example.com');
+    await users(max.nb).requestEmailChange('max2@example.com');
+    const link = (await mailsTo('max2@example.com')).at(-1)?.text ?? '';
+    const token = /token=([\w.-]+)/.exec(link)?.[1] as string;
+    await users().confirmEmailChange(token, PASSWORD);
+    expect(
+      (
+        await admin
+          .collection('users')
+          .getFirstListItem('email = "max2@example.com"')
+      ).email,
+    ).toBe('max2@example.com');
+  });
+
+  it('shows an open stream the records @request.mfa allows once its session confirms an app', async () => {
+    const before = timings.sessionMs;
+    timings.sessionMs = 50;
+    try {
+      const user = await account('ned@example.com');
+      const { nb, token } = await signIn('ned@example.com');
+      const live = await stream(token as string);
+      try {
+        const setup = await users(nb).startTotp(user.id, PASSWORD);
+        await users(nb).confirmTotp(user.id, await totp(user.id, setup.secret));
+        // Once the stream has read the session again, records flow.
+        await waitFor(async () => {
+          await admin.collection('secrets').create({ title: 'ned' });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return live.titles.includes('ned');
+        }, 'the record');
+      } finally {
+        await live.close();
+      }
+    } finally {
+      timings.sessionMs = before;
+    }
   });
 });

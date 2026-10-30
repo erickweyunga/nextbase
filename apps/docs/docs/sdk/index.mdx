@@ -95,9 +95,10 @@ try {
 ```
 
 Second steps: `signInWithTotp`, `signInWithRecoveryCode`, `requestEmailCode`
-with `signInWithEmailCode`, and an `mfaId` option on `signInWithPassword`,
-`requestPhoneCode`, `signInWithPhoneCode` and `signInWithOAuth2`. Without an
-`mfaId`, they use the cookie an OAuth2 sign-in set. The session's `methods`,
+with `signInWithEmailCode`, `requestMfaPhoneCode` with
+`signInWithMfaPhoneCode`, and an `mfaId` option on `signInWithPassword` and
+`signInWithOAuth2`. Without an `mfaId`, they use the cookie an OAuth2 sign-in
+set, and `getPendingMfa()` reads its methods. The session's `methods`,
 such as `["password", "totp"]`, come back in the response and in
 `getSession()`.
 
@@ -105,11 +106,19 @@ The signed-in record manages its authenticator app:
 
 ```ts
 const { totp, recoveryCodesLeft } = await users.getMfa(me.id);
-const { secret, uri } = await users.startTotp(me.id, { password });
+const { secret, uri } = await users.startTotp(me.id, password);
 const recoveryCodes = await users.confirmTotp(me.id, codeFromApp);
 const fresh = await users.regenerateRecoveryCodes(me.id, codeFromApp);
 await users.removeTotp(me.id, codeFromApp);
+// As a superuser, for an owner who lost their app:
+await users.clearMfa(userId);
 ```
+
+Linking or unlinking a provider and changing the phone take
+`{ password, mfaCode }`, and a verified email's inbox approves an email
+change with `approveEmailChange(token)`. `signUp()` returns
+`{ mfa: "verify" }` when the account must take a second step and has none
+yet.
 
 See [Multi-factor sign-in](/docs/guides/auth/mfa).
 

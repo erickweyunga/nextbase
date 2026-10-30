@@ -521,14 +521,32 @@ const MIGRATIONS: readonly Migration[] = [
           code_hash     text NOT NULL,
           PRIMARY KEY (collection_id, record_id, code_hash)
         )`);
+      // Single-use tokens already used, such as the link a verified inbox
+      // approves an email change with, until they expire.
+      await exec(`
+        CREATE TABLE {{${table('_used_tokens')}}} (
+          id_hash text PRIMARY KEY,
+          expires timestamptz NOT NULL
+        )`);
+      await exec(
+        `CREATE INDEX "_used_tokens_expires" ON {{${table('_used_tokens')}}} (expires)`,
+      );
+      // How each password was last set, so a reset by email or text cannot
+      // pair with a code sent to the same place. No row means chosen.
+      await exec(`
+        CREATE TABLE {{${table('_password_origins')}}} (
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          origin        text NOT NULL,
+          set_at        timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (collection_id, record_id)
+        )`);
       await exec(
         `ALTER TABLE {{${table('_sessions')}}} ADD COLUMN methods text[] NOT NULL DEFAULT '{}'`,
       );
       await exec(
         `ALTER TABLE {{${table('_oauth2_states')}}} ADD COLUMN mfa_id text NULL`,
       );
-      // `@request.auth.mfa` now says whether the session took a second step.
-      await renameClashingUserFields(tx, 'mfa', '');
     },
   },
 ];

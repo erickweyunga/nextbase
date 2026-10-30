@@ -30,7 +30,17 @@ Changing the setting does not end sessions that already exist.
 
 An account that must take a second step but has no way to (no app, no
 verified email or phone, no linked provider) cannot sign in: the first step
-answers `403`, and a sign-up `202`.
+answers `403`. A sign-up answers `202` with `{ "mfa": "verify" }`, which the
+SDK's `signUp()` returns, so the app can ask to verify the email; an
+`authRule` refusal is a `202` without a body, and `null` in the SDK.
+
+## How strong each step is
+
+Only an authenticator app, or its recovery codes, stays safe when someone
+takes over the account's inbox or phone. Email and phone codes stop a leaked
+or reused password from signing in, but whoever controls that inbox or phone
+can read them. For accounts that matter most, require an app: superusers
+always use one.
 
 ## The two steps
 
@@ -70,7 +80,7 @@ records both, such as `["password", "totp"]`.
 | ------ | ---------- | ----------- |
 | `password` | `signInWithPassword` | `signInWithPassword(identity, password, { mfaId })` |
 | `oauth2` | `signInWithOAuth2` | `signInWithOAuth2(provider, { mfaId })`, with a provider already linked to the account |
-| `phoneCode` | `signInWithPhoneCode` | `requestPhoneCode("", { mfaId })`, then `signInWithPhoneCode("", code, { mfaId })`. Texted to the account's verified phone, with phone sign-in on. |
+| `phoneCode` | `signInWithPhoneCode` | `requestMfaPhoneCode({ mfaId })`, then `signInWithMfaPhoneCode(code, { mfaId })`. Texted to the account's verified phone, with phone sign-in on. |
 | `emailCode` | | `requestEmailCode({ mfaId })`, then `signInWithEmailCode(code, { mfaId })`. Emailed to the account's verified email. |
 | `totp` | | `signInWithTotp(code, { mfaId })` |
 | `recoveryCode` | | `signInWithRecoveryCode(code, { mfaId })` |
@@ -78,6 +88,17 @@ records both, such as `["password", "totp"]`.
 Once an account has an authenticator app, only `totp` and `recoveryCode`
 count as its second step: an email or a text is easier to intercept than the
 app.
+
+Two steps never come from the same place:
+
+- A password reset by email, in the last 24 hours, does not pair with an
+  email code, and one by text with a phone code, whichever is the first
+  step. The reset emails the owner to say so.
+- A password nobody chose, made up at an OAuth2 or phone sign-up, is never
+  offered as a step. To use one, set a password through a password reset.
+
+When nothing is left to pair with, the first step answers the `403` above.
+These rules hold for passwords set while MFA is on.
 
 An `mfaId` works once, until `duration` runs out, and only for its account.
 A new password or token key, as from a password reset, ends it. Five wrong
@@ -94,18 +115,20 @@ session.
 The browser is navigating, so the `mfaId` cannot be returned as JSON. The
 callback keeps it in an `HttpOnly` cookie, `__Host-nextbase_mfa`
 (`nextbase_mfa` over plain HTTP), for `duration` seconds, and redirects to
-your `redirect` page with `?mfa=required&methods=totp,recoveryCode`. Nothing
-secret is in the URL.
+your `redirect` page with `mfa=required` added to its query. Nothing about
+the sign-in is in the URL.
 
-On that page, take the second step without an `mfaId`: the server uses the
-cookie, and the session goes in a cookie too.
+On that page, read the methods it can take, then take the second step
+without an `mfaId`: the server uses the cookie, and the session goes in a
+cookie too.
 
 ```ts
 const params = new URLSearchParams(location.search);
 if (params.get("mfa") === "required") {
-  const methods = params.get("methods")?.split(",") ?? [];
+  const users = nb.collection("users");
+  const { methods } = await users.getPendingMfa();
   // For example, with an authenticator app:
-  await nb.collection("users").signInWithTotp(code);
+  await users.signInWithTotp(code);
 }
 ```
 
@@ -122,11 +145,13 @@ Setting one up needs:
 - the [`secretKey`](/docs/guides/production#secret-key) option, which encrypts
   the app's secret in the database;
 - a verified email or phone, so the account can be recovered;
-- the password, unless the session signed in within the last 10 minutes.
+- the current password, always, so a stolen session cannot set up its own
+  app and lock the owner out. Accounts made by an OAuth2 or phone sign-up
+  set a password first, through a password reset.
 
 ```ts
 const users = nb.collection("users");
-const { secret, uri } = await users.startTotp(me.id, { password });
+const { secret, uri } = await users.startTotp(me.id, password);
 ```
 
 Show `uri`, an `otpauth://totp/...` URI, as a QR code for the app to scan, and
@@ -166,18 +191,53 @@ Regenerating replaces every old code.
 
 ## Sensitive changes
 
-Once an account has an app, these need a code from it, or a recovery code:
+Once an account has an app, these need a code from it, or a recovery code,
+as `mfaCode`:
 
-- removing the app: `removeTotp(me.id, code)`; sessions are kept and the owner
-  gets an email;
-- regenerating recovery codes;
-- changing the password with `oldPassword`: send the code as `mfaCode`, as in
+- removing the app: `removeTotp(me.id, mfaCode)`; sessions are kept and the
+  owner gets an email;
+- regenerating recovery codes: `regenerateRecoveryCodes(me.id, mfaCode)`;
+- changing the password with `oldPassword`, as in
   `update(me.id, { password, passwordConfirm, oldPassword, mfaCode })`;
 - confirming an email change: `confirmEmailChange(token, password, { mfaCode })`.
 
-Only the account itself can manage its app, never a superuser for it, and
-never an [impersonation](/docs/guides/auth/impersonation) session. A
-superuser who lost their app can have it removed from the command line:
+Changes that add or remove a way into the account need the current password
+too, plus `mfaCode` with an app, so a stolen session cannot make them:
+
+- setting or changing the phone:
+  `requestPhoneVerification(phone, { password, mfaCode })` and
+  `confirmPhoneVerification(phone, code, { password, mfaCode })`;
+- linking a provider: `linkOAuth2(provider, { password, mfaCode })`;
+- unlinking one: `unlinkAccount(me.id, provider, { password, mfaCode })`.
+
+An email change instead needs the current inbox to approve it, when that
+email is verified; see [Email change](/docs/guides/auth/email-change).
+
+Only the account itself can manage its app, and never an
+[impersonation](/docs/guides/auth/impersonation) session. For an owner who
+lost their app and recovery codes, a superuser can remove them, and the
+owner is emailed:
+
+```ts
+await superuser.collection("users").clearMfa(userId);
+```
+
+## Superusers
+
+When `_superusers` has MFA on and its rule matches, superusers take their
+second step with an app or a recovery code only: an email or a text is never
+offered. A superuser without an app then cannot sign in, and is told to add
+one with the command line, which needs the database and `NEXTBASE_SECRET_KEY`
+and asks for a code from the app:
+
+```sh
+npx nextbase superuser mfa-setup ops@example.com
+```
+
+There is no one-step sign-in that could reach the app setup instead: whoever
+learned a superuser's password could then set up their own app. Superusers
+signed in before the rule changed keep their sessions, and can set up an app
+from them with their password. One who lost their app has it removed with:
 
 ```sh
 npx nextbase superuser mfa-reset ops@example.com
@@ -185,12 +245,12 @@ npx nextbase superuser mfa-reset ops@example.com
 
 ## In rules
 
-`@request.auth.mfa` is `true` when the session signed in with two different
+`@request.mfa` is `true` when the session signed in with two different
 methods:
 
 ```ts
 await superuser.collections.update("payouts", {
-  listRule: '@request.auth.id != "" && @request.auth.mfa = true',
+  listRule: '@request.auth.id != "" && @request.mfa = true',
 });
 ```
 

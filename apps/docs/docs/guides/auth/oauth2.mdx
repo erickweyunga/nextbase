@@ -134,11 +134,14 @@ signing in to your account.
 
 ## Link and unlink providers
 
-A signed-in user can link a provider to their account. The sign-in session
-stays as it is:
+A signed-in user, with a cookie session, can link a provider to their
+account. The sign-in session stays as it is:
 
 ```ts
-nb.collection("users").linkOAuth2("github", { redirect: "/settings" });
+await nb.collection("users").linkOAuth2("github", {
+  password, // the current one
+  redirect: "/settings",
+});
 ```
 
 The account's email must be [verified](/docs/guides/auth/verification) first,
@@ -153,8 +156,15 @@ so its owner hears of a change they did not make:
 const users = nb.collection("users");
 const linked = await users.listLinkedAccounts(user.id);
 // [{ id: "...", provider: "github", created: "2026-10-19T12:00:00.000Z" }]
-await users.unlinkAccount(user.id, "github");
+await users.unlinkAccount(user.id, "github", { password });
 ```
+
+Linking and unlinking need the current password, and with an
+[authenticator app](/docs/guides/auth/mfa) a code from it as `mfaCode`, so
+someone who took over a session cannot add or remove a way in. A superuser
+unlinking another account's provider needs neither. The link starts with a
+`POST`, which answers the provider's URL; `linkOAuth2` opens it, and
+`oauth2LinkUrl` returns it.
 
 ## Protections
 

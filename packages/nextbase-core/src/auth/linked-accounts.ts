@@ -16,6 +16,7 @@ import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
 import { findByEmail } from './identity.ts';
 import { type Identity, OAuth2Error } from './oauth2.ts';
+import { setPasswordOrigin } from './password-origins.ts';
 
 // Sign-ins find their record by the provider's permanent account id, never by
 // email. A new provider account is auto-linked to an existing record by email
@@ -301,6 +302,10 @@ async function signUp(
       );
     }
     throw error;
+  }
+  // Nobody knows the generated password, so it is never a sign-in step.
+  if (collection.mfa.enabled) {
+    await setPasswordOrigin(tx, collection.id, id, 'random');
   }
   return (await findRecord(tx, collection, id)) as Row;
 }

@@ -20,6 +20,8 @@ Commands:
   migrate               Create or upgrade NextBase's tables
   superuser --email E   Add a superuser; asks for the password, or reads
                         NEXTBASE_SUPERUSER_PASSWORD
+  superuser mfa-setup E Set up an authenticator app for the superuser with
+                        email E; needs NEXTBASE_SECRET_KEY
   superuser mfa-reset E Remove the authenticator app and recovery codes of
                         the superuser with email E
   typegen [--out F]     Write TypeScript types for every collection
@@ -46,10 +48,14 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     io.out(HELP);
     return 0;
   }
-  const mfaReset =
-    command === 'superuser' && rest[0] === 'mfa-reset' && rest.length === 2;
+  const mfaCommand =
+    command === 'superuser' &&
+    (rest[0] === 'mfa-reset' || rest[0] === 'mfa-setup') &&
+    rest.length === 2
+      ? rest[0]
+      : undefined;
   if (
-    (rest.length > 0 && !mfaReset) ||
+    (rest.length > 0 && mfaCommand === undefined) ||
     !['migrate', 'superuser', 'typegen'].includes(command)
   ) {
     io.err(`Unknown command: ${positionals.join(' ')}`);
@@ -71,7 +77,9 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     if (command === 'migrate') {
       await nextbase.migrate();
       io.out("NextBase's tables are up to date.");
-    } else if (mfaReset) {
+    } else if (mfaCommand === 'mfa-setup') {
+      return await mfaSetup(nextbase, rest[1] as string, io);
+    } else if (mfaCommand === 'mfa-reset') {
       const email = rest[1] as string;
       if (!(await nextbase.resetSuperuserMfa(email))) {
         io.err(`No superuser has the email ${email}.`);
@@ -133,6 +141,29 @@ async function superuser(
   }
   await nextbase.createSuperuser(email, password);
   io.out(`Added the superuser ${email}.`);
+  return 0;
+}
+
+// Only someone who can reach the database and the secret key gets here, so
+// it needs no password: it is how a superuser who must take a second step
+// gets their first app.
+async function mfaSetup(
+  nextbase: NextBase,
+  email: string,
+  io: Io,
+): Promise<number> {
+  const setup = await nextbase.startSuperuserTotp(email);
+  if (!setup) {
+    io.err(`No superuser has the email ${email}.`);
+    return 1;
+  }
+  io.out('Add this to your authenticator app, by its URI or its secret:');
+  io.out(setup.uri);
+  io.out(`Secret: ${setup.secret}`);
+  const code = await io.prompt('Code from the app: ', false);
+  const codes = await nextbase.confirmSuperuserTotp(email, code.trim());
+  io.out('The app is on. Keep these recovery codes somewhere safe:');
+  for (const recovery of codes) io.out(recovery);
   return 0;
 }
 

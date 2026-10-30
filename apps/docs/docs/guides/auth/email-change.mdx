@@ -5,7 +5,8 @@ title: Email change
 # Email change
 
 A signed-in user changes their email by confirming a link sent to the new
-address. It needs [email sending](/docs/guides/auth/email).
+address. When their current email is verified, its inbox approves the change
+first. It needs [email sending](/docs/guides/auth/email).
 
 ## Send the link
 
@@ -15,6 +16,22 @@ await nb.collection("users").requestEmailChange("ann@new.example.com");
 
 The user must be signed in. Whether another account already uses the new
 address is checked only on confirming, so the request reveals nothing.
+
+## Approve it from the current inbox
+
+When the current email is verified, the first link goes there instead, to
+`/approve-email-change?token=...` in your app. So someone who took over a
+session cannot move the account to their own inbox. That page approves it,
+and the new address then gets its link:
+
+```ts
+await nb.collection("users").approveEmailChange(token);
+```
+
+The approval link works once, for the address it names, and like the other
+links for 30 minutes by default (the collection's `emailChange` token
+duration). When the current email is not verified, there is no approval, and
+the new address gets its link at once.
 
 ## Confirm it
 
@@ -38,6 +55,8 @@ export async function confirmEmailChange(form: FormData) {
 After the change:
 
 - the link cannot be used again, even by requests sent at the same time,
+- with an [authenticator app](/docs/guides/auth/mfa), confirming also needs
+  `{ mfaCode }`, a code from it or a recovery code,
 - the new email counts as verified,
 - every session of the account ends, so the user signs in again,
 - the old address gets an email saying the email changed.

@@ -12,6 +12,7 @@ import {
   type TxOptions,
 } from '@nextbasejs/dbx';
 import {
+  approveEmailChange,
   confirmEmailChange,
   confirmEmailVerification,
   confirmPasswordReset,
@@ -670,7 +671,7 @@ export const ROUTES: readonly Route[] = [
   ...phoneFlow(
     'request-phone-verification',
     (ctx, collection, input, principal) =>
-      requestPhoneVerification(ctx, collection, principal, input.phone),
+      requestPhoneVerification(ctx, collection, principal, input),
   ),
   ...phoneFlow(
     'confirm-phone-verification',
@@ -739,8 +740,7 @@ export const ROUTES: readonly Route[] = [
     tags: ['auth'],
     countsItself: true,
     async handler(context) {
-      const { request, params, db, schema, principal, origins, oauth2 } =
-        context;
+      const { request, params, db, schema, oauth2 } = context;
       const query = new URL(request.url).searchParams;
       // Counted first, so requests that fail below count too. The browser
       // is navigating, so a refusal goes back to the app as its other
@@ -776,13 +776,16 @@ export const ROUTES: readonly Route[] = [
       const redirect = checkRedirect(query.get('redirect'));
       const errorRedirect =
         checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
-      let linkRecordId: string | null = null;
+      // Linking needs the password, which a link in the URL cannot carry.
+      if (query.has('link')) {
+        throw new ApiError(
+          400,
+          `Start a link with POST /collections/${params[0] as string}/link-oauth2/${provider.name}.`,
+        );
+      }
       // The second step of a sign-in, by a provider linked to its record.
       let mfaIdHash: string | null = null;
       if (query.has('mfaId')) {
-        if (query.get('link') === 'true') {
-          throw new ApiError(400, 'A link cannot be a sign-in step.');
-        }
         const pending = await context.mfa.pending(
           db,
           collection,
@@ -791,24 +794,12 @@ export const ROUTES: readonly Route[] = [
         await context.mfa.allow(db, pending, 'oauth2');
         mfaIdHash = pending.idHash;
       }
-      if (query.get('link') === 'true') {
-        // Linking adds a way into the account, so only this site may start it.
-        checkSameOrigin(request, origins);
-        forbidImpersonated(principal, 'link a provider');
-        if (!principal.record || principal.collection?.id !== collection.id) {
-          throw new ApiError(
-            401,
-            'Sign in to this collection to link a provider.',
-          );
-        }
-        linkRecordId = principal.record.id as string;
-      }
       const { location, state } = await oauth2.start(db, {
         collection,
         provider,
         redirect,
         errorRedirect,
-        linkRecordId,
+        linkRecordId: null,
         mfaIdHash,
       });
       return new Response(null, {
@@ -818,6 +809,46 @@ export const ROUTES: readonly Route[] = [
           ['set-cookie', setStateCookie(request, state)],
         ],
       });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/link-oauth2/${segment}$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, principal, origins, oauth2, mfa } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, 'Superusers sign in with their password.');
+      }
+      const provider = oauth2.provider(params[1] as string);
+      // Linking adds a way into the account, so only this site may start
+      // it, and only with the password: a stolen session cannot.
+      checkSameOrigin(request, origins);
+      forbidImpersonated(principal, 'link a provider');
+      const record = recordIn(principal, collection, 'link a provider');
+      const input = await readJsonObject(request);
+      const redirect = checkRedirect(
+        typeof input.redirect === 'string' ? input.redirect : null,
+      );
+      const errorRedirect =
+        checkRedirect(
+          typeof input.errorRedirect === 'string' ? input.errorRedirect : null,
+          'errorRedirect',
+        ) || redirect;
+      await mfa.reauthenticate(db, collection, record, input);
+      const { location, state } = await oauth2.start(db, {
+        collection,
+        provider,
+        redirect,
+        errorRedirect,
+        linkRecordId: record.id as string,
+        mfaIdHash: null,
+      });
+      const response = Response.json({ url: location });
+      response.headers.append('set-cookie', setStateCookie(request, state));
+      return response;
     },
   },
   {
@@ -904,17 +935,15 @@ export const ROUTES: readonly Route[] = [
           throw error;
         }
         // The second step is taken on the app's page. Its id stays in an
-        // HttpOnly cookie, out of the URL; the methods are no secret.
+        // HttpOnly cookie, out of the URL; GET /collections/{c}/mfa reads
+        // the methods it can take.
         if (challenge) {
           const response = new Response(null, {
             status: 302,
             headers: [
               [
                 'location',
-                oauth2.returnUrl(redirect, undefined, {
-                  mfa: 'required',
-                  methods: challenge.methods.join(','),
-                }),
+                oauth2.returnUrl(redirect, undefined, { mfa: 'required' }),
               ],
             ],
           });
@@ -973,9 +1002,28 @@ export const ROUTES: readonly Route[] = [
       `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
     tags: ['delete'],
-    async handler({ params, db, schema, principal, mailer, oauth2 }) {
+    async handler({
+      request,
+      params,
+      db,
+      schema,
+      principal,
+      mailer,
+      oauth2,
+      mfa,
+    }) {
       const { collection, id } = ownRecord(schema, principal, params);
       forbidImpersonated(principal, 'unlink a provider');
+      // Its owner needs the password, so a stolen session cannot remove a
+      // way the owner signs in.
+      if (!principal.superuser && principal.record) {
+        await mfa.reauthenticate(
+          db,
+          collection,
+          principal.record,
+          await readJsonObject(request),
+        );
+      }
       const unlinked = await unlinkAccount(
         db,
         collection.id,
@@ -997,6 +1045,49 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
+    method: 'DELETE',
+    pattern: ofRecord('mfa'),
+    tags: ['auth'],
+    async handler({ params, db, schema, principal, mfa }) {
+      // For an owner who lost their app. Never their own: that takes a code.
+      forbidImpersonated(principal, 'manage multi-factor sign-in');
+      requireSuperuser(principal);
+      const collection = authCollection(schema, params[0] as string);
+      const id = params[1] as string;
+      if (
+        principal.collection?.id === collection.id &&
+        principal.record?.id === id
+      ) {
+        throw new ApiError(
+          400,
+          'Remove your own authenticator app with a code from it.',
+        );
+      }
+      const [record] = await db
+        .select()
+        .from(table(collection.name))
+        .where(hash({ id }))
+        .all();
+      if (!record) throw new ApiError(404, 'Record not found.');
+      await mfa.clear(db, collection, record);
+      return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: new RegExp(`^/collections/${segment}/mfa$`),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, mfa }) {
+      // The cookie is HttpOnly, so the page asks which second steps its
+      // OAuth2 sign-in can take. A read, which other sites cannot see.
+      const collection = authCollection(schema, params[0] as string);
+      const cookie = mfaCookie(request);
+      if (cookie === undefined) throw invalidMfa();
+      const pending = await mfa.pending(db, collection, cookie);
+      return Response.json({ methods: await mfa.methodsOf(db, pending) });
+    },
+  },
+  {
     method: 'GET',
     pattern: ofRecord('mfa'),
     tags: ['auth'],
@@ -1012,10 +1103,10 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('totp'),
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
-      const { collection, record, session } = ownMfa(schema, principal, params);
+      const { collection, record } = ownMfa(schema, principal, params);
       const { password } = await readJsonObject(request);
       return Response.json(
-        await mfa.startTotp(db, collection, record, session, password),
+        await mfa.startTotp(db, collection, record, password),
       );
     },
   },
@@ -1043,8 +1134,8 @@ export const ROUTES: readonly Route[] = [
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
       const { collection, record } = ownMfa(schema, principal, params);
-      const { code } = await readJsonObject(request);
-      await mfa.removeTotp(db, collection, record, code);
+      const { mfaCode } = await readJsonObject(request);
+      await mfa.removeTotp(db, collection, record, mfaCode);
       return new Response(null, { status: 204 });
     },
   },
@@ -1054,13 +1145,13 @@ export const ROUTES: readonly Route[] = [
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
       const { collection, record } = ownMfa(schema, principal, params);
-      const { code } = await readJsonObject(request);
+      const { mfaCode } = await readJsonObject(request);
       return Response.json({
         recoveryCodes: await mfa.regenerateRecoveryCodes(
           db,
           collection,
           record,
-          code,
+          mfaCode,
         ),
       });
     },
@@ -1078,7 +1169,10 @@ export const ROUTES: readonly Route[] = [
     confirmPasswordReset(ctx, collection, input),
   ),
   ...flow('request-email-change', (ctx, collection, input, principal) =>
-    requestEmailChange(ctx, collection, principal, input.newEmail),
+    requestEmailChange(ctx, collection, principal, input),
+  ),
+  ...flow('approve-email-change', (ctx, collection, input) =>
+    approveEmailChange(ctx, collection, input),
   ),
   ...flow('confirm-email-change', (ctx, collection, input) =>
     confirmEmailChange(ctx, collection, input),
@@ -1106,9 +1200,17 @@ export const ROUTES: readonly Route[] = [
         .from(table(collection.name))
         .where(hash({ id }))
         .all()) as Row[];
-      let challenge: Challenge | undefined;
       try {
         await checkAuthRule(db, schema, collection, id);
+      } catch (error) {
+        // Created but not allowed to sign in yet (e.g. unverified email).
+        if (error instanceof ApiError && error.status === 403) {
+          return new Response(null, { status: 202 });
+        }
+        throw error;
+      }
+      let challenge: Challenge | undefined;
+      try {
         challenge = await context.mfa.challenge(
           db,
           schema,
@@ -1117,9 +1219,10 @@ export const ROUTES: readonly Route[] = [
           'password',
         );
       } catch (error) {
-        // Created but not allowed to sign in yet (e.g. unverified email).
+        // Created, but with no second step to take yet: it says so, unlike
+        // an authRule refusal, so the app can ask to verify the email.
         if (error instanceof ApiError && error.status === 403) {
-          return new Response(null, { status: 202 });
+          return Response.json({ mfa: 'verify' }, { status: 202 });
         }
         throw error;
       }
@@ -1637,8 +1740,18 @@ function phoneContext({
   rejectBreachedPasswords,
   effects,
   hooks,
+  mfa,
 }: Context): PhoneContext {
-  return { db, schema, sms, mailer, rejectBreachedPasswords, effects, hooks };
+  return {
+    db,
+    schema,
+    sms,
+    mailer,
+    rejectBreachedPasswords,
+    effects,
+    hooks,
+    mfa,
+  };
 }
 
 /**

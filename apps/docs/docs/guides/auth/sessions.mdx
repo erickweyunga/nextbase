@@ -93,7 +93,7 @@ Each session lists the ways it proved who signed in, as `methods`: such as
 `["password"]`, or `["password", "totp"]` after a
 [second step](/docs/guides/auth/mfa). They come back in sign-in responses, in
 `nb.getSession()` and in `nb.listSessions()`. Rules read
-`@request.auth.mfa`, which is `true` with two different methods. Sessions
+`@request.mfa`, which is `true` with two different methods. Sessions
 created before methods were recorded have none.
 
 ## Cross-site protection

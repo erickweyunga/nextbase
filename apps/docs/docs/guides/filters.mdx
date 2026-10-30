@@ -127,12 +127,12 @@ Rules can also read the request:
 | `@request.headers.<name>` | a request header, lowercase |
 | `@request.method` | `GET`, `POST`, `PATCH` or `DELETE` |
 | `@request.impersonatedBy` | the id of the superuser [impersonating](/docs/guides/auth/impersonation) the caller, or `""` |
-| `@request.auth.mfa` | `true` when the session signed in with two different methods, after a [second step](/docs/guides/auth/mfa); `false` otherwise, and when signed out |
+| `@request.mfa` | `true` when the caller's session signed in with two different methods, after a [second step](/docs/guides/auth/mfa); `false` otherwise, and when signed out |
 | `@collection.<name>.<field>` | records of any collection |
 
 `@request.auth.<field>` must be a field of some auth collection, or
-`collectionId`, `collectionName` or `mfa`; any other name is an error when
-the rule is saved. No auth collection can have a field named `mfa`. When the caller is signed out, or signed in to a collection without
+`collectionId` or `collectionName`; any other name is an error when the
+rule is saved. When the caller is signed out, or signed in to a collection without
 that field, it is empty. Hidden fields can be read, as everywhere in rules,
 but `password` and `tokenKey` cannot. A field with several values compares like
 one of the record's own: `@request.auth.roles ?= "admin"` matches when any

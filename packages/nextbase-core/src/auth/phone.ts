@@ -13,6 +13,8 @@ import { randomPassword } from '../schema/fields.ts';
 import { newCode, typedCode } from './codes.ts';
 import { phoneIs } from './identity.ts';
 import type { Mailer } from './mail.ts';
+import type { Mfa } from './mfa.ts';
+import { type PasswordOrigin, setPasswordOrigin } from './password-origins.ts';
 import { type Principal, recordIn } from './principal.ts';
 import type { Sms } from './sms.ts';
 import {
@@ -38,6 +40,7 @@ export interface PhoneContext {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   hooks: Hooks;
+  mfa: Mfa;
 }
 
 /** A code is accepted only for the purpose it was sent for. */
@@ -163,6 +166,10 @@ export async function authWithPhoneCode(
     input,
     new URLSearchParams(),
   );
+  // Nobody knows the generated password, so it is never a sign-in step.
+  if (collection.mfa.enabled) {
+    await setPasswordOrigin(ctx.db, collection.id, id, 'random');
+  }
   return (await findRecord(ctx.db, collection, id)) as Row;
 }
 
@@ -177,22 +184,32 @@ export async function confirmPasswordResetByPhone(
   const record = await findByPhone(ctx.db, collection, phone);
   if (record?.phoneVerified !== true) throw invalidCode();
   // The update tells the owner their password changed, if they have an email.
-  await privilegedUpdate(ctx, collection, record, {
-    password: input.password,
-    passwordConfirm: input.passwordConfirm,
-  });
+  await privilegedUpdate(
+    ctx,
+    collection,
+    record,
+    { password: input.password, passwordConfirm: input.passwordConfirm },
+    'phoneReset',
+  );
+  await ctx.mfa.resetNotice(ctx.db, ctx.schema, collection, record, 'phone');
   await clearAttempts(ctx.db, [accountKey(collection.id, record.id as string)]);
 }
 
+/**
+ * Setting or changing the phone needs the current password, and with an
+ * authenticator app a code from it: a stolen session cannot move the
+ * account to the thief's phone.
+ */
 export async function requestPhoneVerification(
   ctx: PhoneContext,
   collection: AuthCollection,
   principal: Principal,
-  phoneInput: unknown,
+  input: Record<string, unknown>,
 ): Promise<void> {
   const record = signedIn(collection, principal);
   checkEnabled(collection);
-  const phone = checkPhone(phoneInput);
+  const phone = checkPhone(input.phone);
+  await reauthenticateFor(ctx, collection, record, phone, input);
   ctx.sms.check(phone);
   await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
   // Uniqueness is checked on confirm, so this request does not reveal it.
@@ -216,6 +233,7 @@ export async function confirmPhoneVerification(
   const record = signedIn(collection, principal);
   checkEnabled(collection);
   const phone = checkPhone(input.phone);
+  await reauthenticateFor(ctx, collection, record, phone, input);
   await consumeCode(
     ctx.db,
     collection,
@@ -245,6 +263,19 @@ export async function confirmPhoneVerification(
   if (previous !== phone && record.email) {
     ctx.mailer.send('phoneChanged', collection.name, record.email as string);
   }
+}
+
+// Only when the phone would be new or changed: confirming the same
+// verified phone again adds no way in.
+async function reauthenticateFor(
+  ctx: PhoneContext,
+  collection: AuthCollection,
+  record: Row,
+  phone: string,
+  input: Record<string, unknown>,
+): Promise<void> {
+  if (record.phone === phone && record.phoneVerified === true) return;
+  await ctx.mfa.reauthenticate(ctx.db, collection, record, input);
 }
 
 async function findByPhone(
@@ -397,9 +428,13 @@ async function privilegedUpdate(
   collection: AuthCollection,
   record: Row,
   input: Record<string, unknown>,
+  passwordOrigin?: PasswordOrigin,
 ): Promise<void> {
   await updateRecord(
-    systemContext(ctx, input),
+    {
+      ...systemContext(ctx, input),
+      ...(passwordOrigin !== undefined && { passwordOrigin }),
+    },
     collection,
     record.id as string,
     input,

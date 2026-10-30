@@ -47,10 +47,13 @@ export type {
   FullListOptions,
   ImpersonateOptions,
   ListOptions,
+  OAuth2LinkOptions,
   OAuth2Options,
   RecordOptions,
   RecordService,
   SecondStepOptions,
+  SignUpPending,
+  StepUpOptions,
 } from './records.ts';
 export type {
   ApiErrorBody,

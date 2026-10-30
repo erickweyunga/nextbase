@@ -15,6 +15,7 @@ import { codeHash, emailSignInCode, sameHash, typedCode } from './codes.ts';
 import { recordMatches } from './login.ts';
 import type { Mailer } from './mail.ts';
 import { verifyPassword } from './password.ts';
+import { RESET_HOLD } from './password-origins.ts';
 import { textSignInCode, textsCodes } from './phone.ts';
 import type { SecretKeys } from './secret-keys.ts';
 import {
@@ -58,8 +59,6 @@ const MAX_ATTEMPTS = 5;
 const ACCOUNT_LIMIT: Limit = { max: 10, window: '15 minutes' };
 /** How long an authenticator app may take to be confirmed once set up. */
 const SETUP_WINDOW = '15 minutes';
-/** A session this new may set up an app without the password. */
-const RECENT_SESSION = '10 minutes';
 
 type CodeChannel = 'email' | 'phone';
 
@@ -108,6 +107,10 @@ interface RecordState {
   secret: string | null;
   recoveryCodes: number;
   linked: boolean;
+  /** How the password was last set; null when chosen. */
+  origin: string | null;
+  /** Whether that was within the reset hold. */
+  recent: boolean;
 }
 
 export interface MfaOptions {
@@ -146,23 +149,18 @@ export class Mfa {
     record: Row,
     method: SignInMethod,
   ): Promise<Challenge | undefined> {
-    const { enabled, rule, duration } = collection.mfa;
+    const { enabled, duration } = collection.mfa;
     if (!enabled) return undefined;
     const id = record.id as string;
     const state = await recordState(db, collection.id, id);
-    const required =
-      state.secret !== null ||
-      rule === '' ||
-      (rule !== null &&
-        (await recordMatches(db, schema, collection, rule, id)));
-    if (!required) return undefined;
-    const methods = this.#methods(collection, record, state).filter(
-      (m) => m !== method,
-    );
+    if (!(await required(db, schema, collection, id, state))) return undefined;
+    const methods = this.#methods(collection, record, state, method);
     if (methods.length === 0) {
       throw new ApiError(
         403,
-        'This account must take a second sign-in step, but has no way to: verify its email or phone, or set up an authenticator app.',
+        collection.id === SUPERUSERS
+          ? 'Superusers must take a second sign-in step with an authenticator app, and this one has none. Add one with `nextbase superuser mfa-setup`.'
+          : 'This account must take a second sign-in step, but has no way to: verify its email or phone, or set up an authenticator app.',
       );
     }
     const mfaId = randomBytes(32).toString('base64url');
@@ -229,21 +227,26 @@ export class Mfa {
 
   /** Refuses a second step this sign-in cannot take, such as the first one again. */
   async allow(db: DB, pending: Pending, method: SignInMethod): Promise<void> {
-    const { collection, record } = pending;
-    const state = await recordState(db, collection.id, record.id as string);
-    const methods = this.#methods(collection, record, state);
-    if (method === pending.method || !methods.includes(method)) {
+    const methods = await this.methodsOf(db, pending);
+    if (!methods.includes(method)) {
       throw new ApiError(
         400,
         'This sign-in cannot take its second step this way.',
         {
           mfaId: {
             code: 'validation_mfa_method',
-            message: `Use one of: ${methods.filter((m) => m !== pending.method).join(', ')}.`,
+            message: `Use one of: ${methods.join(', ')}.`,
           },
         },
       );
     }
+  }
+
+  /** The ways a pending sign-in can take its second step. */
+  async methodsOf(db: DB, pending: Pending): Promise<SignInMethod[]> {
+    const { collection, record } = pending;
+    const state = await recordState(db, collection.id, record.id as string);
+    return this.#methods(collection, record, state, pending.method);
   }
 
   /** Emails a code to the record's verified email, for the second step. */
@@ -382,15 +385,28 @@ export class Mfa {
 
   /**
    * Sets up an authenticator app, unconfirmed until `confirmTotp`. Needs the
-   * password, or a session signed in at most 10 minutes ago, and a verified
-   * email or phone to recover the account with.
+   * current password, so a stolen session cannot lock the owner out, and a
+   * verified email or phone to recover the account with.
    */
   async startTotp(
     db: DB,
     collection: AuthCollection,
     record: Row,
-    session: Session,
     password: unknown,
+  ): Promise<TotpSetup> {
+    this.#checkEnrollable(collection);
+    await checkPassword(db, collection, record, password);
+    return this.startTotpTrusted(db, collection, record);
+  }
+
+  /**
+   * `startTotp` without the password, for trusted server code such as the
+   * CLI, whose user can reach the database already.
+   */
+  async startTotpTrusted(
+    db: DB,
+    collection: AuthCollection,
+    record: Row,
   ): Promise<TotpSetup> {
     this.#checkEnrollable(collection);
     const id = record.id as string;
@@ -409,7 +425,6 @@ export class Mfa {
         },
       );
     }
-    await checkRecentOrPassword(db, collection, record, session, password);
     const state = await recordState(db, collection.id, id);
     if (state.secret !== null) throw alreadySetUp();
     const secret = newTotpSecret();
@@ -441,14 +456,14 @@ export class Mfa {
 
   /**
    * Confirms the app set up with a code from it, and returns new recovery
-   * codes. A new token key signs out every other session; this one is kept
-   * and counts the app as a way it signed in.
+   * codes. A new token key signs out every other session; `session`, if
+   * any, is kept and counts the app as a way it signed in.
    */
   async confirmTotp(
     db: DB,
     collection: AuthCollection,
     record: Row,
-    session: Session,
+    session: Session | undefined,
     code: unknown,
   ): Promise<string[]> {
     this.#checkEnrollable(collection);
@@ -497,8 +512,8 @@ export class Mfa {
       await tx
         .update(table(collection.name), { tokenKey }, hash({ id }))
         .execute();
-      await rekeySessions(tx, collection, { id, tokenKey }, session.id);
-      await addSessionMethod(tx, session.id, 'totp');
+      await rekeySessions(tx, collection, { id, tokenKey }, session?.id);
+      if (session) await addSessionMethod(tx, session.id, 'totp');
       // Sign-ins started before now could finish without the app.
       await deleteFor(tx, '_mfas', collection.id, id);
     });
@@ -518,7 +533,7 @@ export class Mfa {
   ): Promise<void> {
     const id = record.id as string;
     await this.#requireApp(db, collection, id);
-    await this.stepUp(db, collection, record, code, 'code');
+    await this.stepUp(db, collection, record, code, { always: true });
     await db.transaction(async (tx) => {
       await deleteFor(tx, '_totp', collection.id, id);
       await deleteFor(tx, '_recovery_codes', collection.id, id);
@@ -541,7 +556,7 @@ export class Mfa {
   ): Promise<string[]> {
     const id = record.id as string;
     await this.#requireApp(db, collection, id);
-    await this.stepUp(db, collection, record, code, 'code');
+    await this.stepUp(db, collection, record, code, { always: true });
     const codes = newRecoveryCodes();
     await db.transaction((tx) =>
       replaceRecoveryCodes(tx, collection.id, id, codes),
@@ -551,16 +566,19 @@ export class Mfa {
 
   /**
    * For a sensitive change of a record with an authenticator app: a code
-   * from the app, or a recovery code, in `field`. Does nothing for a record
-   * without one.
+   * from the app, or a recovery code, in `mfaCode`. Does nothing for a
+   * record without one, or while the collection has MFA off, unless
+   * `always`, as for changes to the app itself.
    */
   async stepUp(
     db: DB,
     collection: AuthCollection,
     record: Row,
     code: unknown,
-    field: string,
+    { always = false }: { always?: boolean } = {},
   ): Promise<void> {
+    if (!always && !collection.mfa.enabled) return;
+    const field = 'mfaCode';
     const id = record.id as string;
     const state = await recordState(db, collection.id, id);
     if (state.secret === null) return;
@@ -581,23 +599,93 @@ export class Mfa {
     await clearAttempts(db, keys);
   }
 
-  // The ways `record` can take a second step, by its state.
+  /**
+   * Requires the current password, and with an authenticator app a code
+   * from it, for a change that adds a way into the account, such as a new
+   * phone or provider: a stolen session alone cannot make one.
+   */
+  async reauthenticate(
+    db: DB,
+    collection: AuthCollection,
+    record: Row,
+    input: Record<string, unknown>,
+  ): Promise<void> {
+    await checkPassword(db, collection, record, input.password);
+    await this.stepUp(db, collection, record, input.mfaCode);
+  }
+
+  /**
+   * Removes another record's app, recovery codes and pending sign-ins, for
+   * a superuser, and tells the owner.
+   */
+  async clear(db: DB, collection: AuthCollection, record: Row): Promise<void> {
+    await resetMfa(db, collection.id, record.id as string);
+    if (record.email) {
+      this.#mailer.send('mfaCleared', collection.name, record.email as string);
+    }
+  }
+
+  /**
+   * After a password reset by email or text: tells an owner who signs in
+   * in two steps that codes to that channel do not count for a while.
+   */
+  async resetNotice(
+    db: DB,
+    schema: Schema,
+    collection: AuthCollection,
+    record: Row,
+    channel: 'email' | 'phone',
+  ): Promise<void> {
+    if (!collection.mfa.enabled || !record.email) return;
+    const id = record.id as string;
+    const state = await recordState(db, collection.id, id);
+    if (!(await required(db, schema, collection, id, state))) return;
+    this.#mailer.send(
+      'mfaCodesPaused',
+      collection.name,
+      record.email as string,
+      {
+        channel,
+      },
+    );
+  }
+
+  /**
+   * The ways `record` can take the step after `first`. Superusers use only
+   * an app. A password nobody chose is no step; one reset through email or
+   * a phone in the last day does not pair with a code sent there, so that
+   * inbox or phone alone never holds both steps.
+   */
   #methods(
     collection: AuthCollection,
     record: Row,
     state: RecordState,
+    first: SignInMethod,
   ): SignInMethod[] {
+    let methods: SignInMethod[];
     if (state.secret !== null) {
-      return state.recoveryCodes > 0 ? ['totp', 'recoveryCode'] : ['totp'];
+      methods = state.recoveryCodes > 0 ? ['totp', 'recoveryCode'] : ['totp'];
+    } else if (collection.id === SUPERUSERS) {
+      methods = [];
+    } else {
+      methods = [];
+      if (state.origin !== 'random') methods.push('password');
+      if (record.emailVerified === true && record.email) {
+        methods.push('emailCode');
+      }
+      if (textsCodes(collection, record)) methods.push('phoneCode');
+      if (this.#oauth2 && state.linked) methods.push('oauth2');
     }
-    const methods: SignInMethod[] = ['password'];
-    if (record.emailVerified === true && record.email)
-      methods.push('emailCode');
-    if (textsCodes(collection, record)) methods.push('phoneCode');
-    if (this.#oauth2 && state.linked && collection.id !== SUPERUSERS) {
-      methods.push('oauth2');
-    }
-    return methods;
+    const held = (channel: SignInMethod): boolean =>
+      state.recent &&
+      ((state.origin === 'emailReset' && channel === 'emailCode') ||
+        (state.origin === 'phoneReset' && channel === 'phoneCode'));
+    return methods.filter(
+      (m) =>
+        m !== first &&
+        !(first === 'password' && held(m)) &&
+        !(m === 'password' && held(first)),
+    );
   }
 
   #checkEnrollable(collection: AuthCollection): void {
@@ -761,35 +849,28 @@ async function recordState(
          (SELECT count(*)::int FROM {{${table('_recovery_codes')}}}
           WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS "recoveryCodes",
          EXISTS (SELECT 1 FROM {{${table('_linked_accounts')}}}
-          WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS linked`,
+          WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS linked,
+         p.origin, coalesce(p.set_at > now() - interval '${RESET_HOLD}', false) AS recent
+       FROM (SELECT 1) AS one
+       LEFT JOIN {{${table('_password_origins')}}} p
+         ON p.collection_id = {:collectionId} AND p.record_id = {:recordId}`,
     )
     .bind({ collectionId, recordId })
     .all<RecordState>();
   return state as RecordState;
 }
 
-/** Needs the password, or a session signed in at most 10 minutes ago. */
-async function checkRecentOrPassword(
+/** The current password, counted against the account like a sign-in. */
+async function checkPassword(
   db: DB,
   collection: AuthCollection,
   record: Row,
-  session: Session,
   password: unknown,
 ): Promise<void> {
-  if (password === undefined) {
-    const recent = await db
-      .newQuery(
-        `SELECT 1 FROM {{${table('_sessions')}}}
-         WHERE id = {:id} AND created > now() - interval '${RECENT_SESSION}'`,
-      )
-      .bind({ id: session.id })
-      .column();
-    if (recent.length > 0) return;
-    throw new ApiError(
-      400,
-      'Enter your password to set up an authenticator app, or sign in again.',
-      { password: { code: 'validation_required', message: 'Required.' } },
-    );
+  if (password === undefined || password === '') {
+    throw new ApiError(400, 'Enter your current password to do this.', {
+      password: { code: 'validation_required', message: 'Required.' },
+    });
   }
   const keys = [accountKey(collection.id, record.id as string)];
   await countAttempt(db, keys);
@@ -798,7 +879,7 @@ async function checkRecentOrPassword(
     password.length <= 1024 &&
     (await verifyPassword(password, record.password as string));
   if (!ok) {
-    throw new ApiError(400, 'Failed to set up the authenticator app.', {
+    throw new ApiError(400, 'The password is not the current one.', {
       password: {
         code: 'validation_invalid_password',
         message: 'Does not match the current password.',
@@ -806,6 +887,22 @@ async function checkRecentOrPassword(
     });
   }
   await clearAttempts(db, keys);
+}
+
+/** Whether the record must take a second step: it has an app, or the rule says so. */
+async function required(
+  db: DB,
+  schema: Schema,
+  collection: AuthCollection,
+  id: string,
+  state: RecordState,
+): Promise<boolean> {
+  const { rule } = collection.mfa;
+  return (
+    state.secret !== null ||
+    rule === '' ||
+    (rule !== null && (await recordMatches(db, schema, collection, rule, id)))
+  );
 }
 
 async function storeCode(

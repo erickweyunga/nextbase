@@ -253,11 +253,25 @@ describe('OAuth2 in the example app', () => {
     expect(login.status).toBe(200);
 
     const dashboard = await page(browser, '/dashboard');
-    const callback = await signInThroughProvider(
-      browser,
-      linkTo(dashboard, 'Connect Test IdP'),
+    expect(dashboard.replaceAll('<!-- -->', '')).toMatch(
+      /<button[^>]*>Connect Test IdP<\/button>/,
+    );
+    // What the Connect button sends: the password, for the provider's URL.
+    const started = await browser.fetch(
+      '/api/nextbase/collections/users/link-oauth2/oidc',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD, redirect: '/dashboard' }),
+      },
+    );
+    expect(started.status).toBe(200);
+    const { url } = (await started.json()) as { url: string };
+    expect(browser.has('__Host-nextbase_oauth2')).toBe(true);
+    const callback = await browser.open(
       // Another email: linking does not depend on it.
-      { sub: 'cy-at-idp', email: 'cy.work@example.com' },
+      provider.approve(url, { sub: 'cy-at-idp', email: 'cy.work@example.com' }),
+      { from: 'none' },
     );
     expect(browser.location(callback)).toBe(`${server.origin}/dashboard`);
     const linked = await page(browser, '/dashboard');
@@ -279,10 +293,16 @@ describe('OAuth2 in the example app', () => {
     const me = await (await browser.fetch('/api/nextbase/session')).json();
     const unlink = await browser.fetch(
       `/api/nextbase/collections/users/records/${me.record.id}/linked-accounts/oidc`,
-      { method: 'DELETE' },
+      {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      },
     );
     expect(unlink.status).toBe(204);
-    expect(await page(browser, '/dashboard')).toContain('Connect Test IdP');
+    expect(
+      (await page(browser, '/dashboard')).replaceAll('<!-- -->', ''),
+    ).toContain('Connect Test IdP');
   });
 
   it('does not let another site start a link', async () => {
@@ -294,16 +314,18 @@ describe('OAuth2 in the example app', () => {
     );
     expect(browser.has('__Host-nextbase_session')).toBe(true);
     const link = new URL(
-      '/api/nextbase/collections/users/auth-with-oauth2/oidc',
+      '/api/nextbase/collections/users/link-oauth2/oidc',
       server.origin,
     );
-    link.searchParams.set('link', 'true');
     const crossSite = await fetch(link, {
+      method: 'POST',
       redirect: 'manual',
       headers: {
         cookie: browser.cookieHeader(),
+        'content-type': 'application/json',
         'sec-fetch-site': 'cross-site',
       },
+      body: JSON.stringify({ password: PASSWORD }),
     });
     expect(crossSite.status).toBe(403);
   });

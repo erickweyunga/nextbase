@@ -265,8 +265,9 @@ export class OAuth2 {
     const base = this.#appUrl as URL;
     const url = redirect === '' ? new URL(base) : new URL(redirect, base);
     if (error !== undefined) url.searchParams.set('error', error);
+    // Added to the app's own parameters, never in place of one.
     for (const [key, value] of Object.entries(params)) {
-      url.searchParams.set(key, value);
+      url.searchParams.append(key, value);
     }
     return url.href;
   }
