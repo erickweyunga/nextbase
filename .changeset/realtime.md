@@ -1,6 +1,0 @@
----
-"@nextbasejs/core": patch
-"@nextbasejs/client": patch
----
-
-Clients can subscribe to records as they are created, updated and deleted. List the collections in the new `realtime` option of `new NextBase()`, or pass `true`, then call `collection(name).subscribe("*" or an id, callback, { filter, expand, fields, onReset, onError })` in the client. Each subscriber gets only the records its list or view rule and filter allow, shaped as a list request would return them, once and in commit order; writes that roll back send nothing. Events are logged in the write's transaction and take their position in the log as it commits. All subscriptions of a client share one streamed request that resumes after the last event it received, ends on its own before Vercel's limit (`streamSeconds`, 240 by default), and starts over when the session changes; `onReset` is called once a subscription is live and whenever events may have been missed. Event ids are signed for the caller, so they cannot be used to replay events under someone else's session or after the signed-in record changed. Each instance reads new events once for all its streams and serves at most 1000 of them. Behind a transaction pooler, set `realtime.listenUrl` to a direct connection string.
