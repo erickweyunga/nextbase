@@ -44,6 +44,7 @@ import {
   type Storage,
   type StorageOptions,
 } from './files/storage.ts';
+import { hasThumbs, Thumbs, thumbsPrefix } from './files/thumbs.ts';
 import { Logger, type LogsOptions } from './logs/logger.ts';
 import { type RequestOutcome, requestEntry } from './logs/request.ts';
 import {
@@ -273,6 +274,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #sms: Sms;
   readonly #rejectBreachedPasswords: boolean;
   readonly #storage: Storage;
+  readonly #thumbs: Thumbs;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
   readonly #appUrl: URL | undefined;
   readonly #hooks: Hooks;
@@ -330,6 +332,7 @@ export class NextBase<C extends Collections = Collections> {
     );
     this.#sms = new Sms(options.sms, this.#waitUntil, this.#logger);
     this.#storage = newStorage(options.storage);
+    this.#thumbs = new Thumbs(this.#storage, this.#logger);
     this.#appUrl =
       appUrl ??
       (options.mail?.appUrl === undefined
@@ -632,8 +635,17 @@ export class NextBase<C extends Collections = Collections> {
   // A failure only leaves an unused file, so it is just logged.
   #deleteFiles(keys: readonly string[]): void {
     if (keys.length === 0) return;
+    const storage = this.#storage;
     this.#waitUntil(
-      this.#storage.delete(keys).catch((error: unknown) => {
+      (async () => {
+        // Thumbnails first: on disk, a record's directory goes once empty.
+        await Promise.all(
+          keys
+            .filter(hasThumbs)
+            .map((key) => storage.deletePrefix(thumbsPrefix(key))),
+        );
+        await storage.delete(keys);
+      })().catch((error: unknown) => {
         this.#logger.failure('storage', 'deleting stored files failed', error);
       }),
     );
@@ -741,6 +753,7 @@ export class NextBase<C extends Collections = Collections> {
       oauth2: this.#oauth2,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
+      thumbs: this.#thumbs,
       hooks: this.#hooks,
       realtime: this.#realtime,
       logger: this.#logger,

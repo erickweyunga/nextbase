@@ -95,7 +95,10 @@ function fromRow(row: CollectionRow): Collection {
     id: row.id,
     name: row.name,
     system: row.system,
-    fields: row.fields,
+    // File fields stored before thumbnails existed.
+    fields: row.fields.map((field) =>
+      field.type === 'file' ? { ...field, thumbs: field.thumbs ?? [] } : field,
+    ),
     indexes: row.indexes,
     listRule: row.list_rule,
     viewRule: row.view_rule,

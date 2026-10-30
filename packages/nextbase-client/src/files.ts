@@ -10,6 +10,12 @@ export interface FileUrlOptions {
   download?: boolean;
   /** A token from `files.getToken()`, for protected files. */
   token?: string;
+  /**
+   * A thumbnail size of the field, such as `100x100`, for JPEG, PNG, GIF and
+   * WebP images. Other files, and sizes the field does not allow, are
+   * served as they are.
+   */
+  thumb?: string;
 }
 
 /** File URLs and tokens for protected files. */
@@ -31,6 +37,7 @@ export class FileService {
       `/files/${encodeURIComponent(record.collectionId)}/${encodeURIComponent(record.id)}/${encodeURIComponent(filename)}`,
       {
         token: options.token,
+        thumb: options.thumb || undefined,
         ...(options.download && { download: 1 }),
       },
     );

@@ -24,7 +24,8 @@ export type FailureType =
   | 'sms'
   | 'realtime'
   | 'oauth2'
-  | 'rateLimits';
+  | 'rateLimits'
+  | 'thumbs';
 
 /**
  * How often each instance deletes expired entries, in milliseconds. Tests
@@ -145,12 +146,19 @@ export class Logger {
   }
 
   /**
-   * Reports work that failed in the background, after the response: to the
-   * console, as before logs existed, and as an error entry.
+   * Reports work that failed, such as in the background after the
+   * response: to the console, as before logs existed, and as an entry, an
+   * error unless it is only a `warn`ing.
    */
-  failure(type: FailureType, what: string, error: unknown): void {
-    console.error(`[nextbase] ${what}:`, error);
-    this.add(LOG_LEVELS.error, capitalize(what), {
+  failure(
+    type: FailureType,
+    what: string,
+    error: unknown,
+    level: 'warn' | 'error' = 'error',
+  ): void {
+    if (level === 'warn') console.warn(`[nextbase] ${what}:`, error);
+    else console.error(`[nextbase] ${what}:`, error);
+    this.add(LOG_LEVELS[level], capitalize(what), {
       type,
       error: errorMessage(error).slice(0, MAX_ERROR),
       ...(error instanceof Error &&
