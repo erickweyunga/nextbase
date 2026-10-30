@@ -163,14 +163,17 @@ async function readSessionById(
   return row as SessionRow;
 }
 
-/** `readSession` for several tokens, with one query: a row for each, in order. */
+/**
+ * `readSession` for several token hashes, or session ids with `by: 'id'`, with
+ * one query: a row for each, in order.
+ */
 async function readSessions(
   db: DB,
   schema: Schema,
-  hashes: readonly string[],
+  keys: readonly string[],
   by: 'token_hash' | 'id' = 'token_hash',
 ): Promise<SessionRow[]> {
-  const params: Record<string, unknown> = { tokenHashes: [...hashes] };
+  const params: Record<string, unknown> = { keys: [...keys] };
   const branches = schema.collections
     .filter((c) => c.type === 'auth')
     .map((c, i) => {
@@ -190,9 +193,9 @@ async function readSessions(
               now() AS now,
               CASE s.collection_id ${branches.join(' ')} END AS record
        FROM {{${table('_meta')}}} m
-       CROSS JOIN unnest({:tokenHashes}::text[]) WITH ORDINALITY AS h(hash, i)
+       CROSS JOIN unnest({:keys}::text[]) WITH ORDINALITY AS h(key, i)
        LEFT JOIN {{${table('_sessions')}}} s
-         ON s.${by} = h.hash AND s.expires > now()
+         ON s.${by} = h.key AND s.expires > now()
        ORDER BY h.i`,
     )
     .bind(params)
