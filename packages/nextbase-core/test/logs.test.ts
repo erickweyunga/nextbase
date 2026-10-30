@@ -192,7 +192,7 @@ describe('logs', () => {
       );
     });
 
-    it('redacts tokens, codes and states in the query', async () => {
+    it('redacts tokens, codes, states and sign-in ids in the query', async () => {
       const file = await call(
         nextbase,
         'GET',
@@ -205,12 +205,21 @@ describe('logs', () => {
         '/callback/google?code=CODE-SECRET&state=STATE-SECRET&scope=email%20profile',
       );
       expect(back.status).toBe(404);
-      const [fileEntry, callback] = await requests();
+      const start = await call(
+        nextbase,
+        'GET',
+        '/collections/nope/auth-with-oauth2/google?mfaId=MFA-SECRET&redirect=/home',
+      );
+      expect(start.status).toBe(404);
+      const [fileEntry, callback, started] = await requests();
       expect(fileEntry?.data.url).toBe(
         '/api/nextbase/files/posts/abc/photo.png?token=REDACTED&download=1&Token=REDACTED',
       );
       expect(callback?.data.url).toBe(
         '/api/nextbase/callback/google?code=REDACTED&state=REDACTED&scope=email%20profile',
+      );
+      expect(started?.data.url).toBe(
+        '/api/nextbase/collections/nope/auth-with-oauth2/google?mfaId=REDACTED&redirect=/home',
       );
       const all = JSON.stringify(await rows());
       for (const secret of [
@@ -218,6 +227,7 @@ describe('logs', () => {
         'X2',
         'CODE-SECRET',
         'STATE-SECRET',
+        'MFA-SECRET',
       ]) {
         expect(all).not.toContain(secret);
       }

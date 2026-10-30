@@ -166,15 +166,42 @@ describe('OAuth2 sign-in', () => {
       signedOut?: boolean;
     } = {},
   ): Promise<Response> => {
-    const start = await raw(
-      'GET',
-      `/collections/users/auth-with-oauth2/${providerName}${query}`,
-      {
-        ...(cookie && { cookie, 'sec-fetch-site': 'same-origin' }),
-      },
+    // A link starts with the password, by a POST that answers the URL.
+    const params = new URLSearchParams(query.replace(/^\?/, ''));
+    const linking = params.get('link') === 'true';
+    const start = linking
+      ? await nextbase.handle(
+          new Request(
+            `${origin}/api/nextbase/collections/users/link-oauth2/${providerName}`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                ...(cookie && { cookie }),
+                'sec-fetch-site': 'same-origin',
+              },
+              body: JSON.stringify({
+                password: PASSWORD,
+                ...(params.has('redirect') && {
+                  redirect: params.get('redirect'),
+                }),
+              }),
+            },
+          ),
+        )
+      : await raw(
+          'GET',
+          `/collections/users/auth-with-oauth2/${providerName}${query}`,
+          {
+            ...(cookie && { cookie, 'sec-fetch-site': 'same-origin' }),
+          },
+        );
+    expect(start.status).toBe(linking ? 200 : 302);
+    const authorize = new URL(
+      linking
+        ? ((await start.json()) as { url: string }).url
+        : (start.headers.get('location') ?? ''),
     );
-    expect(start.status).toBe(302);
-    const authorize = new URL(start.headers.get('location') ?? '');
     const redirectUri = authorize.searchParams.get('redirect_uri') ?? '';
     expect(redirectUri).toBe(callbackOf(providerName));
     expect(authorize.searchParams.get('code_challenge_method')).toBe('S256');
@@ -519,6 +546,56 @@ describe('OAuth2 sign-in', () => {
     });
   });
 
+  it('links by email neither when the collection says not to, nor for an account with a second step', async () => {
+    const users = admin.collection('users');
+    await users.create({
+      email: 'nolink@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      emailVerified: true,
+    });
+    const provider = {
+      sub: 'u-nolink',
+      email: 'nolink@example.com',
+      emailVerified: true,
+    };
+    const linked = async (): Promise<number> =>
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase._linked_accounts WHERE provider_id = 'u-nolink'",
+        )
+      ).rows.length;
+
+    await admin.collections.update('users', { implicitLinking: false });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', { implicitLinking: true });
+    }
+
+    // Whoever holds the inbox could otherwise link a provider and count it
+    // as a second step alongside an email code.
+    await admin.collections.update('users', {
+      mfa: {
+        enabled: true,
+        rule: 'email = "nolink@example.com"',
+        duration: 300,
+      },
+    });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', {
+        mfa: { enabled: false, rule: null, duration: 300 },
+      });
+    }
+    // With neither, the same sign-in links as before.
+    expect(errorOf(await signIn('idp', provider))).toBeNull();
+    expect(await linked()).toBe(1);
+  });
+
   it('links and unlinks a provider for the signed-in account', async () => {
     const { token, record } = await passwordAccount('fay@example.com');
     const linked = await signIn(
@@ -554,18 +631,32 @@ describe('OAuth2 sign-in', () => {
     expect(
       (await call(nextbase, 'DELETE', unlink, { token: other })).status,
     ).toBe(404);
-    expect((await call(nextbase, 'DELETE', unlink, { token })).status).toBe(
-      204,
-    );
+    // The owner needs the password: a stolen session cannot remove it.
+    expect(
+      (await call(nextbase, 'DELETE', unlink, { token, body: {} })).status,
+    ).toBe(400);
+    expect(
+      (
+        await call(nextbase, 'DELETE', unlink, {
+          token,
+          body: { password: PASSWORD },
+        })
+      ).status,
+    ).toBe(204);
     await Promise.all(pending.splice(0));
     expect(sent.at(-1)).toMatchObject({
       to: 'fay@example.com',
       subject: 'A way to sign in was removed',
     });
     expect(sent.at(-1)?.text).toContain('GitHub');
-    expect((await call(nextbase, 'DELETE', unlink, { token })).status).toBe(
-      404,
-    );
+    expect(
+      (
+        await call(nextbase, 'DELETE', unlink, {
+          token,
+          body: { password: PASSWORD },
+        })
+      ).status,
+    ).toBe(404);
   });
 
   it('refuses to link a provider account another record already has', async () => {
@@ -595,19 +686,43 @@ describe('OAuth2 sign-in', () => {
     expect(errorOf(response)).toBe('oauth2_failed');
   });
 
-  it('does not start a link for a signed-out caller or from another site', async () => {
-    const signedOut = await raw(
+  it('does not start a link for a signed-out caller, from another site, or without the password', async () => {
+    const link = (
+      headers: Record<string, string>,
+      body: Record<string, unknown> = { password: PASSWORD },
+    ) =>
+      nextbase.handle(
+        new Request(
+          `${origin}/api/nextbase/collections/users/link-oauth2/idp`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...headers },
+            body: JSON.stringify(body),
+          },
+        ),
+      );
+    expect((await link({ 'sec-fetch-site': 'same-origin' })).status).toBe(401);
+    expect((await link({ 'sec-fetch-site': 'cross-site' })).status).toBe(403);
+    // A stolen session, without the password, cannot add a way in.
+    await passwordAccount('kit@example.com');
+    const cookie = await cookieSignIn('kit@example.com');
+    const noPassword = await link(
+      { cookie, 'sec-fetch-site': 'same-origin' },
+      {},
+    );
+    expect(noPassword.status).toBe(400);
+    const wrong = await link(
+      { cookie, 'sec-fetch-site': 'same-origin' },
+      { password: 'not the password!' },
+    );
+    expect(wrong.status).toBe(400);
+    // A link is never started by a URL.
+    const byUrl = await raw(
       'GET',
       '/collections/users/auth-with-oauth2/idp?link=true',
       { 'sec-fetch-site': 'same-origin' },
     );
-    expect(signedOut.status).toBe(401);
-    const crossSite = await raw(
-      'GET',
-      '/collections/users/auth-with-oauth2/idp?link=true',
-      { 'sec-fetch-site': 'cross-site' },
-    );
-    expect(crossSite.status).toBe(403);
+    expect(byUrl.status).toBe(400);
   });
 
   it('only returns to paths on the app', async () => {

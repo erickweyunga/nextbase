@@ -132,13 +132,30 @@ they usually do and links the provider from their account.
 This keeps someone who controls a provider account claiming your email from
 signing in to your account.
 
-## Link and unlink providers
+Two cases never link automatically, and answer `account_exists` instead:
 
-A signed-in user can link a provider to their account. The sign-in session
-stays as it is:
+- an account that takes a [second sign-in step](/docs/guides/auth/mfa):
+  whoever holds its inbox could otherwise add a provider and count it as a
+  second step beside an email code;
+- every account of a collection with `implicitLinking: false`, for apps that
+  want users to link providers only from a settings page:
 
 ```ts
-nb.collection("users").linkOAuth2("github", { redirect: "/settings" });
+await superuser.collections.update("users", { implicitLinking: false });
+```
+
+New users can still sign up through a provider either way.
+
+## Link and unlink providers
+
+A signed-in user, with a cookie session, can link a provider to their
+account. The sign-in session stays as it is:
+
+```ts
+await nb.collection("users").linkOAuth2("github", {
+  password, // the current one
+  redirect: "/settings",
+});
 ```
 
 The account's email must be [verified](/docs/guides/auth/verification) first,
@@ -153,8 +170,15 @@ so its owner hears of a change they did not make:
 const users = nb.collection("users");
 const linked = await users.listLinkedAccounts(user.id);
 // [{ id: "...", provider: "github", created: "2026-10-19T12:00:00.000Z" }]
-await users.unlinkAccount(user.id, "github");
+await users.unlinkAccount(user.id, "github", { password });
 ```
+
+Linking and unlinking need the current password, and with an
+[authenticator app](/docs/guides/auth/mfa) a code from it as `mfaCode`, so
+someone who took over a session cannot add or remove a way in. A superuser
+unlinking another account's provider needs neither. The link starts with a
+`POST`, which answers the provider's URL; `linkOAuth2` opens it, and
+`oauth2LinkUrl` returns it.
 
 ## Protections
 

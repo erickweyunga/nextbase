@@ -33,6 +33,11 @@ await posts.delete(id);
 `create` and `update` return `null` when the write succeeded but the rules do
 not let the caller view the result.
 
+Deleting the signed-in account takes `{ password }` once its session is older
+than a day, and `{ mfaCode }` with an authenticator app. Without either,
+`requestAccountDeletion()` emails a link that `confirmAccountDeletion(token)`
+opens. See [Account deletion](/docs/guides/auth/account-deletion).
+
 ## Files
 
 ```ts
@@ -70,6 +75,57 @@ the superuser's own session and record back. See
 
 `nb.withAuthStore(store)` gives a client of the same server signed in through
 another auth store.
+
+## Multi-factor sign-in
+
+A first step that needs a second throws a `401` that keeps the auth store;
+`isMfaRequired(error)` reads it:
+
+```ts
+import { isMfaRequired } from "@nextbasejs/client";
+
+const users = nb.collection("users");
+try {
+  await users.signInWithPassword(email, password);
+} catch (error) {
+  const mfa = isMfaRequired(error); // { mfaId, methods } or undefined
+  if (!mfa) throw error;
+  if (mfa.methods.includes("totp")) {
+    await users.signInWithTotp(code, { mfaId: mfa.mfaId });
+  } else if (mfa.methods.includes("emailCode")) {
+    await users.requestEmailCode({ mfaId: mfa.mfaId });
+    await users.signInWithEmailCode(emailedCode, { mfaId: mfa.mfaId });
+  }
+}
+```
+
+Second steps: `signInWithTotp`, `signInWithRecoveryCode`, `requestEmailCode`
+with `signInWithEmailCode`, `requestMfaPhoneCode` with
+`signInWithMfaPhoneCode`, and an `mfaId` option on `signInWithPassword` and
+`signInWithOAuth2`. Without an `mfaId`, they use the cookie an OAuth2 sign-in
+set, and `getPendingMfa()` reads its methods. The session's `methods`,
+such as `["password", "totp"]`, come back in the response and in
+`getSession()`.
+
+The signed-in record manages its authenticator app:
+
+```ts
+const { totp, recoveryCodesLeft } = await users.getMfa(me.id);
+const { secret, uri } = await users.startTotp(me.id, password);
+const recoveryCodes = await users.confirmTotp(me.id, codeFromApp);
+const fresh = await users.regenerateRecoveryCodes(me.id, codeFromApp);
+await users.removeTotp(me.id, codeFromApp);
+// As a superuser, for an owner who lost their app:
+await users.clearMfa(userId);
+```
+
+Linking or unlinking a provider and changing the phone take
+`{ password, mfaCode }`, and a verified email's inbox approves an email
+change with `approveEmailChange(token)`. `signUp()` returns
+`{ mfa: "verify" }` when the account must take a second step and has none
+yet.
+
+See [Multi-factor sign-in](/docs/guides/auth/mfa).
 
 ## Realtime
 

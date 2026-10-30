@@ -444,6 +444,9 @@ describe('rate limits', () => {
     });
     const second = limited(rules, { database: pool });
     await second.migrate();
+    // One counted request in pruneEvery, at random, also deletes expired
+    // counts, which would be a query of its own.
+    rateLimitTimings.pruneEvery = Number.POSITIVE_INFINITY;
     queries = 0;
     const refused = await send(second, 'GET', path, { ip });
     expect(refused.status).toBe(429);

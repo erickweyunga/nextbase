@@ -2,6 +2,7 @@ import type {
   AuthCollection,
   AuthMethods,
   Collection,
+  SignInMethod,
 } from '@nextbasejs/client';
 import {
   type DB,
@@ -11,21 +12,33 @@ import {
   type TxOptions,
 } from '@nextbasejs/dbx';
 import {
+  approveEmailChange,
+  confirmAccountDeletion,
   confirmEmailChange,
   confirmEmailVerification,
   confirmPasswordReset,
   type FlowContext,
+  requestAccountDeletion,
   requestEmailChange,
   requestEmailVerification,
   requestPasswordReset,
 } from '../auth/flows.ts';
 import {
   accountFor,
+  findLinked,
   listLinkedAccounts,
   unlinkAccount,
 } from '../auth/linked-accounts.ts';
 import { authWithPassword, checkAuthRule } from '../auth/login.ts';
 import type { Mailer } from '../auth/mail.ts';
+import {
+  type Challenge,
+  IMPERSONATION,
+  invalidMfa,
+  type Mfa,
+  MfaRequired,
+  type Pending,
+} from '../auth/mfa.ts';
 import {
   checkRedirect,
   type OAuth2,
@@ -57,12 +70,14 @@ import {
   IMPERSONATION_DURATION,
   impersonatorCookie,
   listSessions,
+  mfaCookie,
   type OriginPolicy,
   type Session,
   sessionCookie,
   sessionIn,
   sessionModel,
   setImpersonatorCookie,
+  setMfaCookie,
   setSessionCookie,
 } from '../auth/sessions.ts';
 import type { Sms } from '../auth/sms.ts';
@@ -79,7 +94,11 @@ import {
 } from '../files/serve.ts';
 import type { Storage } from '../files/storage.ts';
 import type { Thumbs } from '../files/thumbs.ts';
-import { readJsonObject, readRecordBody } from '../http.ts';
+import {
+  readJsonObject,
+  readOptionalJsonObject,
+  readRecordBody,
+} from '../http.ts';
 import type { Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
@@ -133,6 +152,7 @@ interface Context {
   mailer: Mailer;
   sms: Sms;
   oauth2: OAuth2;
+  mfa: Mfa;
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
@@ -200,6 +220,8 @@ const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
 const linkedAccounts = new RegExp(
   `^/collections/${segment}/records/${segment}/linked-accounts$`,
 );
+const ofRecord = (path: string): RegExp =>
+  new RegExp(`^/collections/${segment}/records/${segment}/${path}$`);
 
 export const ROUTES: readonly Route[] = [
   {
@@ -287,12 +309,14 @@ export const ROUTES: readonly Route[] = [
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
+      // Optional: deleting one's own account takes `password` or `mfaCode`.
+      const body = await readOptionalJsonObject(context.request);
       return replyOf(
         await writeRecord(context, {
           method: 'DELETE',
           collection,
           id,
-          body: {},
+          body,
           query: parse(context).url.searchParams,
         }),
       );
@@ -554,7 +578,8 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
-      const { identity, password, cookie } = await readJsonObject(request);
+      const input = await readJsonObject(request);
+      const { identity, password, cookie } = input;
       if (typeof identity !== 'string' || typeof password !== 'string') {
         throw new ApiError(400, 'Failed to authenticate.', {
           ...(typeof identity !== 'string' && {
@@ -567,6 +592,11 @@ export const ROUTES: readonly Route[] = [
       }
       // Another site must not sign the browser in to an account of its choosing.
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+      // A second step names its sign-in before the password is checked.
+      const named =
+        input.mfaId === undefined
+          ? undefined
+          : await bodyStep(context, collection, input.mfaId, 'password');
       const record = await authWithPassword(
         db,
         schema,
@@ -574,7 +604,19 @@ export const ROUTES: readonly Route[] = [
         identity,
         password,
       );
-      return startSession(context, collection, record, cookie === true);
+      const step =
+        named ?? (await cookieStep(context, collection, record, 'password'));
+      if (step) {
+        if (step.pending.record.id !== record.id) throw invalidMfa();
+        return finishStep(context, step, 'password', cookie === true);
+      }
+      return completeSignIn(
+        context,
+        collection,
+        record,
+        'password',
+        cookie === true,
+      );
     },
   },
   {
@@ -598,12 +640,36 @@ export const ROUTES: readonly Route[] = [
             collection.phoneSignIn &&
             collection.id !== SUPERUSERS,
         },
+        mfa: {
+          enabled: collection.authRule !== null && collection.mfa.enabled,
+          duration: collection.mfa.duration,
+        },
       } satisfies AuthMethods);
     },
   },
-  ...phoneFlow('request-phone-code', (ctx, collection, input) =>
-    requestPhoneCode(ctx, collection, input.phone),
-  ),
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/request-phone-code$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, principal, mfa } = context;
+      const collection = authCollection(schema, params[0] as string);
+      forbidImpersonated(principal, 'change sign-in details');
+      const input = await readJsonObject(request);
+      // Without a phone, a code for the second step of a sign-in, texted
+      // to the record's verified phone.
+      if (
+        input.mfaId !== undefined ||
+        (input.phone === undefined && mfaCookie(request) !== undefined)
+      ) {
+        const step = await requiredStep(context, collection, input);
+        await mfa.sendPhoneCode(db, step.pending);
+      } else {
+        await requestPhoneCode(phoneContext(context), collection, input.phone);
+      }
+      return new Response(null, { status: 204 });
+    },
+  },
   ...phoneFlow('request-password-reset-by-phone', (ctx, collection, input) =>
     requestPasswordResetByPhone(ctx, collection, input.phone),
   ),
@@ -613,7 +679,7 @@ export const ROUTES: readonly Route[] = [
   ...phoneFlow(
     'request-phone-verification',
     (ctx, collection, input, principal) =>
-      requestPhoneVerification(ctx, collection, principal, input.phone),
+      requestPhoneVerification(ctx, collection, principal, input),
   ),
   ...phoneFlow(
     'confirm-phone-verification',
@@ -627,9 +693,20 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
-      const { phone, code, cookie } = await readJsonObject(request);
+      const input = await readJsonObject(request);
+      const { phone, code, cookie } = input;
       // Another site must not sign the browser in to an account of its choosing.
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+      // Without a phone, the second step of a sign-in, with a code texted
+      // to the record's verified phone.
+      if (
+        input.mfaId !== undefined ||
+        (phone === undefined && mfaCookie(request) !== undefined)
+      ) {
+        const step = await requiredStep(context, collection, input);
+        await context.mfa.verifyCode(db, step.pending, 'phoneCode', code);
+        return finishStep(context, step, 'phoneCode', cookie === true);
+      }
       const record = await authWithPhoneCode(
         phoneContext(context),
         collection,
@@ -637,7 +714,30 @@ export const ROUTES: readonly Route[] = [
         code,
       );
       await checkAuthRule(db, schema, collection, record.id as string);
-      return startSession(context, collection, record, cookie === true);
+      return completeSignIn(
+        context,
+        collection,
+        record,
+        'phoneCode',
+        cookie === true,
+      );
+    },
+  },
+  ...secondStep('auth-with-totp', 'totp'),
+  ...secondStep('auth-with-recovery-code', 'recoveryCode'),
+  ...secondStep('auth-with-email-code', 'emailCode'),
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/request-email-code$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, principal, mfa } = context;
+      const collection = authCollection(schema, params[0] as string);
+      forbidImpersonated(principal, 'change sign-in details');
+      const input = await readJsonObject(request);
+      const step = await requiredStep(context, collection, input);
+      await mfa.sendEmailCode(db, step.pending);
+      return new Response(null, { status: 204 });
     },
   },
   {
@@ -648,8 +748,7 @@ export const ROUTES: readonly Route[] = [
     tags: ['auth'],
     countsItself: true,
     async handler(context) {
-      const { request, params, db, schema, principal, origins, oauth2 } =
-        context;
+      const { request, params, db, schema, oauth2 } = context;
       const query = new URL(request.url).searchParams;
       // Counted first, so requests that fail below count too. The browser
       // is navigating, so a refusal goes back to the app as its other
@@ -685,25 +784,31 @@ export const ROUTES: readonly Route[] = [
       const redirect = checkRedirect(query.get('redirect'));
       const errorRedirect =
         checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
-      let linkRecordId: string | null = null;
-      if (query.get('link') === 'true') {
-        // Linking adds a way into the account, so only this site may start it.
-        checkSameOrigin(request, origins);
-        forbidImpersonated(principal, 'link a provider');
-        if (!principal.record || principal.collection?.id !== collection.id) {
-          throw new ApiError(
-            401,
-            'Sign in to this collection to link a provider.',
-          );
-        }
-        linkRecordId = principal.record.id as string;
+      // Linking needs the password, which a link in the URL cannot carry.
+      if (query.has('link')) {
+        throw new ApiError(
+          400,
+          `Start a link with POST /collections/${params[0] as string}/link-oauth2/${provider.name}.`,
+        );
+      }
+      // The second step of a sign-in, by a provider linked to its record.
+      let mfaIdHash: string | null = null;
+      if (query.has('mfaId')) {
+        const pending = await context.mfa.pending(
+          db,
+          collection,
+          query.get('mfaId'),
+        );
+        await context.mfa.allow(db, pending, 'oauth2');
+        mfaIdHash = pending.idHash;
       }
       const { location, state } = await oauth2.start(db, {
         collection,
         provider,
         redirect,
         errorRedirect,
-        linkRecordId,
+        linkRecordId: null,
+        mfaIdHash,
       });
       return new Response(null, {
         status: 302,
@@ -715,12 +820,52 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/link-oauth2/${segment}$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, principal, origins, oauth2, mfa } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, 'Superusers sign in with their password.');
+      }
+      const provider = oauth2.provider(params[1] as string);
+      // Linking adds a way into the account, so only this site may start
+      // it, and only with the password: a stolen session cannot.
+      checkSameOrigin(request, origins);
+      forbidImpersonated(principal, 'link a provider');
+      const record = recordIn(principal, collection, 'link a provider');
+      const input = await readJsonObject(request);
+      const redirect = checkRedirect(
+        typeof input.redirect === 'string' ? input.redirect : null,
+      );
+      const errorRedirect =
+        checkRedirect(
+          typeof input.errorRedirect === 'string' ? input.errorRedirect : null,
+          'errorRedirect',
+        ) || redirect;
+      await mfa.reauthenticate(db, collection, record, input);
+      const { location, state } = await oauth2.start(db, {
+        collection,
+        provider,
+        redirect,
+        errorRedirect,
+        linkRecordId: record.id as string,
+        mfaIdHash: null,
+      });
+      const response = Response.json({ url: location });
+      response.headers.append('set-cookie', setStateCookie(request, state));
+      return response;
+    },
+  },
+  {
     method: 'GET',
     // Untagged, so sign-in limits leave it be: it is bound to the state
     // cookie and a single-use code, and a refusal would lose the sign-in.
     pattern: new RegExp(`^/callback/${segment}$`),
     async handler(context) {
-      const { request, params, db, schema, principal, mailer, oauth2 } =
+      const { request, params, db, schema, principal, mailer, oauth2, mfa } =
         context;
       // Unknown, or OAuth2 is not set up: there is no app URL to return to.
       oauth2.provider(params[0] as string);
@@ -761,6 +906,13 @@ export const ROUTES: readonly Route[] = [
           );
         }
         const identity = await oauth2.identify(provider, state, request);
+        if (state.mfaIdHash !== null) {
+          return await oauth2Step(context, collection, state.mfaIdHash, {
+            provider: provider.name,
+            identity: identity.id,
+            back,
+          });
+        }
         const { record, linkedTo } = await accountFor(
           { db, schema, effects: context.effects, hooks: context.hooks },
           collection,
@@ -774,13 +926,44 @@ export const ROUTES: readonly Route[] = [
           });
         }
         if (state.linkRecordId !== null) return back();
+        let challenge: Challenge | undefined;
         try {
           await checkAuthRule(db, schema, collection, record.id as string);
+          challenge = await mfa.challenge(
+            db,
+            schema,
+            collection,
+            record,
+            'oauth2',
+          );
         } catch (error) {
           if (error instanceof ApiError && error.status === 403) {
             throw new OAuth2Error('sign_in_forbidden', error.message);
           }
           throw error;
+        }
+        // The second step is taken on the app's page. Its id stays in an
+        // HttpOnly cookie, out of the URL; GET /collections/{c}/mfa reads
+        // the methods it can take.
+        if (challenge) {
+          const response = new Response(null, {
+            status: 302,
+            headers: [
+              [
+                'location',
+                oauth2.returnUrl(redirect, undefined, { mfa: 'required' }),
+              ],
+            ],
+          });
+          response.headers.append('set-cookie', setStateCookie(request));
+          response.headers.append(
+            'set-cookie',
+            setMfaCookie(request, {
+              mfaId: challenge.mfaId,
+              maxAge: challenge.duration,
+            }),
+          );
+          return response;
         }
         // As on any cookie sign-in, the session in the cookie is replaced.
         if (principal.viaCookie && principal.session) {
@@ -791,6 +974,7 @@ export const ROUTES: readonly Route[] = [
           collection,
           record,
           request.headers.get('user-agent') ?? '',
+          { methods: ['oauth2'] },
         );
         const response = back();
         response.headers.append(
@@ -826,9 +1010,28 @@ export const ROUTES: readonly Route[] = [
       `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
     tags: ['delete'],
-    async handler({ params, db, schema, principal, mailer, oauth2 }) {
+    async handler({
+      request,
+      params,
+      db,
+      schema,
+      principal,
+      mailer,
+      oauth2,
+      mfa,
+    }) {
       const { collection, id } = ownRecord(schema, principal, params);
       forbidImpersonated(principal, 'unlink a provider');
+      // Its owner needs the password, so a stolen session cannot remove a
+      // way the owner signs in.
+      if (!principal.superuser && principal.record) {
+        await mfa.reauthenticate(
+          db,
+          collection,
+          principal.record,
+          await readJsonObject(request),
+        );
+      }
       const unlinked = await unlinkAccount(
         db,
         collection.id,
@@ -849,6 +1052,118 @@ export const ROUTES: readonly Route[] = [
       return new Response(null, { status: 204 });
     },
   },
+  {
+    method: 'DELETE',
+    pattern: ofRecord('mfa'),
+    tags: ['auth'],
+    async handler({ params, db, schema, principal, mfa }) {
+      // For an owner who lost their app. Never their own: that takes a code.
+      forbidImpersonated(principal, 'manage multi-factor sign-in');
+      requireSuperuser(principal);
+      const collection = authCollection(schema, params[0] as string);
+      const id = params[1] as string;
+      if (
+        principal.collection?.id === collection.id &&
+        principal.record?.id === id
+      ) {
+        throw new ApiError(
+          400,
+          'Remove your own authenticator app with a code from it.',
+        );
+      }
+      const [record] = await db
+        .select()
+        .from(table(collection.name))
+        .where(hash({ id }))
+        .all();
+      if (!record) throw new ApiError(404, 'Record not found.');
+      await mfa.clear(db, collection, record);
+      return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: new RegExp(`^/collections/${segment}/mfa$`),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, mfa }) {
+      // The cookie is HttpOnly, so the page asks which second steps its
+      // OAuth2 sign-in can take. A read, which other sites cannot see.
+      const collection = authCollection(schema, params[0] as string);
+      const cookie = mfaCookie(request);
+      if (cookie === undefined) throw invalidMfa();
+      const pending = await mfa.pending(db, collection, cookie);
+      return Response.json({ methods: await mfa.methodsOf(db, pending) });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: ofRecord('mfa'),
+    tags: ['auth'],
+    async handler({ params, db, schema, principal, mfa }) {
+      const { collection, record } = ownMfa(schema, principal, params);
+      return Response.json(
+        await mfa.status(db, collection, record.id as string),
+      );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: ofRecord('totp'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa }) {
+      const { collection, record } = ownMfa(schema, principal, params);
+      const { password } = await readJsonObject(request);
+      return Response.json(
+        await mfa.startTotp(db, collection, record, password),
+      );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: ofRecord('totp/confirm'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa }) {
+      const { collection, record, session } = ownMfa(schema, principal, params);
+      const { code } = await readJsonObject(request);
+      return Response.json({
+        recoveryCodes: await mfa.confirmTotp(
+          db,
+          collection,
+          record,
+          session,
+          code,
+        ),
+      });
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: ofRecord('totp'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa }) {
+      const { collection, record } = ownMfa(schema, principal, params);
+      const { mfaCode } = await readJsonObject(request);
+      await mfa.removeTotp(db, collection, record, mfaCode);
+      return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: ofRecord('recovery-codes'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa }) {
+      const { collection, record } = ownMfa(schema, principal, params);
+      const { mfaCode } = await readJsonObject(request);
+      return Response.json({
+        recoveryCodes: await mfa.regenerateRecoveryCodes(
+          db,
+          collection,
+          record,
+          mfaCode,
+        ),
+      });
+    },
+  },
   ...flow('request-email-verification', (ctx, collection, input) =>
     requestEmailVerification(ctx, collection, input.email),
   ),
@@ -862,10 +1177,19 @@ export const ROUTES: readonly Route[] = [
     confirmPasswordReset(ctx, collection, input),
   ),
   ...flow('request-email-change', (ctx, collection, input, principal) =>
-    requestEmailChange(ctx, collection, principal, input.newEmail),
+    requestEmailChange(ctx, collection, principal, input),
+  ),
+  ...flow('approve-email-change', (ctx, collection, input) =>
+    approveEmailChange(ctx, collection, input),
   ),
   ...flow('confirm-email-change', (ctx, collection, input) =>
     confirmEmailChange(ctx, collection, input),
+  ),
+  ...flow('request-account-deletion', (ctx, collection, _input, principal) =>
+    requestAccountDeletion(ctx, collection, principal),
+  ),
+  ...flow('confirm-account-deletion', (ctx, collection, input) =>
+    confirmAccountDeletion(ctx, collection, input),
   ),
   {
     method: 'POST',
@@ -885,6 +1209,11 @@ export const ROUTES: readonly Route[] = [
         body: { ...input, id },
         query: new URLSearchParams(),
       });
+      const [record] = (await db
+        .select()
+        .from(table(collection.name))
+        .where(hash({ id }))
+        .all()) as Row[];
       try {
         await checkAuthRule(db, schema, collection, id);
       } catch (error) {
@@ -894,17 +1223,27 @@ export const ROUTES: readonly Route[] = [
         }
         throw error;
       }
-      const [record] = await db
-        .select()
-        .from(table(collection.name))
-        .where(hash({ id }))
-        .all();
-      return startSession(
-        context,
-        collection,
-        record as Record<string, unknown>,
-        cookie === true,
-      );
+      let challenge: Challenge | undefined;
+      try {
+        challenge = await context.mfa.challenge(
+          db,
+          schema,
+          collection,
+          record as Row,
+          'password',
+        );
+      } catch (error) {
+        // Created, but with no second step to take yet: it says so, unlike
+        // an authRule refusal, so the app can ask to verify the email.
+        if (error instanceof ApiError && error.status === 403) {
+          return Response.json({ mfa: 'verify' }, { status: 202 });
+        }
+        throw error;
+      }
+      if (challenge) throw new MfaRequired(challenge);
+      return startSession(context, collection, record as Row, cookie === true, [
+        'password',
+      ]);
     },
   },
   {
@@ -924,9 +1263,9 @@ export const ROUTES: readonly Route[] = [
       const body = await authRecord(context, collection, record);
       const expires = await extendSession(db, collection, session.id);
       if (!principal.viaCookie) {
-        return authResponse(body, bearerToken(request));
+        return authResponse(body, bearerToken(request), session.methods);
       }
-      const response = authResponse(body, undefined);
+      const response = authResponse(body, undefined, session.methods);
       const token = sessionCookie(request);
       if (token) {
         response.headers.append(
@@ -969,6 +1308,7 @@ export const ROUTES: readonly Route[] = [
         ? authResponse(
             await authRecord(context, restored.collection, restored.record),
             undefined,
+            restored.methods,
           )
         : new Response(null, { status: 204 });
       // Removed even when the session was already gone, but not when a
@@ -1166,6 +1506,7 @@ function recordsContext(
     storage: context.storage,
     hooks: context.hooks,
     hookChain: context.hookChain,
+    mfa: context.mfa,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
@@ -1365,9 +1706,9 @@ function flow(
         const collection = authCollection(schema, params[0] as string);
         forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
-        const { rejectBreachedPasswords, effects, hooks } = context;
+        const { rejectBreachedPasswords, effects, hooks, mfa } = context;
         await run(
-          { db, schema, mailer, rejectBreachedPasswords, effects, hooks },
+          { db, schema, mailer, rejectBreachedPasswords, effects, hooks, mfa },
           collection,
           input,
           principal,
@@ -1413,8 +1754,18 @@ function phoneContext({
   rejectBreachedPasswords,
   effects,
   hooks,
+  mfa,
 }: Context): PhoneContext {
-  return { db, schema, sms, mailer, rejectBreachedPasswords, effects, hooks };
+  return {
+    db,
+    schema,
+    sms,
+    mailer,
+    rejectBreachedPasswords,
+    effects,
+    hooks,
+    mfa,
+  };
 }
 
 /**
@@ -1426,6 +1777,7 @@ async function startSession(
   collection: AuthCollection,
   record: Record<string, unknown>,
   cookie: boolean,
+  methods: readonly SignInMethod[],
 ): Promise<Response> {
   const { request, db, principal } = context;
   // Before the session starts, so a refused `expand` or `fields` starts none.
@@ -1438,8 +1790,13 @@ async function startSession(
     collection,
     record,
     request.headers.get('user-agent') ?? '',
+    { methods },
   );
-  const response = authResponse(body, cookie ? undefined : token);
+  const response = authResponse(
+    body,
+    cookie ? undefined : token,
+    session.methods,
+  );
   if (cookie) {
     response.headers.append(
       'set-cookie',
@@ -1476,8 +1833,221 @@ function authRecord(
 function authResponse(
   record: Record<string, unknown>,
   token: string | undefined,
+  methods: readonly string[],
 ): Response {
-  return Response.json({ ...(token !== undefined && { token }), record });
+  return Response.json({
+    ...(token !== undefined && { token }),
+    record,
+    methods,
+  });
+}
+
+/**
+ * After a first step: the session, or the 401 that asks for a second step
+ * when the record must take one. No session starts before that.
+ */
+async function completeSignIn(
+  context: Context,
+  collection: AuthCollection,
+  record: Row,
+  method: SignInMethod,
+  cookie: boolean,
+): Promise<Response> {
+  const { db, schema, mfa } = context;
+  const challenge = await mfa.challenge(db, schema, collection, record, method);
+  if (challenge) throw new MfaRequired(challenge);
+  return startSession(context, collection, record, cookie, [method]);
+}
+
+interface Step {
+  pending: Pending;
+  /** Named by this browser's cookie, after an OAuth2 first step. */
+  viaCookie: boolean;
+}
+
+/** A second step named by the body's `mfaId`, checked to allow `method`. */
+async function bodyStep(
+  context: Context,
+  collection: AuthCollection,
+  mfaId: unknown,
+  method: SignInMethod,
+): Promise<Step> {
+  const pending = await context.mfa.pending(context.db, collection, mfaId);
+  await context.mfa.allow(context.db, pending, method);
+  return { pending, viaCookie: false };
+}
+
+/**
+ * The sign-in of the body's `mfaId`, or else of this browser's cookie.
+ * Browsers send the cookie with requests other sites make, so using it
+ * needs a request from this site.
+ */
+async function requiredStep(
+  context: Context,
+  collection: AuthCollection,
+  input: Record<string, unknown>,
+): Promise<Step> {
+  const { request, db, mfa, inProcess, origins } = context;
+  if (input.mfaId !== undefined) {
+    return {
+      pending: await mfa.pending(db, collection, input.mfaId),
+      viaCookie: false,
+    };
+  }
+  const cookie = mfaCookie(request);
+  if (cookie === undefined) throw invalidMfa();
+  if (!inProcess) checkSameOrigin(request, origins);
+  return {
+    pending: await mfa.pending(db, collection, cookie),
+    viaCookie: true,
+  };
+}
+
+/**
+ * The cookie's sign-in, when a first-step route signed in its record and it
+ * can take that step: then the request finishes it. Otherwise the cookie
+ * is left be, so an old one never stops another sign-in.
+ */
+async function cookieStep(
+  context: Context,
+  collection: AuthCollection,
+  record: Row,
+  method: SignInMethod,
+): Promise<Step | undefined> {
+  const { request, db, mfa, inProcess, origins } = context;
+  const cookie = mfaCookie(request);
+  if (cookie === undefined) return undefined;
+  try {
+    if (!inProcess) checkSameOrigin(request, origins);
+    const pending = await mfa.pending(db, collection, cookie);
+    if (pending.record.id !== record.id) return undefined;
+    await mfa.allow(db, pending, method);
+    return { pending, viaCookie: true };
+  } catch (error) {
+    if (error instanceof ApiError && error.status < 500) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Ends a sign-in with its second step: the session records both methods.
+ * One named by the cookie gets a cookie session, and the cookie is removed.
+ */
+async function finishStep(
+  context: Context,
+  { pending, viaCookie }: Step,
+  method: SignInMethod,
+  cookie: boolean,
+): Promise<Response> {
+  const { request, db, schema, mfa } = context;
+  const { collection, record } = pending;
+  await checkAuthRule(db, schema, collection, record.id as string);
+  const methods = await mfa.finish(db, pending, method);
+  const response = await startSession(
+    context,
+    collection,
+    record,
+    cookie || viaCookie,
+    methods,
+  );
+  if (mfaCookie(request) !== undefined) {
+    response.headers.append('set-cookie', setMfaCookie(request));
+  }
+  return response;
+}
+
+/** A route that takes the second step of a sign-in with a code. */
+function secondStep(
+  name: string,
+  method: 'totp' | 'recoveryCode' | 'emailCode',
+): Route[] {
+  return [
+    {
+      method: 'POST',
+      pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      tags: ['auth'],
+      async handler(context) {
+        const { request, params, db, schema, inProcess, origins, mfa } =
+          context;
+        const collection = authCollection(schema, params[0] as string);
+        const input = await readJsonObject(request);
+        const { code, cookie } = input;
+        // Another site must not sign the browser in to an account of its choosing.
+        if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+        const step = await requiredStep(context, collection, input);
+        await mfa.verifyCode(db, step.pending, method, code);
+        return finishStep(context, step, method, cookie === true);
+      },
+    },
+  ];
+}
+
+/**
+ * The second step of a sign-in by an OAuth2 provider. It only proves a
+ * provider account already linked to the record: it never links one or
+ * signs up. It ends with a cookie session, as OAuth2 sign-ins do.
+ */
+async function oauth2Step(
+  context: Context,
+  collection: AuthCollection,
+  mfaIdHash: string,
+  {
+    provider,
+    identity,
+    back,
+  }: { provider: string; identity: string; back: () => Response },
+): Promise<Response> {
+  const { request, db, schema, principal, mfa } = context;
+  let pending: Pending;
+  try {
+    pending = await mfa.pendingByHash(db, collection, mfaIdHash);
+    await mfa.allow(db, pending, 'oauth2');
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw new OAuth2Error('mfa_failed', error.message);
+    }
+    throw error;
+  }
+  const linked = await findLinked(db, collection, provider, identity);
+  if (linked?.id !== pending.record.id) {
+    throw new OAuth2Error(
+      'mfa_failed',
+      'This provider account is not linked to the account signing in.',
+    );
+  }
+  let methods: SignInMethod[];
+  try {
+    await checkAuthRule(db, schema, collection, pending.record.id as string);
+    methods = await mfa.finish(db, pending, 'oauth2');
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw new OAuth2Error(
+        error.status === 403 ? 'sign_in_forbidden' : 'mfa_failed',
+        error.message,
+      );
+    }
+    throw error;
+  }
+  // As on any cookie sign-in, the session in the cookie is replaced.
+  if (principal.viaCookie && principal.session) {
+    await deleteSession(db, principal.session);
+  }
+  const { token, session } = await createSession(
+    db,
+    collection,
+    pending.record,
+    request.headers.get('user-agent') ?? '',
+    { methods },
+  );
+  const response = back();
+  response.headers.append(
+    'set-cookie',
+    setSessionCookie(request, { token, expires: session.expires }),
+  );
+  if (mfaCookie(request) !== undefined) {
+    response.headers.append('set-cookie', setMfaCookie(request));
+  }
+  return response;
 }
 
 /**
@@ -1542,6 +2112,8 @@ async function impersonate(context: Context): Promise<Response> {
     {
       duration,
       impersonator: { collection: principal.collection, record: superuser },
+      // It skips the record's sign-in steps, so it counts as none of them.
+      methods: [IMPERSONATION],
     },
   );
   context.logger.audit('Impersonation started', {
@@ -1555,6 +2127,7 @@ async function impersonate(context: Context): Promise<Response> {
   const response = Response.json({
     ...(cookie !== true && { token }),
     record: body,
+    methods: session.methods,
     session: sessionModel(session, false),
   });
   const own = sessionCookie(request);
@@ -1582,7 +2155,13 @@ async function restoredSession(
   schema: Schema,
   principal: Principal,
 ): Promise<
-  | { token: string; expires: Date; collection: AuthCollection; record: Row }
+  | {
+      token: string;
+      expires: Date;
+      methods: SignInMethod[];
+      collection: AuthCollection;
+      record: Row;
+    }
   | undefined
 > {
   const kept = impersonatorCookie(request);
@@ -1603,6 +2182,7 @@ async function restoredSession(
   return {
     token: kept,
     expires: active.session.expires,
+    methods: active.session.methods,
     collection: active.collection,
     record: active.record,
   };
@@ -1631,6 +2211,28 @@ function ownRecord(
     throw new ApiError(404, 'Record not found.');
   }
   return { collection, id };
+}
+
+/**
+ * The caller's own record and session, for MFA settings: only the record
+ * itself, never a superuser for another, and never while impersonating, as
+ * each could leave a way into the account.
+ */
+function ownMfa(
+  schema: Schema,
+  principal: Principal,
+  params: string[],
+): { collection: AuthCollection; record: Row; session: Session } {
+  const collection = authCollection(schema, params[0] as string);
+  const { record, session } = principal;
+  if (!record || !session) {
+    throw new ApiError(401, 'Sign in to manage multi-factor sign-in.');
+  }
+  forbidImpersonated(principal, 'manage multi-factor sign-in');
+  if (principal.collection?.id !== collection.id || record.id !== params[1]) {
+    throw new ApiError(404, 'Record not found.');
+  }
+  return { collection, record, session };
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {

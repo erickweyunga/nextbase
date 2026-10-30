@@ -12,7 +12,12 @@ import {
   Tx,
 } from '@nextbasejs/dbx';
 import { checkBreached } from '../auth/breached.ts';
+import { checkPassword, hasAuthenticator, type Mfa } from '../auth/mfa.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
+import {
+  type PasswordOrigin,
+  setPasswordOrigin,
+} from '../auth/password-origins.ts';
 import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
 import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
@@ -73,6 +78,14 @@ export interface RecordsContext {
   source?: HookSource;
   /** For a write made through `e.nextbase`: the on hooks that led to it. */
   hookChain?: readonly string[];
+  /** Checks the code a password change needs once an authenticator app is set up. */
+  mfa?: Mfa;
+  /** How a system write sets the password; `chosen` otherwise. */
+  passwordOrigin?: PasswordOrigin;
+  /** Set when an emailed link confirmed the owner's deletion of their account. */
+  deletionConfirmed?: boolean;
+  /** What a delete's body brought to confirm the caller's own account goes. */
+  deletionCredentials?: { password: unknown; mfaCode: unknown };
 }
 
 /**
@@ -758,6 +771,11 @@ export async function planUpdateRecord(
   const old = ruleChecked
     ? await checkOldPasswordFirst(ctx, collection, id, input)
     : undefined;
+  // The code an authenticator app adds, checked before the transaction too,
+  // once the old password matched there.
+  const steppedUp =
+    old?.matched !== undefined &&
+    (await checkStepUp(ctx, collection, old.row, input.mfaCode));
   await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
   await storeFiles(ctx, collection, id, newFiles);
@@ -814,6 +832,10 @@ export async function planUpdateRecord(
               prepared.oldPassword,
             );
         if (!matches) throw wrongOldPassword();
+        // With an authenticator app, the password alone is not enough.
+        if (!steppedUp) {
+          await checkStepUp(ctx, collection, existing, input.mfaCode);
+        }
       }
       await keepFiles(tx, ctx, collection, id, prepared, false);
       let stored = existing;
@@ -845,6 +867,21 @@ export async function planUpdateRecord(
           collection: collection.name,
           to: existing.email as string,
         });
+      }
+      // How it was set, for MFA: a reset by email or text does not pair
+      // with a code sent to the same place for a while. Kept while MFA is
+      // off too, so turning it on just after a reset still holds.
+      if (
+        password &&
+        prepared.values[password.name] !== undefined &&
+        collection.type === 'auth'
+      ) {
+        await setPasswordOrigin(
+          tx,
+          collection.id,
+          id,
+          ctx.passwordOrigin ?? 'chosen',
+        );
       }
       // A new tokenKey ends the record's other sessions; the caller's stays.
       const { tokenKey } = prepared.values;
@@ -883,14 +920,30 @@ export async function planUpdateRecord(
  * the rest of the work to run in that transaction.
  */
 export async function planDeleteRecord(
-  ctx: RecordsContext,
+  context: RecordsContext,
   collection: Collection,
   id: string,
 ): Promise<Apply<void>> {
   checkWritable(collection);
   checkId(collection, id);
-  denyNullRule(ctx, collection.deleteRule);
+  denyNullRule(context, collection.deleteRule);
+  // Credentials confirm the delete; rules and hooks never see them.
+  const { password, mfaCode, ...body } = context.request.body;
+  const ctx = {
+    ...context,
+    request: { ...context.request, body },
+    deletionCredentials: { password, mfaCode },
+  };
   const notFound = new ApiError(404, 'Record not found.');
+  const rule = ruleCondition(ctx, collection, collection.deleteRule);
+  if (ownAccount(ctx, collection, id)) {
+    // Asked for no password, nor counted against the account, when the rule
+    // would refuse the delete anyway.
+    if (!(await matchesStoredRow(ctx.pool, collection, id, rule))) {
+      throw notFound;
+    }
+    await checkOwnDeletion(ctx, collection, id, password, mfaCode);
+  }
   if (ctx.hooks?.hasBefore(collection, 'delete')) {
     await ctx.hooks.before(hookScope(ctx), collection, 'delete', {
       record: await storedRecord(
@@ -903,7 +956,6 @@ export async function planDeleteRecord(
       request: ctx.request,
     });
   }
-  const rule = ruleCondition(ctx, collection, collection.deleteRule);
   return async (tx) => {
     if (collection.id === SUPERUSERS) await keepOneSuperuser(tx, id);
     if (!(await matchesStoredRow(tx, collection, id, rule, true))) {
@@ -927,6 +979,58 @@ export async function planDeleteRecord(
       i = end;
     }
   };
+}
+
+/** Within this, a session counts as recent enough to delete its own account. */
+const FRESH_SESSION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Deleting one's own account needs more than a session, which may be stolen:
+ * the current password in `password`, or a session signed in within the last
+ * day; with an authenticator app, a code from it in `mfaCode` too. An emailed
+ * link (`request-account-deletion`) is the third way. Deletes by superusers,
+ * or of other records, are left to the delete rule alone.
+ */
+async function checkOwnDeletion(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  password: unknown,
+  mfaCode: unknown,
+): Promise<void> {
+  const { principal } = ctx;
+  const record = principal.record;
+  if (collection.type !== 'auth' || !record || !ownAccount(ctx, collection, id))
+    return;
+  forbidImpersonated(principal, 'delete the account');
+  const created = principal.session?.created.getTime() ?? 0;
+  if (password === undefined && Date.now() - created > FRESH_SESSION_MS) {
+    throw new ApiError(
+      400,
+      'Enter your current password, or sign in again, to delete your account.',
+      { password: { code: 'validation_required', message: 'Required.' } },
+    );
+  }
+  if (password !== undefined) {
+    await checkPassword(ctx.pool, collection, record, password);
+  }
+  await checkStepUp(ctx, collection, record, mfaCode);
+}
+
+/** Whether a delete is of the caller's own account, by the caller. */
+function ownAccount(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+): boolean {
+  const { principal } = ctx;
+  return (
+    collection.type === 'auth' &&
+    !principal.superuser &&
+    !ctx.deletionConfirmed &&
+    principal.collection?.id === collection.id &&
+    principal.record?.id === id
+  );
 }
 
 async function keepFiles(
@@ -1122,7 +1226,7 @@ async function checkOldPasswordFirst(
   collection: Collection,
   id: string,
   input: Record<string, unknown>,
-): Promise<{ matched: string | undefined } | undefined> {
+): Promise<{ matched: string | undefined; row?: Row } | undefined> {
   const { oldPassword } = input;
   const field = passwordField(collection);
   if (
@@ -1150,11 +1254,12 @@ async function checkOldPasswordFirst(
   ) {
     return undefined;
   }
-  const [stored] = await ctx.pool
-    .select('password')
+  const [row] = await ctx.pool
+    .select()
     .from(table(collection.name))
     .where(hash({ id }))
-    .column<string>();
+    .all();
+  const stored = row?.[field.name] as string | undefined;
   if (stored === undefined) return { matched: undefined };
   const matches = await oldPasswordMatches(
     ctx,
@@ -1163,7 +1268,36 @@ async function checkOldPasswordFirst(
     stored,
     oldPassword,
   );
-  return { matched: matches ? stored : undefined };
+  return { matched: matches ? stored : undefined, row };
+}
+
+/**
+ * A code from the record's authenticator app, or a recovery code, when it
+ * has one. Counted and spent outside the write's transaction, as the old
+ * password is. Without the MFA service, a record with an app is refused.
+ */
+async function checkStepUp(
+  ctx: RecordsContext,
+  collection: Collection,
+  record: Row | undefined,
+  code: unknown,
+): Promise<boolean> {
+  if (collection.type !== 'auth' || !record) return false;
+  // Apps count only while the collection has MFA on.
+  if (!collection.mfa.enabled) return true;
+  if (ctx.mfa) {
+    await ctx.mfa.stepUp(ctx.pool, collection, record, code);
+    return true;
+  }
+  if (await hasAuthenticator(ctx.pool, collection.id, record.id as string)) {
+    throw new ApiError(400, writeFailed(false), {
+      mfaCode: {
+        code: 'validation_invalid_code',
+        message: 'A code from the authenticator app is needed.',
+      },
+    });
+  }
+  return true;
 }
 
 function wrongOldPassword(): ApiError {
@@ -1532,6 +1666,19 @@ async function deleteWithReferences(
   const updated = new Map<string, Written>();
   const deleted: Written[] = [];
   const deleting = await cascade(tx, schema, collection, ids);
+  // A cascade from another record may reach the caller's own account, which
+  // needs the same confirmation as deleting it directly.
+  const own = ctx.principal.collection;
+  const ownId = ctx.principal.record?.id as string | undefined;
+  if (
+    own &&
+    ownId !== undefined &&
+    !(own.id === collection.id && ids.includes(ownId)) &&
+    deleting.get(own.id)?.ids.has(ownId)
+  ) {
+    const { password, mfaCode } = ctx.deletionCredentials ?? {};
+    await checkOwnDeletion(ctx, own, ownId, password, mfaCode);
+  }
   // Collections reached later go first: a cascade reaches the records that
   // point at those it deletes, so few references are left to clear.
   const order = [...deleting.keys()].reverse();
@@ -1763,9 +1910,17 @@ async function deleteRows(
   } else {
     await query.execute();
   }
-  // Their sessions end, and their linked provider accounts may sign up again.
+  // Their sessions and sign-in steps end, and their linked provider
+  // accounts may sign up again.
   if (collection.type === 'auth') {
-    for (const name of ['_sessions', '_linked_accounts']) {
+    for (const name of [
+      '_sessions',
+      '_linked_accounts',
+      '_mfas',
+      '_totp',
+      '_recovery_codes',
+      '_password_origins',
+    ]) {
       await tx
         .newQuery(
           `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = ANY({:ids}::text[])`,

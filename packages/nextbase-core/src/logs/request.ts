@@ -23,8 +23,14 @@ export interface RequestOutcome {
   ip?: string | undefined;
 }
 
-// Query parameters that carry secrets: file tokens and OAuth2's code and state.
-const SECRET_PARAMS: ReadonlySet<string> = new Set(['token', 'code', 'state']);
+// Query parameters that carry secrets: file tokens, OAuth2's code and state,
+// and the id of a sign-in waiting for its second step.
+const SECRET_PARAMS: ReadonlySet<string> = new Set([
+  'token',
+  'code',
+  'state',
+  'mfaid',
+]);
 const MAX_URL = 1000;
 const MAX_USER_AGENT = 512;
 const MAX_REFERER = 512;

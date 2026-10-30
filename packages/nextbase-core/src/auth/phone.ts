@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { AuthCollection } from '@nextbasejs/client';
 import { type Builder, type DB, hash, type Row } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
@@ -10,8 +10,11 @@ import type { Hooks } from '../records/hooks.ts';
 import { newRecord, systemContext, updateRecord } from '../records/service.ts';
 import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
+import { newCode, typedCode } from './codes.ts';
 import { phoneIs } from './identity.ts';
 import type { Mailer } from './mail.ts';
+import type { Mfa } from './mfa.ts';
+import { type PasswordOrigin, setPasswordOrigin } from './password-origins.ts';
 import { type Principal, recordIn } from './principal.ts';
 import type { Sms } from './sms.ts';
 import {
@@ -37,6 +40,7 @@ export interface PhoneContext {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   hooks: Hooks;
+  mfa: Mfa;
 }
 
 /** A code is accepted only for the purpose it was sent for. */
@@ -89,6 +93,34 @@ async function sendCode(
   ctx.sms.send(purpose, collection.name, phone, code);
 }
 
+/**
+ * Texts a new sign-in code to a record's verified phone and returns it, for
+ * a second sign-in step that keeps the code itself. Texts per phone are
+ * capped as for every code.
+ */
+export async function textSignInCode(
+  ctx: Pick<PhoneContext, 'db' | 'sms'>,
+  collection: AuthCollection,
+  phone: string,
+): Promise<string> {
+  ctx.sms.check(phone);
+  await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
+  const code = newCode();
+  ctx.sms.send('signIn', collection.name, phone, code);
+  return code;
+}
+
+/** Whether texted codes can be a second sign-in step for `record`. */
+export function textsCodes(collection: AuthCollection, record: Row): boolean {
+  return (
+    collection.phoneSignIn &&
+    collection.id !== '_superusers' &&
+    record.phoneVerified === true &&
+    typeof record.phone === 'string' &&
+    record.phone !== ''
+  );
+}
+
 /** A new phone creates a record under the collection's create rule. */
 export async function authWithPhoneCode(
   ctx: PhoneContext,
@@ -134,6 +166,8 @@ export async function authWithPhoneCode(
     input,
     new URLSearchParams(),
   );
+  // Nobody knows the generated password, so it is never a sign-in step.
+  await setPasswordOrigin(ctx.db, collection.id, id, 'random');
   return (await findRecord(ctx.db, collection, id)) as Row;
 }
 
@@ -148,22 +182,32 @@ export async function confirmPasswordResetByPhone(
   const record = await findByPhone(ctx.db, collection, phone);
   if (record?.phoneVerified !== true) throw invalidCode();
   // The update tells the owner their password changed, if they have an email.
-  await privilegedUpdate(ctx, collection, record, {
-    password: input.password,
-    passwordConfirm: input.passwordConfirm,
-  });
+  await privilegedUpdate(
+    ctx,
+    collection,
+    record,
+    { password: input.password, passwordConfirm: input.passwordConfirm },
+    'phoneReset',
+  );
+  await ctx.mfa.resetNotice(ctx.db, ctx.schema, collection, record, 'phone');
   await clearAttempts(ctx.db, [accountKey(collection.id, record.id as string)]);
 }
 
+/**
+ * Setting or changing the phone needs the current password, and with an
+ * authenticator app a code from it: a stolen session cannot move the
+ * account to the thief's phone.
+ */
 export async function requestPhoneVerification(
   ctx: PhoneContext,
   collection: AuthCollection,
   principal: Principal,
-  phoneInput: unknown,
+  input: Record<string, unknown>,
 ): Promise<void> {
   const record = signedIn(collection, principal);
   checkEnabled(collection);
-  const phone = checkPhone(phoneInput);
+  const phone = checkPhone(input.phone);
+  await reauthenticateFor(ctx, collection, record, phone, input);
   ctx.sms.check(phone);
   await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
   // Uniqueness is checked on confirm, so this request does not reveal it.
@@ -187,6 +231,7 @@ export async function confirmPhoneVerification(
   const record = signedIn(collection, principal);
   checkEnabled(collection);
   const phone = checkPhone(input.phone);
+  await reauthenticateFor(ctx, collection, record, phone, input);
   await consumeCode(
     ctx.db,
     collection,
@@ -216,6 +261,19 @@ export async function confirmPhoneVerification(
   if (previous !== phone && record.email) {
     ctx.mailer.send('phoneChanged', collection.name, record.email as string);
   }
+}
+
+// Only when the phone would be new or changed: confirming the same
+// verified phone again adds no way in.
+async function reauthenticateFor(
+  ctx: PhoneContext,
+  collection: AuthCollection,
+  record: Row,
+  phone: string,
+  input: Record<string, unknown>,
+): Promise<void> {
+  if (record.phone === phone && record.phoneVerified === true) return;
+  await ctx.mfa.reauthenticate(ctx.db, collection, record, input);
 }
 
 async function findByPhone(
@@ -279,7 +337,7 @@ async function issueCode(
   purpose: CodePurpose,
   recordId = '',
 ): Promise<string> {
-  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const code = newCode();
   await q
     .newQuery(`DELETE FROM {{${table('_phone_codes')}}} WHERE expires <= now()`)
     .execute();
@@ -318,8 +376,8 @@ async function consumeCode(
 ): Promise<void> {
   const key = phoneKey(collection.id, phone);
   await countAttempt(db, [key]);
-  const code = typeof codeInput === 'string' ? codeInput.trim() : '';
-  if (!/^\d{6}$/.test(code)) throw invalidCode();
+  const code = typedCode(codeInput);
+  if (code === undefined) throw invalidCode();
   const [stored] = await db
     .newQuery(
       `DELETE FROM {{${table('_phone_codes')}}}
@@ -368,9 +426,13 @@ async function privilegedUpdate(
   collection: AuthCollection,
   record: Row,
   input: Record<string, unknown>,
+  passwordOrigin?: PasswordOrigin,
 ): Promise<void> {
   await updateRecord(
-    systemContext(ctx, input),
+    {
+      ...systemContext(ctx, input),
+      ...(passwordOrigin !== undefined && { passwordOrigin }),
+    },
     collection,
     record.id as string,
     input,

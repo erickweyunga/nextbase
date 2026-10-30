@@ -10,7 +10,11 @@ import type {
   ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
+  MfaStatus,
   RecordModel,
+  RecoveryCodes,
+  SignInMethod,
+  TotpSetup,
 } from './shared/api.ts';
 
 export interface RecordOptions extends SendOptions {
@@ -23,6 +27,43 @@ export interface RecordOptions extends SendOptions {
 export interface AuthOptions extends RecordOptions {
   /** Keep the session in an HttpOnly cookie instead of returning a token. */
   cookie?: boolean;
+}
+
+/**
+ * A sign-in step that may be the second: `mfaId` comes from
+ * {@link isMfaRequired}. Without it, the second step after an OAuth2 sign-in
+ * uses the id the server kept in an HttpOnly cookie, and ends with a cookie
+ * session.
+ */
+export interface SecondStepOptions extends AuthOptions {
+  mfaId?: string;
+}
+
+/**
+ * What a change that adds or removes a way into the account needs: the
+ * current password, and with an authenticator app a code from it or a
+ * recovery code.
+ */
+export interface StepUpOptions extends SendOptions {
+  password: string;
+  mfaCode?: string;
+}
+
+/** How to link an OAuth2 provider: the step-up and where to return to. */
+export interface OAuth2LinkOptions extends Omit<OAuth2Options, 'mfaId'> {
+  /** The current password. */
+  password: string;
+  /** With an authenticator app, a code from it or a recovery code. */
+  mfaCode?: string;
+}
+
+/** A sign-up that created the account, which has no second sign-in step to take yet. */
+export interface SignUpPending {
+  /** Verify the email, or phone, before signing in. */
+  mfa: 'verify';
+  token?: undefined;
+  record?: undefined;
+  methods?: undefined;
 }
 
 export interface ImpersonateOptions extends AuthOptions {
@@ -49,6 +90,8 @@ export interface OAuth2Options {
   redirect?: string;
   /** App path to return to with `?error=` on failure. Defaults to `redirect`. */
   errorRedirect?: string;
+  /** Takes the second step of this sign-in, with a provider linked to the account. */
+  mfaId?: string;
 }
 
 const MAX_PER_PAGE = 1000;
@@ -184,11 +227,22 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return record ?? null;
   }
 
-  /** Deletes a record. Deleting the signed-in record signs out. */
-  async delete(id: string, options?: SendOptions): Promise<void> {
+  /**
+   * Deletes a record. Deleting the signed-in record signs out, and needs its
+   * current `password` unless the session signed in within the last day,
+   * plus `mfaCode` with an authenticator app. Without either, see
+   * `requestAccountDeletion`.
+   */
+  async delete(
+    id: string,
+    options: SendOptions & { password?: string; mfaCode?: string } = {},
+  ): Promise<void> {
+    const { password, mfaCode, ...rest } = options;
+    const body = stepUp({ password, mfaCode });
     await this.#send(`/records/${encodeURIComponent(id)}`, {
-      ...options,
+      ...rest,
       method: 'DELETE',
+      ...(Object.keys(body).length > 0 && { body }),
     });
     // Checked once deleted: another account may have signed in meanwhile.
     const store = this.#client.authStore;
@@ -197,15 +251,19 @@ export class RecordService<T extends RecordModel = RecordModel> {
 
   /**
    * Creates an account and signs it in, saving the session like `signInWithPassword`.
-   * Returns null when the account may not sign in yet, e.g. before email verification.
+   * Returns null when the authRule does not let it sign in yet, e.g. before
+   * email verification, and `{ mfa: "verify" }` when it must take a second
+   * sign-in step and has none yet.
    */
   async signUp(
     body: Record<string, unknown>,
     options: AuthOptions = {},
-  ): Promise<AuthResponse<T> | null> {
+  ): Promise<AuthResponse<T> | SignUpPending | null> {
     const { cookie, ...rest } = options;
     const apply = authSync(this.#client.authStore).intent();
-    const response = await this.#send<AuthResponse<T> | undefined>('/sign-up', {
+    const response = await this.#send<
+      AuthResponse<T> | SignUpPending | undefined
+    >('/sign-up', {
       ...rest,
       method: 'POST',
       body: await this.#body(
@@ -213,6 +271,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
         rest,
       ),
     });
+    if (response && 'mfa' in response) return response;
     if (response) apply(() => this.#save(response));
     return response ?? null;
   }
@@ -225,14 +284,134 @@ export class RecordService<T extends RecordModel = RecordModel> {
   async signInWithPassword(
     identity: string,
     password: string,
-    options: AuthOptions = {},
+    options: SecondStepOptions = {},
   ): Promise<AuthResponse<T>> {
-    const { cookie, ...rest } = options;
+    const { cookie, mfaId, ...rest } = options;
     return this.#signIn('/auth-with-password', rest, {
       identity,
       password,
+      ...(mfaId !== undefined && { mfaId }),
       ...(cookie && { cookie: true }),
     });
+  }
+
+  /** The second step of a sign-in, with a code from the account's authenticator app. */
+  async signInWithTotp(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-totp', code, options);
+  }
+
+  /** The second step of a sign-in, with a recovery code. Each works once. */
+  async signInWithRecoveryCode(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-recovery-code', code, options);
+  }
+
+  /** Emails a code for the second step of a sign-in to the account's verified email. */
+  async requestEmailCode(
+    options: SendOptions & { mfaId?: string } = {},
+  ): Promise<void> {
+    const { mfaId, ...rest } = options;
+    await this.#post(
+      '/request-email-code',
+      mfaId === undefined ? {} : { mfaId },
+      rest,
+    );
+  }
+
+  /** The second step of a sign-in, with a code from {@link requestEmailCode}. */
+  async signInWithEmailCode(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-email-code', code, options);
+  }
+
+  /** Whether the signed-in record has an authenticator app, and its recovery codes left. */
+  getMfa(recordId: string, options?: SendOptions): Promise<MfaStatus> {
+    return this.#send(`/records/${encodeURIComponent(recordId)}/mfa`, options);
+  }
+
+  /**
+   * Starts setting up an authenticator app for the signed-in record: show
+   * the `uri` as a QR code, then confirm with a code from the app within 15
+   * minutes. Needs the current password.
+   */
+  startTotp(
+    recordId: string,
+    password: string,
+    options?: SendOptions,
+  ): Promise<TotpSetup> {
+    return this.#client.send(this.#mfaPath(recordId, '/totp'), {
+      ...options,
+      method: 'POST',
+      body: { password },
+    });
+  }
+
+  /**
+   * As a superuser, removes another record's authenticator app, recovery
+   * codes and pending sign-ins, for an owner who lost their app. The owner
+   * is emailed.
+   */
+  async clearMfa(recordId: string, options?: SendOptions): Promise<void> {
+    await this.#client.send(this.#mfaPath(recordId, '/mfa'), {
+      ...options,
+      method: 'DELETE',
+    });
+  }
+
+  /** The second steps a sign-in can take, after an OAuth2 sign-in kept its id in a cookie. */
+  async getPendingMfa(
+    options?: SendOptions,
+  ): Promise<{ methods: SignInMethod[] }> {
+    return this.#send('/mfa', options);
+  }
+
+  /**
+   * Turns the authenticator app on with a code from it, and returns the
+   * recovery codes to keep, shown only once. Other sessions are signed out.
+   */
+  async confirmTotp(
+    recordId: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<string[]> {
+    const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
+      this.#mfaPath(recordId, '/totp/confirm'),
+      { ...options, method: 'POST', body: { code } },
+    );
+    return recoveryCodes;
+  }
+
+  /** Turns the authenticator app off, with a code from it or a recovery code. */
+  async removeTotp(
+    recordId: string,
+    mfaCode: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#client.send(this.#mfaPath(recordId, '/totp'), {
+      ...options,
+      method: 'DELETE',
+      body: { mfaCode },
+    });
+  }
+
+  /** Replaces the recovery codes, with a code from the app or a recovery code. */
+  async regenerateRecoveryCodes(
+    recordId: string,
+    mfaCode: string,
+    options?: SendOptions,
+  ): Promise<string[]> {
+    const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
+      this.#mfaPath(recordId, '/recovery-codes'),
+      { ...options, method: 'POST', body: { mfaCode } },
+    );
+    return recoveryCodes;
   }
 
   /**
@@ -303,21 +482,42 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * A URL to open in the browser that signs in with an OAuth2 provider such as `google`,
    * returning to `redirect` with a session cookie, or with `?error=` on failure.
    */
-  oauth2Url(
-    provider: string,
-    options: OAuth2Options & {
-      /** Link the provider to the signed-in account instead of signing in. */
-      link?: boolean;
-    } = {},
-  ): string {
+  oauth2Url(provider: string, options: OAuth2Options = {}): string {
     return this.#client.buildUrl(
       `/collections/${encodeURIComponent(this.#collection)}/auth-with-oauth2/${encodeURIComponent(provider)}`,
       {
         redirect: options.redirect,
         errorRedirect: options.errorRedirect,
-        ...(options.link && { link: true }),
+        mfaId: options.mfaId,
       },
     );
+  }
+
+  /**
+   * Starts linking an OAuth2 provider to the signed-in account, with its
+   * password, and returns the provider's URL to open in this browser. The
+   * account needs a cookie session, which the provider's return checks.
+   */
+  async oauth2LinkUrl(
+    provider: string,
+    link: OAuth2LinkOptions,
+    options?: SendOptions,
+  ): Promise<string> {
+    const { password, mfaCode, redirect, errorRedirect } = link;
+    const { url } = await this.#client.send<{ url: string }>(
+      `/collections/${encodeURIComponent(this.#collection)}/link-oauth2/${encodeURIComponent(provider)}`,
+      {
+        ...options,
+        method: 'POST',
+        body: {
+          password,
+          ...(mfaCode !== undefined && { mfaCode }),
+          ...(redirect !== undefined && { redirect }),
+          ...(errorRedirect !== undefined && { errorRedirect }),
+        },
+      },
+    );
+    return url;
   }
 
   /** Signs in with an OAuth2 provider by navigating to {@link oauth2Url}. Browser only. */
@@ -331,13 +531,17 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /** Links an OAuth2 provider to the signed-in account by navigating to it. Browser only. */
-  linkOAuth2(provider: string, options: OAuth2Options = {}): void {
+  async linkOAuth2(
+    provider: string,
+    link: OAuth2LinkOptions,
+    options?: SendOptions,
+  ): Promise<void> {
     if (typeof location === 'undefined') {
       throw new Error(
-        'linkOAuth2 works in the browser; use oauth2Url with link: true elsewhere.',
+        'linkOAuth2 works in the browser; use oauth2LinkUrl elsewhere.',
       );
     }
-    location.assign(this.oauth2Url(provider, { ...options, link: true }));
+    location.assign(await this.oauth2LinkUrl(provider, link, options));
   }
 
   /** OAuth2 providers linked to a record. Only its own record, unless a superuser. */
@@ -353,15 +557,19 @@ export class RecordService<T extends RecordModel = RecordModel> {
     ).items;
   }
 
-  /** Unlinks an OAuth2 provider from a record. */
+  /**
+   * Unlinks an OAuth2 provider from a record. Its owner needs the password;
+   * a superuser unlinking another record's provider does not.
+   */
   async unlinkAccount(
     recordId: string,
     provider: string,
-    options?: SendOptions,
+    options: SendOptions & Partial<StepUpOptions> = {},
   ): Promise<void> {
+    const { password, mfaCode, ...rest } = options;
     await this.#send(
       `/records/${encodeURIComponent(recordId)}/linked-accounts/${encodeURIComponent(provider)}`,
-      { ...options, method: 'DELETE' },
+      { ...rest, method: 'DELETE', body: stepUp({ password, mfaCode }) },
     );
   }
 
@@ -408,7 +616,11 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Emails `newEmail` a link that moves the signed-in account to it. */
+  /**
+   * Asks to move the signed-in account to `newEmail`. With a verified email,
+   * the current inbox gets a link to approve it first, then `newEmail` gets
+   * its own; otherwise `newEmail` gets its link at once.
+   */
   async requestEmailChange(
     newEmail: string,
     options?: SendOptions,
@@ -416,13 +628,61 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post('/request-email-change', { newEmail }, options);
   }
 
-  /** Confirms an email change with its token and the current password. Ends every session. */
+  /** Approves an email change with the token of the link the current inbox got. */
+  async approveEmailChange(
+    token: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#post('/approve-email-change', { token }, options);
+  }
+
+  /**
+   * Confirms an email change with its token and the current password, and
+   * with an authenticator app a code from it or a recovery code. Ends every
+   * session.
+   */
   async confirmEmailChange(
     token: string,
     password: string,
-    options?: SendOptions,
+    options: SendOptions & { mfaCode?: string } = {},
   ): Promise<void> {
-    await this.#post('/confirm-email-change', { token, password }, options);
+    const { mfaCode, ...rest } = options;
+    await this.#post(
+      '/confirm-email-change',
+      { token, password, ...(mfaCode !== undefined && { mfaCode }) },
+      rest,
+    );
+  }
+
+  /**
+   * Emails the signed-in account a link that deletes it, for an owner who
+   * can confirm neither with a password nor a recent sign-in. Needs a
+   * verified email.
+   */
+  async requestAccountDeletion(options?: SendOptions): Promise<void> {
+    await this.#post('/request-account-deletion', {}, options);
+  }
+
+  /**
+   * Deletes the account with the token of its deletion link, and with an
+   * authenticator app a code from it or a recovery code. Its sessions end
+   * with it, and this client signs out when it was the signed-in account.
+   */
+  async confirmAccountDeletion(
+    token: string,
+    options: SendOptions & { mfaCode?: string } = {},
+  ): Promise<void> {
+    const { mfaCode, ...rest } = options;
+    await this.#post(
+      '/confirm-account-deletion',
+      { token, ...(mfaCode !== undefined && { mfaCode }) },
+      rest,
+    );
+    const store = this.#client.authStore;
+    const { record } = store;
+    if (record && record.id === tokenRecordId(token) && this.#matches(record)) {
+      store.clear();
+    }
   }
 
   /**
@@ -431,6 +691,26 @@ export class RecordService<T extends RecordModel = RecordModel> {
    */
   async requestPhoneCode(phone: string, options?: SendOptions): Promise<void> {
     await this.#post('/request-phone-code', { phone }, options);
+  }
+
+  /** Texts a code for the second step of a sign-in to the account's verified phone. */
+  async requestMfaPhoneCode(
+    options: SendOptions & { mfaId?: string } = {},
+  ): Promise<void> {
+    const { mfaId, ...rest } = options;
+    await this.#post(
+      '/request-phone-code',
+      mfaId === undefined ? {} : { mfaId },
+      rest,
+    );
+  }
+
+  /** The second step of a sign-in, with a code from {@link requestMfaPhoneCode}. */
+  async signInWithMfaPhoneCode(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-phone-code', code, options);
   }
 
   /** Texts a password reset code if `phone` is an account's verified phone. Never reveals which. */
@@ -473,21 +753,37 @@ export class RecordService<T extends RecordModel = RecordModel> {
     );
   }
 
-  /** Texts a code that verifies `phone` for the signed-in account. */
+  /**
+   * Texts a code that verifies `phone` for the signed-in account. A new or
+   * changed phone needs the password.
+   */
   async requestPhoneVerification(
     phone: string,
-    options?: SendOptions,
+    options: SendOptions & Partial<StepUpOptions> = {},
   ): Promise<void> {
-    await this.#post('/request-phone-verification', { phone }, options);
+    const { password, mfaCode, ...rest } = options;
+    await this.#post(
+      '/request-phone-verification',
+      { phone, ...stepUp({ password, mfaCode }) },
+      rest,
+    );
   }
 
-  /** Verifies `phone` for the signed-in account. Changing it signs out other devices. */
+  /**
+   * Verifies `phone` for the signed-in account. A new or changed phone needs
+   * the password, and signs out other devices.
+   */
   async confirmPhoneVerification(
     phone: string,
     code: string,
-    options?: SendOptions,
+    options: SendOptions & Partial<StepUpOptions> = {},
   ): Promise<void> {
-    await this.#post('/confirm-phone-verification', { phone, code }, options);
+    const { password, mfaCode, ...rest } = options;
+    await this.#post(
+      '/confirm-phone-verification',
+      { phone, code, ...stepUp({ password, mfaCode }) },
+      rest,
+    );
   }
 
   async #post(
@@ -514,6 +810,23 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
     apply(() => this.#save(response));
     return response;
+  }
+
+  #secondStep(
+    path: string,
+    code: string,
+    options: SecondStepOptions,
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, ...rest } = options;
+    return this.#signIn(path, rest, {
+      code,
+      ...(mfaId !== undefined && { mfaId }),
+      ...(cookie && { cookie: true }),
+    });
+  }
+
+  #mfaPath(recordId: string, path: string): string {
+    return `/collections/${encodeURIComponent(this.#collection)}/records/${encodeURIComponent(recordId)}${path}`;
   }
 
   #save(response: AuthResponse<T>): void {
@@ -543,4 +856,36 @@ export class RecordService<T extends RecordModel = RecordModel> {
       { ...rest, query: { ...rest.query, expand, fields } },
     );
   }
+}
+
+/** The record a link's token was made for: its JWT payload's `id`. */
+function tokenRecordId(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1] ?? '';
+    const claims: unknown = JSON.parse(
+      atob(payload.replace(/-/g, '+').replace(/_/g, '/')),
+    );
+    return typeof claims === 'object' &&
+      claims !== null &&
+      'id' in claims &&
+      typeof claims.id === 'string'
+      ? claims.id
+      : undefined;
+  } catch {
+    // Not a JWT: the server already refused it.
+    return undefined;
+  }
+}
+
+function stepUp({
+  password,
+  mfaCode,
+}: {
+  password: string | undefined;
+  mfaCode: string | undefined;
+}): Record<string, string> {
+  return {
+    ...(password !== undefined && { password }),
+    ...(mfaCode !== undefined && { mfaCode }),
+  };
 }

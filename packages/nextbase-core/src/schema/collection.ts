@@ -4,6 +4,7 @@ import type {
   Collection,
   Field,
   Index,
+  MfaConfig,
   Rule,
   TokenConfig,
   TokenType,
@@ -49,6 +50,14 @@ const DEFAULT_TOKEN_DURATIONS: Readonly<Record<TokenType, number>> = {
 };
 
 const TOKEN_TYPES = Object.keys(DEFAULT_TOKEN_DURATIONS) as TokenType[];
+
+/** Seconds a sign-in may wait for its second step. */
+const MFA_DURATION = { min: 60, max: 3600, fallback: 300 } as const;
+
+/** The settings of a collection stored before MFA existed. */
+export function defaultMfa(): MfaConfig {
+  return { enabled: false, rule: null, duration: MFA_DURATION.fallback };
+}
 
 export interface CollectionContext {
   /** Undefined when creating. */
@@ -153,7 +162,13 @@ export function parseCollection(
       manageRule: parseRule(r, 'manageRule', previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
       phoneSignIn: r.boolean('phoneSignIn', previous?.phoneSignIn ?? false),
+      // Superusers never sign in through a provider.
+      implicitLinking:
+        id === '_superusers'
+          ? false
+          : r.boolean('implicitLinking', previous?.implicitLinking ?? true),
       tokens: parseTokens(r, previous?.tokens),
+      mfa: parseMfa(r, previous?.mfa),
     };
   }
 
@@ -181,7 +196,9 @@ export function superusersCollection(): AuthCollection {
     manageRule: null,
     identityFields: ['email'],
     phoneSignIn: false,
+    implicitLinking: false,
     tokens,
+    mfa: defaultMfa(),
   };
 }
 
@@ -663,4 +680,26 @@ function parseTokens(
     configs[type] = { secret, duration };
   }
   return configs;
+}
+
+// Unlike the collection's rules, a system collection's MFA settings can
+// change, so superusers can require a second step of each other.
+function parseMfa(r: Reader, existing: MfaConfig | undefined): MfaConfig {
+  const previous = existing ?? defaultMfa();
+  const input: unknown = r.has('mfa') ? r.input.mfa : {};
+  if (!isRecord(input)) {
+    r.fail('mfa', 'validation_invalid_type', 'Must be an object.');
+    return previous;
+  }
+  const mr = new Reader(input, ['mfa'], r.issues);
+  return {
+    enabled: mr.boolean('enabled', previous.enabled),
+    rule: mr.stringOrNull('rule', previous.rule),
+    duration: mr.integer(
+      'duration',
+      previous.duration,
+      MFA_DURATION.min,
+      MFA_DURATION.max,
+    ),
+  };
 }

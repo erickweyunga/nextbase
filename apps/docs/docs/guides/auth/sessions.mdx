@@ -80,11 +80,21 @@ export async function signOut() {
 - `nb.listSessions()` lists the user's devices, `nb.revokeSession(id)` signs
   one out, and `nb.revokeOtherSessions()` signs out every device but this one.
 - Deleting an account ends all of its sessions.
-- Changing a password ends every other session. Rotating the collection's auth
+- Changing a password ends every other session, as does turning on an
+  [authenticator app](/docs/guides/auth/mfa). Rotating the collection's auth
   secret ends all of its sessions.
 - A superuser can [impersonate](/docs/guides/auth/impersonation) a user, for at
   most an hour. That session shows in the user's `listSessions()` with
   `impersonatedBy`, the superuser's id, and they can revoke it like any other.
+
+## How it signed in
+
+Each session lists the ways it proved who signed in, as `methods`: such as
+`["password"]`, or `["password", "totp"]` after a
+[second step](/docs/guides/auth/mfa). They come back in sign-in responses, in
+`nb.getSession()` and in `nb.listSessions()`. Rules read
+`@request.mfa`, which is `true` with two different methods. Sessions
+created before methods were recorded have none.
 
 ## Cross-site protection
 

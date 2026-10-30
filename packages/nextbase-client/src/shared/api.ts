@@ -17,6 +17,34 @@ export interface ApiErrorBody {
   status: number;
   message: string;
   data: ErrorData;
+  /**
+   * Set on the 401 of a first sign-in step that needs a second one: pass it
+   * to the second step, before it expires.
+   */
+  mfaId?: string;
+  /** With `mfaId`: the ways this account can take the second step. */
+  methods?: SignInMethod[];
+}
+
+/**
+ * A way a session proved who signed in. `impersonation` marks a session a
+ * superuser started to act as the record.
+ */
+export type SignInMethod =
+  | 'password'
+  | 'oauth2'
+  | 'phoneCode'
+  | 'emailCode'
+  | 'totp'
+  | 'recoveryCode'
+  | 'impersonation';
+
+/** A sign-in that needs a second step. */
+export interface MfaRequired {
+  /** Pass it to the second step, before it expires. */
+  mfaId: string;
+  /** The ways this account can take the second step. */
+  methods: SignInMethod[];
 }
 
 export interface HealthResponse {
@@ -46,6 +74,8 @@ export interface RecordModel {
 export interface AuthResponse<T extends RecordModel = RecordModel> {
   token?: string;
   record: T;
+  /** How the session signed in, such as `["password", "totp"]`. */
+  methods: SignInMethod[];
 }
 
 /** One signed-in device or client of a record. */
@@ -61,6 +91,11 @@ export interface SessionModel {
    * impersonation session. Revoke it like any other session.
    */
   impersonatedBy?: string;
+  /**
+   * How the session signed in, such as `["password", "totp"]`. Empty for
+   * sessions older than this field.
+   */
+  methods: SignInMethod[];
 }
 
 /** The caller's own session and record. */
@@ -96,6 +131,31 @@ export interface AuthMethods {
   phone: {
     enabled: boolean;
   };
+  /** A second sign-in step, for the accounts the collection's settings name. */
+  mfa: {
+    enabled: boolean;
+    /** Seconds a sign-in waits for its second step. */
+    duration: number;
+  };
+}
+
+/** Whether a record has an authenticator app, and its recovery codes left. */
+export interface MfaStatus {
+  totp: boolean;
+  recoveryCodesLeft: number;
+}
+
+/** An authenticator app to set up: show `uri` as a QR code, or `secret` to type in. */
+export interface TotpSetup {
+  /** Base32, as authenticator apps take it. */
+  secret: string;
+  /** An `otpauth://totp/...` URI. */
+  uri: string;
+}
+
+/** One-time codes for when the authenticator app is lost. Shown only once. */
+export interface RecoveryCodes {
+  recoveryCodes: string[];
 }
 
 /** An OAuth2 provider a sign-in page can offer. */

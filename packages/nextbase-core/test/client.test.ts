@@ -809,7 +809,7 @@ describe('the SDK against a real instance', () => {
       name: 'Una',
     });
     expect(nb.authStore.record?.email).toBe('una@example.com');
-    expect((await nb.getSession())?.record.id).toBe(signedUp?.record.id);
+    expect((await nb.getSession())?.record.id).toBe(signedUp?.record?.id);
 
     // Validation errors come back as usual, and nothing is created.
     const invalid = await nextbase
@@ -920,7 +920,7 @@ describe('the SDK against a real instance', () => {
       options,
     );
     const expected = {
-      id: signedUp?.record.id,
+      id: signedUp?.record?.id,
       name: 'Kim',
       expand: { team: { title: 'Blue' } },
     };

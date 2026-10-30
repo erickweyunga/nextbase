@@ -5,6 +5,7 @@ import type {
 } from '@nextbasejs/client';
 import { type Builder, exp, hash, type Tx } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
+import { defaultMfa } from './collection.ts';
 
 interface CollectionRow {
   id: string;
@@ -23,7 +24,13 @@ interface CollectionRow {
 
 type AuthOptions = Pick<
   AuthCollection,
-  'authRule' | 'manageRule' | 'identityFields' | 'phoneSignIn' | 'tokens'
+  | 'authRule'
+  | 'manageRule'
+  | 'identityFields'
+  | 'phoneSignIn'
+  | 'implicitLinking'
+  | 'tokens'
+  | 'mfa'
 >;
 
 type ViewOptions = Pick<ViewCollection, 'viewQuery'>;
@@ -49,7 +56,9 @@ export async function saveCollectionRow(
           manageRule: collection.manageRule,
           identityFields: collection.identityFields,
           phoneSignIn: collection.phoneSignIn,
+          implicitLinking: collection.implicitLinking,
           tokens: collection.tokens,
+          mfa: collection.mfa,
         }
       : collection.type === 'view'
         ? { viewQuery: collection.viewQuery }
@@ -112,8 +121,11 @@ function fromRow(row: CollectionRow): Collection {
   return {
     ...base,
     type: 'auth',
-    // Collections stored before phone sign-in existed.
+    // Collections stored before these options existed.
     phoneSignIn: false,
+    implicitLinking: true,
+    mfa: defaultMfa(),
     ...(row.options as Partial<AuthOptions>),
+    ...(row.id === '_superusers' && { implicitLinking: false }),
   } as AuthCollection;
 }

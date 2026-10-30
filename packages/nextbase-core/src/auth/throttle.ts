@@ -97,6 +97,11 @@ export function phoneKey(collectionId: string, phone: string): string {
   return `${collectionId}:phone:${phone}`;
 }
 
+/** Wrong codes of every kind for an account's second sign-in step. */
+export function mfaKey(collectionId: string, recordId: string): string {
+  return `${collectionId}:mfa:${recordId}`;
+}
+
 /** Caps emails to an address, so no one can flood an inbox. */
 export function mailKey(collectionId: string, email: string): string {
   return `${collectionId}:mail:${email.toLowerCase()}`;

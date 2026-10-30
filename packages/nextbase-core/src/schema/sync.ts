@@ -140,7 +140,15 @@ export async function deleteCollection(
       await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
     await deleteCollectionRow(tx, existing.id);
     if (existing.type === 'auth') {
-      for (const name of ['_sessions', '_linked_accounts', '_oauth2_states']) {
+      for (const name of [
+        '_sessions',
+        '_linked_accounts',
+        '_oauth2_states',
+        '_mfas',
+        '_totp',
+        '_recovery_codes',
+        '_password_origins',
+      ]) {
         await tx
           .newQuery(
             `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
@@ -197,7 +205,7 @@ const RULE_KEYS = [
 
 interface RuleProblem {
   collection: Collection;
-  key: (typeof RULE_KEYS)[number];
+  key: (typeof RULE_KEYS)[number] | 'mfa.rule';
   problem: string;
 }
 
@@ -206,10 +214,15 @@ function ruleProblems(collections: readonly Collection[]): RuleProblem[] {
   const schema = new Schema(0, collections);
   const problems: RuleProblem[] = [];
   for (const target of collections) {
-    for (const key of RULE_KEYS) {
-      const rule = (
-        target as Partial<Record<(typeof RULE_KEYS)[number], string | null>>
-      )[key];
+    const rules: [RuleProblem['key'], string | null | undefined][] =
+      RULE_KEYS.map((key) => [
+        key,
+        (target as Partial<Record<(typeof RULE_KEYS)[number], string | null>>)[
+          key
+        ],
+      ]);
+    if (target.type === 'auth') rules.push(['mfa.rule', target.mfa.rule]);
+    for (const [key, rule] of rules) {
       const problem =
         rule === undefined ? undefined : ruleProblem(rule, target, schema);
       if (problem !== undefined)
@@ -236,7 +249,9 @@ function checkRules(
         `This change breaks the ${key} of ${target.name}: ${problem}`,
       );
     }
-    data[key] = { code: 'validation_invalid_rule', message: problem };
+    const error = { code: 'validation_invalid_rule', message: problem };
+    if (key === 'mfa.rule') data.mfa = { rule: error };
+    else data[key] = error;
   }
   if (Object.keys(data).length > 0)
     throw new ApiError(400, 'Failed to validate the collection.', data);

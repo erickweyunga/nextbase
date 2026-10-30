@@ -3,6 +3,7 @@ import type {
   Collection,
   NextBaseClient,
   RecordModel,
+  SignInMethod,
   TokenConfig,
   TokenType,
 } from '@nextbasejs/client';
@@ -47,6 +48,8 @@ export interface HookPrincipal {
   record?: RecordModel;
   /** The id of the superuser acting as `record`, on an impersonation session. */
   impersonatedBy?: string;
+  /** How the caller's session signed in, such as `["password", "totp"]`. */
+  methods?: SignInMethod[];
 }
 
 /** The request of a write, as rules see it. */
@@ -503,10 +506,11 @@ function deepFreeze<T>(value: T): T {
 }
 
 function hookPrincipal(principal: Principal): HookPrincipal {
-  const { collection, record, superuser, impersonatedBy } = principal;
+  const { collection, record, superuser, impersonatedBy, session } = principal;
   return {
     superuser,
     ...(impersonatedBy !== undefined && { impersonatedBy }),
+    ...(session && { methods: [...session.methods] as SignInMethod[] }),
     ...(collection && { collection: hookCollection(collection) }),
     ...(collection &&
       record && { record: serverRecord(collection, record) as RecordModel }),

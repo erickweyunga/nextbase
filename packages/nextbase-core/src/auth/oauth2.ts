@@ -45,6 +45,8 @@ export interface OAuth2State {
   errorRedirect: string;
   /** Set when a signed-in record is linking a provider instead of signing in. */
   linkRecordId: string | null;
+  /** The hash of the `mfaId` this sign-in is the second step of, if any. */
+  mfaIdHash: string | null;
 }
 
 /** Sent back to the app as `?error=code`, not JSON, since the browser is navigating. */
@@ -138,12 +140,14 @@ export class OAuth2 {
       redirect,
       errorRedirect,
       linkRecordId,
+      mfaIdHash,
     }: {
       collection: AuthCollection;
       provider: Provider;
       redirect: string;
       errorRedirect: string;
       linkRecordId: string | null;
+      mfaIdHash: string | null;
     },
   ): Promise<{ location: string; state: string }> {
     const server = await provider.server();
@@ -160,9 +164,10 @@ export class OAuth2 {
       .newQuery(
         `INSERT INTO {{${table('_oauth2_states')}}}
            (id, collection_id, provider, code_verifier, nonce, redirect, error_redirect,
-            link_record_id, expires)
+            link_record_id, mfa_id, expires)
          VALUES ({:id}, {:collectionId}, {:provider}, {:codeVerifier}, {:nonce}, {:redirect},
-                 {:errorRedirect}, {:linkRecordId}, now() + make_interval(secs => ${STATE_MAX_AGE}))`,
+                 {:errorRedirect}, {:linkRecordId}, {:mfaIdHash},
+                 now() + make_interval(secs => ${STATE_MAX_AGE}))`,
       )
       .bind({
         id: stateHash(state),
@@ -173,6 +178,7 @@ export class OAuth2 {
         redirect,
         errorRedirect,
         linkRecordId,
+        mfaIdHash,
       })
       .execute();
     const url = new URL(server.authorization_endpoint as string);
@@ -208,7 +214,8 @@ export class OAuth2 {
          WHERE id = {:id} AND expires > now()
          RETURNING collection_id AS "collectionId", provider,
            code_verifier AS "codeVerifier", nonce, redirect,
-           error_redirect AS "errorRedirect", link_record_id AS "linkRecordId"`,
+           error_redirect AS "errorRedirect", link_record_id AS "linkRecordId",
+           mfa_id AS "mfaIdHash"`,
       )
       .bind({ id: stateHash(returned) })
       .all<OAuth2State>();
@@ -250,10 +257,18 @@ export class OAuth2 {
     return provider.identity(server, tokens);
   }
 
-  returnUrl(redirect: string, error?: string): string {
+  returnUrl(
+    redirect: string,
+    error?: string,
+    params: Record<string, string> = {},
+  ): string {
     const base = this.#appUrl as URL;
     const url = redirect === '' ? new URL(base) : new URL(redirect, base);
     if (error !== undefined) url.searchParams.set('error', error);
+    // Added to the app's own parameters, never in place of one.
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.append(key, value);
+    }
     return url.href;
   }
 }

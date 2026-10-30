@@ -226,10 +226,29 @@ describe('phone sign-in', () => {
       .signInWithPassword('ann@example.com', PASSWORD);
 
     const first = '+255713100001';
-    await nb.collection('users').requestPhoneVerification(first);
+    // A stolen session, without the password, cannot move the account to
+    // another phone.
+    const stolen = await failure(
+      other.collection('users').requestPhoneVerification(first),
+    );
+    expect(stolen.data.password).toMatchObject({ code: 'validation_required' });
     await nb
       .collection('users')
-      .confirmPhoneVerification(first, await codeFor(first));
+      .requestPhoneVerification(first, { password: PASSWORD });
+    expect(
+      (
+        await failure(
+          other.collection('users').confirmPhoneVerification(first, '123456', {
+            password: 'not the password!',
+          }),
+        )
+      ).data.password,
+    ).toMatchObject({ code: 'validation_invalid_password' });
+    await nb
+      .collection('users')
+      .confirmPhoneVerification(first, await codeFor(first), {
+        password: PASSWORD,
+      });
     const session = await nb.getSession();
     expect(session?.record).toMatchObject({
       phone: first,
@@ -239,10 +258,14 @@ describe('phone sign-in', () => {
     expect((await failure(other.getSession())).status).toBe(401);
 
     const second = '+255713100002';
-    await nb.collection('users').requestPhoneVerification(second);
     await nb
       .collection('users')
-      .confirmPhoneVerification(second, await codeFor(second));
+      .requestPhoneVerification(second, { password: PASSWORD });
+    await nb
+      .collection('users')
+      .confirmPhoneVerification(second, await codeFor(second), {
+        password: PASSWORD,
+      });
     expect((await nb.getSession())?.record.phone).toBe(second);
     expect((await textsTo(first)).at(-1)?.text).toMatch(/was just changed/);
     await flush();
@@ -260,15 +283,21 @@ describe('phone sign-in', () => {
       password: PASSWORD,
       passwordConfirm: PASSWORD,
     });
-    await nb.collection('users').requestPhoneVerification(taken);
+    await nb
+      .collection('users')
+      .requestPhoneVerification(taken, { password: PASSWORD });
     const error = await failure(
       nb
         .collection('users')
-        .confirmPhoneVerification(taken, await codeFor(taken)),
+        .confirmPhoneVerification(taken, await codeFor(taken), {
+          password: PASSWORD,
+        }),
     );
     expect(error.data.phone?.code).toBe('validation_not_unique');
     // A code for one account does not verify the phone for another.
-    await nb.collection('users').requestPhoneVerification('+255713100004');
+    await nb
+      .collection('users')
+      .requestPhoneVerification('+255713100004', { password: PASSWORD });
     const code = await codeFor('+255713100004');
     const someoneElse = (await signIn('+255713100005')).nb;
     expect(
@@ -276,7 +305,9 @@ describe('phone sign-in', () => {
         await failure(
           someoneElse
             .collection('users')
-            .confirmPhoneVerification('+255713100004', code),
+            .confirmPhoneVerification('+255713100004', code, {
+              password: PASSWORD,
+            }),
         )
       ).status,
     ).toBe(400);

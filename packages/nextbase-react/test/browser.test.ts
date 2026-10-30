@@ -17,6 +17,7 @@ const session = (email: string): CurrentSession => ({
   expires: '2026-10-26T00:00:00.000Z',
   userAgent: '',
   current: true,
+  methods: [],
   record: { id: 'u1', collectionId: 'c1', collectionName: 'users', email },
 });
 
