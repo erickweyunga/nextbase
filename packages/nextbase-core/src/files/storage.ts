@@ -176,10 +176,11 @@ class LocalStorage implements Storage {
   }
 
   async deletePrefix(prefix: string): Promise<void> {
-    await rm(this.#path(prefix.replace(/\/+$/, '')), {
-      recursive: true,
-      force: true,
-    });
+    const path = this.#path(prefix.replace(/\/+$/, ''));
+    await rm(path, { recursive: true, force: true });
+    // Removes the record's directory once empty, as `delete` does.
+    if (dirname(path) !== this.#root)
+      await rmdir(dirname(path)).catch(() => {});
   }
 }
 

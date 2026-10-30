@@ -150,11 +150,18 @@ GET /files/{collection}/{recordId}/{filename}
 | ----- | ----------- |
 | `download` | `1` serves the file as a download. |
 | `token` | A [file token](#get-a-file-token), for protected files. |
+| `thumb` | A [thumbnail](/docs/guides/files#thumbnails) size, such as `100x100`, for JPEG, PNG, GIF and WebP images. |
 
 With local storage, answers with the file. With a bucket, redirects (302) to
 a signed URL that works for 5 minutes. Files of `protected` fields need a
 caller the collection's view rule allows: through the session cookie, a
 Bearer token, or `token`. Anyone else gets 404.
+
+With `thumb`, the thumbnail is served the same way, made first if it was not
+stored yet. A size that is not `100x100` or one of the field's `thumbs`, a
+file of another type, and an image that cannot be thumbed get a redirect
+(302, `Cache-Control: no-store`) to the same URL without `thumb`, keeping
+`token` and `download`.
 
 ## Get a file token
 

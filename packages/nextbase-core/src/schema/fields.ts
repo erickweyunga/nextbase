@@ -5,6 +5,7 @@ import type {
   FieldType,
   PasswordField,
 } from '@nextbasejs/client';
+import { MAX_THUMBS, thumbSizeProblem } from '../files/thumbs.ts';
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from '../random.ts';
 import { parseDate } from '../storable.ts';
 import { type Issues, isRecord, type Path, Reader } from './input.ts';
@@ -288,6 +289,7 @@ export function parseField(
         maxSize: r.integer('maxSize', DEFAULT_FILE_MAX_SIZE, 1, MAX_SAFE),
         mimeTypes,
         protected: r.boolean('protected', false),
+        thumbs: parseThumbs(r),
       };
     }
     case 'json':
@@ -406,4 +408,24 @@ function parseSelectValues(r: Reader): string[] {
     seen.add(value);
   });
   return values;
+}
+
+// Duplicates are dropped, so each size is made and stored once.
+function parseThumbs(r: Reader): string[] {
+  const thumbs = r.strings('thumbs', []);
+  thumbs.forEach((size, i) => {
+    const problem = thumbSizeProblem(size);
+    if (problem) {
+      r.issues.add(
+        [...r.path, 'thumbs', i],
+        'validation_invalid_value',
+        problem,
+      );
+    }
+  });
+  const unique = [...new Set(thumbs)];
+  if (unique.length > MAX_THUMBS) {
+    r.fail('thumbs', 'validation_too_many', `Add at most ${MAX_THUMBS} sizes.`);
+  }
+  return unique;
 }

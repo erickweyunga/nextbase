@@ -18,6 +18,7 @@ await superuser.collections.update("users", {
       type: "file",
       maxSize: 2 * 1024 * 1024, // bytes; default 5 MiB
       mimeTypes: ["image/png", "image/jpeg", "image/webp"],
+      thumbs: ["300x200", "64x64"],
     },
     { name: "documents", type: "file", maxSelect: 10, protected: true },
   ],
@@ -30,6 +31,7 @@ await superuser.collections.update("users", {
 | `maxSize` | The largest file allowed, in bytes. Default 5 MiB. |
 | `mimeTypes` | The types allowed, such as `image/png`. Empty allows any. |
 | `protected` | Serve the files only to callers the collection's view rule allows. Default `false`. |
+| `thumbs` | The [thumbnail](#thumbnails) sizes images may be requested in, such as `300x200`. Up to 20; `100x100` is always allowed. Default `[]`. |
 
 ## Upload files
 
@@ -77,7 +79,7 @@ await docs.update(user.id, {
 await docs.update(user.id, { documents: [] });
 ```
 
-Removed files are deleted from storage. So are a record's files when the
+Removed files are deleted from storage, with their thumbnails. So are a record's files when the
 record is deleted, a field's files when the field is removed, and a
 collection's files when the collection is deleted. If a write fails, any file
 it stored is deleted again, and the files it would have removed are kept.
@@ -96,6 +98,61 @@ tags:
 Images, PDFs, video, audio and plain text are shown in the browser. Other
 types, including HTML and SVG, which could run scripts, are always
 downloaded. Downloads support byte ranges, so video players can seek.
+
+### Thumbnails
+
+Pass `thumb` to get a JPEG, PNG, GIF or WebP image in one of the field's
+`thumbs` sizes, or in `100x100`:
+
+```tsx
+<img src={nb.files.getUrl(user, user.avatar, { thumb: "64x64" })} alt="" />
+```
+
+| Size | Thumbnail |
+| ---- | --------- |
+| `WxH` | Cropped to fill `W` by `H`, from the centre. |
+| `WxHt` | Cropped to fill, from the top. |
+| `WxHb` | Cropped to fill, from the bottom. |
+| `WxHf` | Fit inside `W` by `H`, keeping the whole image. |
+| `0xH` | `H` high, keeping the aspect ratio. |
+| `Wx0` | `W` wide, keeping the aspect ratio. |
+
+Sizes are written without leading zeros, with sides up to 2500 pixels, and
+`t`, `b` and `f` only when neither side is 0. A thumbnail is never larger
+than its image, so it can be smaller than the size asked for: a 200x50 image
+at `100x100` gives 100x50. It keeps its format, and is turned the way the photo's EXIF orientation says; EXIF
+and other metadata are left out. An animated GIF gives a still of its first
+frame.
+
+Each thumbnail is made the first time it is requested, stored beside its
+file, and served from storage after that, with the same rules, headers and,
+with a bucket, signed redirects as the file itself. Thumbnails are deleted
+with their file. Thumbnails of a size removed from `thumbs` stay in storage
+until then.
+
+Otherwise, the request redirects (302, not cached) to the original file's
+own URL, without `thumb`: for a size the field does not list, other types of
+file, including SVG, files over 50 MB, images that cannot be read, have more
+than 50 megapixels, a side over 16384 pixels or one side more than 50 times
+the other, and while the server is too busy making other thumbnails. Images
+whose header shows they can never be thumbed are remembered beside the file,
+so they are tried once. When resizing an image fails, that size is tried
+again after 5 minutes. Both are logged as warnings with `data.type`
+`"thumbs"`.
+
+Thumbnails are made with [sharp](https://sharp.pixelplumbing.com), which you
+install in your app:
+
+```sh
+npm install sharp
+```
+
+Without it, requests redirect to the originals, and a warning is logged once
+per instance. Next.js
+leaves sharp out of its server bundles by default, since it has native code,
+so it needs no configuration there. sharp installs a native build for the
+platform it is installed on: install your dependencies where the app is
+built for its servers, as Vercel does.
 
 ### Protected files
 
@@ -195,7 +252,6 @@ request.
 
 ## Limits
 
-- Thumbnails of images are not generated yet.
 - The batch API takes JSON only. With a bucket, files can still be added in
   a batch: start each upload with the [upload URL endpoint](/docs/api/files#start-a-direct-upload)
   and pass the upload tokens as the field's values.

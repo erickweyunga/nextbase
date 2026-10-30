@@ -33,6 +33,22 @@ await posts.delete(id);
 `create` and `update` return `null` when the write succeeded but the rules do
 not let the caller view the result.
 
+## Files
+
+```ts
+const url = nb.files.getUrl(post, post.cover);
+const thumb = nb.files.getUrl(post, post.cover, { thumb: "100x100" });
+const download = nb.files.getUrl(post, post.cover, { download: true });
+
+// Protected files, where no session cookie is sent:
+const token = await nb.files.getToken();
+const secret = nb.files.getUrl(user, user.scan, { token, thumb: "64x64" });
+```
+
+`thumb` takes `100x100` or one of the field's `thumbs` sizes; for other
+sizes and files that are not images, the URL redirects to the original. See
+[Files](/docs/guides/files#thumbnails).
+
 ## Impersonation
 
 Superusers only. Act as a user to see the app as they do:

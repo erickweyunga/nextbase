@@ -87,6 +87,13 @@ export interface FileField extends FieldBase<'file'> {
   mimeTypes: string[];
   /** Served only with a file token to callers that pass the view rule. */
   protected: boolean;
+  /**
+   * Thumbnail sizes images may be requested in, such as `300x200`: `WxH`
+   * crops from the centre, `WxHt` and `WxHb` from the top or bottom, `WxHf`
+   * fits inside, `0xH` and `Wx0` keep the aspect ratio. `100x100` is always
+   * allowed.
+   */
+  thumbs: string[];
 }
 
 export interface JsonField extends FieldBase<'json'> {

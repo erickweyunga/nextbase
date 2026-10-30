@@ -78,6 +78,7 @@ import {
   principalOfFileToken,
 } from '../files/serve.ts';
 import type { Storage } from '../files/storage.ts';
+import type { Thumbs } from '../files/thumbs.ts';
 import { readJsonObject, readRecordBody } from '../http.ts';
 import type { Logger } from '../logs/logger.ts';
 import {
@@ -135,6 +136,7 @@ interface Context {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
+  thumbs: Thumbs;
   hooks: Hooks;
   /** Undefined when realtime is not enabled. */
   realtime: Realtime | undefined;
@@ -506,7 +508,7 @@ export const ROUTES: readonly Route[] = [
     pattern: new RegExp(`^/files/${segment}/${segment}/${segment}$`),
     tags: ['file'],
     async handler(context) {
-      const { request, params, db, schema, storage } = context;
+      const { request, params, db, schema, storage, thumbs } = context;
       const { collection, field, key } = await findFile(db, schema, params);
       const query = new URL(request.url).searchParams;
       if (field.protected) {
@@ -525,7 +527,21 @@ export const ROUTES: readonly Route[] = [
         );
       }
       const download = query.has('download') && query.get('download') !== '0';
-      return fileResponse(storage, key, request, {
+      const thumb = query.get('thumb');
+      const served = thumb ? await thumbs.keyOf(field, key, thumb) : key;
+      if (served === undefined) {
+        // To the original's own URL, so caches keep it only under that.
+        const original = new URL(request.url);
+        original.searchParams.delete('thumb');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `${original.pathname}${original.search}`,
+            'cache-control': 'no-store',
+          },
+        });
+      }
+      return fileResponse(storage, served, request, {
         download,
         protectedFile: field.protected,
       });

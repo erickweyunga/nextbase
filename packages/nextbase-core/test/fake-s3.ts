@@ -19,6 +19,8 @@ export interface FakeS3 {
   requests: string[];
   /** While set, PUT requests wait for it, to test what happens meanwhile. */
   hold: Promise<void> | undefined;
+  /** While set, GET requests for objects wait for it. */
+  holdGets: Promise<void> | undefined;
   stop(): Promise<void>;
 }
 
@@ -106,6 +108,7 @@ export async function startFakeS3(bucket = 'test-bucket'): Promise<FakeS3> {
       return response.end();
     }
     if (request.method === 'GET') {
+      await fake.holdGets;
       if (!object) return error(response, 404, 'NoSuchKey');
       const headers: Record<string, string | number> = {
         // Signed URLs may override how the object is presented, as on S3.
@@ -144,6 +147,7 @@ export async function startFakeS3(bucket = 'test-bucket'): Promise<FakeS3> {
     objects,
     requests,
     hold: undefined,
+    holdGets: undefined,
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
