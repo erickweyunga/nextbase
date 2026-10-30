@@ -302,6 +302,34 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
   }
 
+  /**
+   * Signs in with an ID token from a provider's native SDK, such as Google
+   * Sign-In or Sign in with Apple on iOS and Android, and saves the session
+   * like `signInWithPassword`. `nonce` is the one given to the SDK, if any.
+   * A new account goes through the provider's `mapProfile` with `data`.
+   */
+  async signInWithIdToken(
+    provider: string,
+    token: string,
+    options: SecondStepOptions & {
+      nonce?: string;
+      data?: Record<string, unknown>;
+    } = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, nonce, data, ...rest } = options;
+    return this.#signIn(
+      `/auth-with-id-token/${encodeURIComponent(provider)}`,
+      rest,
+      {
+        token,
+        ...(nonce !== undefined && { nonce }),
+        ...(data !== undefined && { data }),
+        ...(mfaId !== undefined && { mfaId }),
+        ...(cookie && { cookie: true }),
+      },
+    );
+  }
+
   /** The second step of a sign-in, with a code from the account's authenticator app. */
   async signInWithTotp(
     code: string,

@@ -324,6 +324,11 @@ describe('OAuth2 sign-in', () => {
           clientSecret: 'secret',
           disableSignUp: true,
         },
+        mobile: {
+          issuer: ISSUER,
+          clientId: ['web', 'ios', 'android'],
+          clientSecret: 'secret',
+        },
       },
       mail: {
         from: 'app@example.com',
@@ -373,6 +378,7 @@ describe('OAuth2 sign-in', () => {
         { name: 'github', displayName: 'GitHub' },
         { name: 'shop', displayName: 'shop' },
         { name: 'closed', displayName: 'closed' },
+        { name: 'mobile', displayName: 'mobile' },
       ],
     });
     const superusers = await nextbase
@@ -457,6 +463,139 @@ describe('OAuth2 sign-in', () => {
         )
       ).rows,
     ).toEqual([]);
+  });
+
+  describe('ID tokens from native apps', () => {
+    /** An ID token as the fake provider's native SDK would issue it. */
+    const idToken = async (
+      claims: Record<string, unknown>,
+      {
+        audience = 'ios',
+        key = keys.privateKey,
+        expires = '5m',
+      }: {
+        audience?: string;
+        key?: typeof keys.privateKey;
+        expires?: string | number;
+      } = {},
+    ): Promise<string> =>
+      new SignJWT(claims)
+        .setProtectedHeader({ alg: 'RS256' })
+        .setIssuer(ISSUER)
+        .setAudience(audience)
+        .setIssuedAt()
+        .setExpirationTime(expires)
+        .sign(key);
+    const signInWith = (
+      provider: string,
+      body: Record<string, unknown>,
+    ): ReturnType<typeof call> =>
+      call(
+        nextbase,
+        'POST',
+        `/collections/users/auth-with-id-token/${provider}`,
+        {
+          body,
+        },
+      );
+
+    it('signs up and in with a token issued to any of the client ids, once', async () => {
+      const token = await idToken({
+        sub: 'native-1',
+        email: 'native@example.com',
+        // As Apple sends it.
+        email_verified: 'true',
+        name: 'Nat',
+      });
+      const reply = await signInWith('mobile', { token });
+      expect(reply.status).toBe(200);
+      expect(reply.body).toMatchObject({
+        record: { email: 'native@example.com', emailVerified: true },
+        methods: ['oauth2'],
+      });
+      expect(typeof reply.body.token).toBe('string');
+      const again = await signInWith('mobile', { token });
+      expect(again.status).toBe(400);
+      expect(again.body.message).toBe('The ID token was already used.');
+      // The same account, with a new token from another of the apps.
+      const android = await signInWith('mobile', {
+        token: await idToken(
+          {
+            sub: 'native-1',
+            email: 'native@example.com',
+            email_verified: true,
+          },
+          { audience: 'android' },
+        ),
+      });
+      expect(android.body.record).toMatchObject({
+        id: (reply.body.record as { id: string }).id,
+      });
+    });
+
+    it('refuses a token of another app, expired, or not signed by the provider', async () => {
+      const other = await generateKeyPair('RS256');
+      for (const token of [
+        await idToken({ sub: 'x1' }, { audience: 'someone-else' }),
+        await idToken(
+          { sub: 'x2' },
+          { expires: Math.floor(Date.now() / 1000) - 120 },
+        ),
+        await idToken({ sub: 'x3' }, { key: other.privateKey }),
+        'not.a.token',
+      ]) {
+        const reply = await signInWith('mobile', { token });
+        expect(reply.status).toBe(400);
+        expect(reply.body.data).toMatchObject({
+          token: { code: 'validation_invalid_token' },
+        });
+      }
+      expect((await signInWith('mobile', {})).status).toBe(400);
+      expect((await signInWith('github', { token: 'x' })).status).toBe(400);
+    });
+
+    it('checks the nonce, as is or hashed', async () => {
+      const nonce = 'n-123';
+      const hashed = createHash('sha256').update(nonce).digest('hex');
+      const ok = await signInWith('mobile', {
+        nonce,
+        token: await idToken({
+          sub: 'nonce-1',
+          email: 'nonce@example.com',
+          email_verified: true,
+          nonce: hashed,
+        }),
+      });
+      expect(ok.status).toBe(200);
+      const wrong = await signInWith('mobile', {
+        nonce: 'other',
+        token: await idToken({ sub: 'nonce-1', nonce }),
+      });
+      expect(wrong.status).toBe(400);
+    });
+
+    it('answers the browser sign-in errors as JSON', async () => {
+      const closed = await signInWith('closed', {
+        token: await idToken(
+          { sub: 'closed-1', email: 'shut@example.com', email_verified: true },
+          { audience: 'client' },
+        ),
+      });
+      expect(closed.status).toBe(400);
+      expect(closed.body.data).toMatchObject({
+        token: { code: 'sign_up_disabled' },
+      });
+      const unverified = await signInWith('mobile', {
+        token: await idToken({
+          sub: 'unverified-1',
+          email: 'unverified@example.com',
+          email_verified: false,
+        }),
+      });
+      expect(unverified.body.data).toMatchObject({
+        token: { code: 'email_not_verified' },
+      });
+    });
   });
 
   it('signs up a new account with the email the provider verified', async () => {

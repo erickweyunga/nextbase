@@ -29,6 +29,7 @@ import {
   mailKey,
 } from './throttle.ts';
 import { peekToken, signToken, verifyToken } from './tokens.ts';
+import { spendToken } from './used-tokens.ts';
 
 // Email verification, password reset, email change and account deletion.
 // - Answers and timing are the same whether or not the account exists.
@@ -234,30 +235,6 @@ async function sendEmailChange(
       ...(approved && { approved: true }),
     }),
   });
-}
-
-/** Marks a single-use token used; false when it was already. */
-async function spendToken(
-  db: Builder,
-  jti: string,
-  exp: unknown,
-): Promise<boolean> {
-  const spent = await db
-    .newQuery(
-      `WITH expired AS (
-         DELETE FROM {{${table('_used_tokens')}}} WHERE expires <= now()
-       )
-       INSERT INTO {{${table('_used_tokens')}}} (id_hash, expires)
-       VALUES ({:idHash}, to_timestamp({:exp}))
-       ON CONFLICT (id_hash) DO NOTHING
-       RETURNING 1`,
-    )
-    .bind({
-      idHash: createHash('sha256').update(jti).digest('hex'),
-      exp: typeof exp === 'number' ? exp : 0,
-    })
-    .column();
-  return spent.length > 0;
 }
 
 /**

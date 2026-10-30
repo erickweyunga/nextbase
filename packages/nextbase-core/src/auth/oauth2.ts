@@ -1,11 +1,13 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { AuthCollection, AuthProvider } from '@nextbasejs/client';
 import type { Builder } from '@nextbasejs/dbx';
+import { createRemoteJWKSet, type JWTPayload, jwtVerify } from 'jose';
 import * as oauth from 'oauth4webapi';
 import { table } from '../db/system.ts';
 import { ApiError } from '../errors.ts';
 import { unstorableText } from '../storable.ts';
 import { isSecure, readCookie } from './sessions.ts';
+import { spendToken } from './used-tokens.ts';
 
 // OAuth2 / OpenID Connect sign-in (protocol details via oauth4webapi):
 // 1. start() redirects to the provider with a PKCE challenge and a random
@@ -17,7 +19,12 @@ import { isSecure, readCookie } from './sessions.ts';
 // Redirects are built from the configured app URL only.
 
 export interface OAuth2ProviderOptions {
-  clientId: string;
+  /**
+   * From the provider's OAuth app. Several, such as your web, iOS and
+   * Android apps', accept ID tokens issued to any of them; the first is the
+   * one the browser sign-in uses.
+   */
+  clientId: string | string[];
   clientSecret: string;
   /** OpenID Connect issuer URL to discover endpoints from; not needed for `google` and `github`. */
   issuer?: string;
@@ -86,6 +93,8 @@ export class OAuth2Error extends Error {
 
 interface Provider extends AuthProvider {
   scope: string;
+  /** Every client id an ID token may be issued to. */
+  audiences: string[];
   /** Parameters for the authorization page, `prompt` among them. */
   params: Record<string, string>;
   disableSignUp: boolean;
@@ -129,6 +138,8 @@ const signal = (): AbortSignal => AbortSignal.timeout(TIMEOUT_MS);
 
 export class OAuth2 {
   readonly #providers = new Map<string, Provider>();
+  /** Each provider's signing keys, fetched and cached by `jose`. */
+  readonly #keys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
   readonly #appUrl: URL | undefined;
   readonly #callbackBase: string | undefined;
 
@@ -312,6 +323,77 @@ export class OAuth2 {
     return provider.identity(server, tokens);
   }
 
+  /**
+   * The account of an ID token a native app got from the provider's own
+   * SDK, such as Google's or Apple's: signed by the provider, issued to one
+   * of its client ids, unexpired, and accepted once. With `nonce`, the token
+   * must carry it, as is or as its SHA-256 hex, which Apple's SDK sends.
+   */
+  async verifyIdToken(
+    q: Builder,
+    provider: Provider,
+    token: unknown,
+    nonce: unknown,
+  ): Promise<Identity> {
+    const invalid = (message: string): never => {
+      throw new ApiError(400, message, {
+        token: { code: 'validation_invalid_token', message },
+      });
+    };
+    if (!provider.oidc) {
+      invalid(`${provider.displayName} has no ID tokens to sign in with.`);
+    }
+    if (typeof token !== 'string' || token === '' || token.length > 16_384) {
+      return invalid('The ID token is missing.');
+    }
+    const server = await provider.server();
+    if (typeof server.jwks_uri !== 'string') {
+      return invalid(`${provider.displayName} publishes no signing keys.`);
+    }
+    let keys = this.#keys.get(provider.name);
+    if (!keys) {
+      keys = createRemoteJWKSet(new URL(server.jwks_uri), {
+        timeoutDuration: TIMEOUT_MS,
+      });
+      this.#keys.set(provider.name, keys);
+    }
+    let claims: JWTPayload;
+    try {
+      ({ payload: claims } = await jwtVerify(token, keys, {
+        issuer: issuersOf(server.issuer),
+        audience: provider.audiences,
+        clockTolerance: 30,
+        requiredClaims: ['sub', 'exp', 'iat'],
+      }));
+    } catch {
+      return invalid('The ID token is invalid or has expired.');
+    }
+    if (nonce !== undefined) {
+      const hashed =
+        typeof nonce === 'string' &&
+        createHash('sha256').update(nonce).digest('hex');
+      if (
+        typeof nonce !== 'string' ||
+        (claims.nonce !== nonce && claims.nonce !== hashed)
+      ) {
+        invalid('The ID token was issued for another sign-in.');
+      }
+    }
+    // Once: a token seen elsewhere, such as in a log, cannot sign in again.
+    const id = `id-token:${server.issuer}:${claims.jti ?? stateHash(token)}`;
+    if (!(await spendToken(q, id, claims.exp))) {
+      invalid('The ID token was already used.');
+    }
+    return {
+      id: claims.sub as string,
+      email: typeof claims.email === 'string' ? claims.email : undefined,
+      // Apple sends it as a string.
+      emailVerified:
+        claims.email_verified === true || claims.email_verified === 'true',
+      profile: claims,
+    };
+  }
+
   returnUrl(
     redirect: string,
     error?: string,
@@ -369,6 +451,13 @@ function stateCookieName(request: Request): string {
   return isSecure(request) ? STATE_COOKIES.secure : STATE_COOKIES.plain;
 }
 
+/** Google's ID tokens name its issuer with or without the scheme. */
+function issuersOf(issuer: string): string[] {
+  return issuer === 'https://accounts.google.com'
+    ? [issuer, 'accounts.google.com']
+    : [issuer];
+}
+
 // States are stored hashed, so a database leak cannot finish a sign-in.
 function stateHash(state: string): string {
   return createHash('sha256').update(state).digest('hex');
@@ -388,7 +477,16 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
       `OAuth2 provider name "${name}" must be 1 to 32 lowercase letters, digits, "-" or "_".`,
     );
   }
-  if (!options.clientId || !options.clientSecret) {
+  const audiences =
+    typeof options.clientId === 'string'
+      ? [options.clientId]
+      : options.clientId;
+  if (
+    !Array.isArray(audiences) ||
+    audiences.length === 0 ||
+    audiences.some((id) => typeof id !== 'string' || id === '') ||
+    !options.clientSecret
+  ) {
     throw new TypeError(
       `OAuth2 provider "${name}" needs a clientId and a clientSecret.`,
     );
@@ -399,7 +497,8 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
   };
   const base = {
     name,
-    client: { client_id: options.clientId },
+    client: { client_id: audiences[0] as string },
+    audiences,
     clientAuth: oauth.ClientSecretPost(options.clientSecret),
     params,
     disableSignUp: options.disableSignUp === true,

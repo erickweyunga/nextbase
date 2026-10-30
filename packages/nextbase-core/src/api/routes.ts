@@ -25,6 +25,7 @@ import {
 } from '../auth/flows.ts';
 import { findByEmail } from '../auth/identity.ts';
 import {
+  type Account,
   accountFor,
   findLinked,
   listLinkedAccounts,
@@ -835,6 +836,94 @@ export const ROUTES: readonly Route[] = [
           ['set-cookie', setStateCookie(request, state)],
         ],
       });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(
+      `^/collections/${segment}/auth-with-id-token/${segment}$`,
+    ),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins, oauth2 } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      if (collection.id === SUPERUSERS) {
+        throw new ApiError(400, 'Superusers sign in with their password.');
+      }
+      const provider = oauth2.provider(params[1] as string);
+      const input = await readJsonObject(request);
+      const cookie = input.cookie === true;
+      if (cookie && !inProcess) checkSameOrigin(request, origins);
+      const data = input.data === undefined ? null : checkData(input.data);
+      // A second step names its sign-in before the token is checked.
+      const step =
+        input.mfaId === undefined
+          ? undefined
+          : await bodyStep(context, collection, input.mfaId, 'oauth2');
+      const identity = await oauth2.verifyIdToken(
+        db,
+        provider,
+        input.token,
+        input.nonce,
+      );
+      if (step) {
+        const linked = await findLinked(
+          db,
+          collection,
+          provider.name,
+          identity.id,
+        );
+        if (linked?.id !== step.pending.record.id) {
+          throw new ApiError(
+            400,
+            'This provider account is not linked to the account signing in.',
+            {
+              token: {
+                code: 'validation_mfa_method',
+                message: 'Not linked to this account.',
+              },
+            },
+          );
+        }
+        return finishStep(context, step, 'oauth2', cookie);
+      }
+      let account: Account;
+      try {
+        account = await accountFor(
+          { db, schema, effects: context.effects, hooks: context.hooks },
+          collection,
+          {
+            name: provider.name,
+            disableSignUp: provider.disableSignUp,
+            mapProfile: provider.mapProfile,
+            data,
+          },
+          identity,
+          null,
+        );
+      } catch (error) {
+        // The codes the browser sign-in returns in `?error=`.
+        if (error instanceof OAuth2Error) {
+          throw new ApiError(400, error.message, {
+            token: { code: error.code, message: error.message },
+          });
+        }
+        throw error;
+      }
+      if (account.linkedTo !== undefined) {
+        context.mailer.send('oauth2Linked', collection.name, account.linkedTo, {
+          provider: provider.displayName,
+        });
+      }
+      await checkAuthRule(db, schema, collection, account.record.id as string);
+      return completeSignIn(
+        context,
+        collection,
+        account.record,
+        'oauth2',
+        cookie,
+      );
     },
   },
   {

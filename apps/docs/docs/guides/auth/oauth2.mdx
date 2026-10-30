@@ -47,7 +47,7 @@ first sign-in creates their account; later ones sign in to it.
 
 | Option | Description |
 | ------ | ----------- |
-| `clientId` | Required. From the provider's OAuth app. |
+| `clientId` | Required. From the provider's OAuth app. A list, such as your web, iOS and Android apps' ids, accepts [ID tokens](#native-apps) issued to any of them; the browser sign-in uses the first. |
 | `clientSecret` | Required. Keep it in an environment variable, never in code. |
 | `issuer` | Required except for `google` and `github`. The provider's OpenID Connect issuer; NextBase discovers its endpoints from it. |
 | `displayName` | Optional. The name to show on sign-in buttons. |
@@ -108,6 +108,31 @@ buttons from the providers you set up, read them from `listAuthMethods()`:
 const { oauth2 } = await nb.collection("users").listAuthMethods();
 // oauth2.providers: [{ name: "google", displayName: "Google" }, ...]
 ```
+
+## Native apps
+
+A React Native or Expo app signs in with the provider's own SDK, such as
+Google Sign-In or Sign in with Apple, which hands it an ID token. Send that
+token to NextBase:
+
+```ts
+const { token, record } = await nb
+  .collection("users")
+  .signInWithIdToken("google", idToken, { nonce });
+```
+
+The token must be signed by the provider (its keys come from its OpenID
+Connect issuer), issued to one of the provider's `clientId`s, unexpired, and
+is accepted once. Pass the `nonce` you gave the SDK, if any: the token must
+carry it, as is or as its SHA-256 hex, which Apple's SDK sends. Apple is set
+up by its issuer, `https://appleid.apple.com`, with your app's bundle id
+among the `clientId`s.
+
+The account is found, linked or created as on the browser sign-in, with
+`mapProfile` and its `data`, then signed in with a Bearer token, or a cookie
+with `cookie: true`. A sign-in that fails answers `400`, with the codes
+below in `data.token.code`. With an `mfaId`, it is the second step of a
+sign-in, by a provider account linked to it. GitHub has no ID tokens.
 
 ## When a sign-in fails
 

@@ -265,6 +265,33 @@ Also returned for the superusers collection.
 </TabItem>
 </Tabs>
 
+## Sign in with an ID token
+
+Signs in with an ID token a native app got from the provider's SDK. See
+[Native apps](/docs/guides/auth/oauth2#native-apps).
+
+```ts
+await nb.collection("users").signInWithIdToken("google", idToken, { nonce });
+```
+
+```http
+POST /collections/{collection}/auth-with-id-token/{provider}
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. The ID token. |
+| `nonce` | string | Optional. The nonce given to the SDK; the token must carry it, or its SHA-256 hex. |
+| `data` | object | Optional. Passed to the provider's `mapProfile` when the sign-in creates an account. |
+| `cookie` | boolean | Optional. Puts the session in a cookie instead of the response. |
+| `mfaId` | string | Optional. Makes this the second step of a sign-in. |
+
+Answers like [Sign in with a password](#sign-in-with-a-password). An
+invalid, expired, foreign or used token answers `400` with
+`data.token.code` `validation_invalid_token`; the browser sign-in's errors,
+such as `email_not_verified` or `sign_up_disabled`, answer `400` with that
+code in `data.token.code`.
+
 ## OAuth2 callback
 
 Where providers send the browser back: register
