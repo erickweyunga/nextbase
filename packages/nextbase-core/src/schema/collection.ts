@@ -174,7 +174,12 @@ export function parseCollection(
           : r.boolean('implicitLinking', previous?.implicitLinking ?? true),
       tokens: parseTokens(r, previous?.tokens),
       mfa: parseMfa(r, previous?.mfa),
-      emailVerification: parseEmailVerification(r, previous?.emailVerification),
+      // A superuser created as a record has no verified email, and must not
+      // be locked out.
+      emailVerification:
+        id === '_superusers'
+          ? defaultEmailVerification()
+          : parseEmailVerification(r, previous?.emailVerification),
     };
   }
 
@@ -689,8 +694,6 @@ function parseTokens(
   return configs;
 }
 
-// Unlike the collection's rules, a system collection's MFA settings can
-// change, so superusers can require a second step of each other.
 function parseEmailVerification(
   r: Reader,
   existing: EmailVerificationConfig | undefined,
@@ -710,6 +713,8 @@ function parseEmailVerification(
   };
 }
 
+// Unlike the collection's rules, a system collection's MFA settings can
+// change, so superusers can require a second step of each other.
 function parseMfa(r: Reader, existing: MfaConfig | undefined): MfaConfig {
   const previous = existing ?? defaultMfa();
   const input: unknown = r.has('mfa') ? r.input.mfa : {};

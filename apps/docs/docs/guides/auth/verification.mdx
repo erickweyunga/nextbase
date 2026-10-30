@@ -57,12 +57,20 @@ await superuser.collections.update("users", {
 
 | Option | What it does |
 | ------ | ------------ |
-| `required` | Accounts with an unverified email cannot sign in or refresh: they get a 403, `Verify your email to sign in.`, and `signUp` returns `null`. Accounts without an email, such as phone ones, are not affected. A sign-up with an email that is already registered answers the same `202` as a new one, and the owner gets an email saying someone tried. |
+| `required` | Accounts with an unverified email cannot sign in or refresh: they get a 403, `Verify your email to sign in.`, and `signUp` returns `null`. Their sessions from before end too, except a superuser's [impersonation](/docs/guides/auth/impersonation). Accounts with no email, such as phone ones, are not affected. A sign-up with an email that is already registered answers the same `202` as a new one, with the same errors for its other fields, and the owner gets an email saying someone tried. |
 | `sendOnSignUp` | Sends the link when an account signs up with an email. |
 | `sendOnSignIn` | Sends it again when an unverified account signs in with the right password. |
 
 Links to one address go out at most as often as other emails to it, and a
 link that cannot be sent never fails the sign-up or sign-in; it is logged.
+
+Signing in afterwards with the password just sent still tells the two
+apart: a new account gets the 403 above, a registered one the 400 of a wrong
+password. Each such check costs a new unverified account, which sign-up rate
+limits bound; the 403 is kept so users learn to verify their email.
+
+`_superusers` keeps every option off: a superuser created as a record has no
+verified email.
 
 Without `required`, a sign-up with a registered email answers `400` with
 `validation_not_unique` on `email`, since a new account would be signed in

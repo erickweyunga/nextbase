@@ -89,7 +89,7 @@ import type { Sms } from '../auth/sms.ts';
 import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
 import { countAttempt, mailKey } from '../auth/throttle.ts';
 import { table } from '../db/system.ts';
-import type { Effects } from '../effects.ts';
+import { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
 import {
   createUpload,
@@ -1218,25 +1218,44 @@ export const ROUTES: readonly Route[] = [
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
         typeof input.id === 'string' && input.id !== '' ? input.id : newId();
+      const write = (body: Record<string, unknown>): RecordWrite => ({
+        method: 'POST',
+        collection: collection.id,
+        body: { ...body, id },
+        query: new URLSearchParams(),
+      });
+      // A new account could not sign in before verifying its email either,
+      // so a registered one answers the same, doing the same work, and its
+      // owner is told instead. The same sign-up with an unused email, rolled
+      // back, answers what another field would; Postgres names only the
+      // first value already taken.
+      // An empty email, as a phone sign-up has, is no one's.
+      const hidden =
+        collection.emailVerification.required &&
+        typeof input.email === 'string' &&
+        input.email.trim() !== ''
+          ? input.email.trim()
+          : undefined;
+      let taken =
+        hidden !== undefined &&
+        (await findByEmail(db, collection, hidden)) !== undefined;
       try {
-        await writeRecord(context, {
-          method: 'POST',
-          collection: collection.id,
-          body: { ...input, id },
-          query: new URLSearchParams(),
-        });
-      } catch (error) {
-        // A new account could not sign in before verifying its email either,
-        // so a registered one answers the same; its owner is told instead.
-        if (
-          collection.emailVerification.required &&
-          typeof input.email === 'string' &&
-          takenEmail(error)
-        ) {
-          await tellOwnerOfSignUp(context, collection, input.email);
-          return new Response(null, { status: 202 });
+        if (taken && hidden !== undefined) {
+          await rehearse(
+            context,
+            write({ ...input, email: unusedEmail(hidden) }),
+          );
+        } else {
+          await writeRecord(context, write(input));
         }
-        throw error;
+      } catch (error) {
+        // Registered meanwhile, by a sign-up at the same moment.
+        if (hidden === undefined || taken || !takenEmail(error)) throw error;
+        taken = true;
+      }
+      if (taken && hidden !== undefined) {
+        await tellOwnerOfSignUp(context, collection, hidden);
+        return new Response(null, { status: 202 });
       }
       const [record] = (await db
         .select()
@@ -1721,8 +1740,6 @@ function parseBatch(input: Record<string, unknown>): BatchWrite[] {
   });
 }
 
-// Always 204, so it does not reveal which accounts exist. None is open to
-// an impersonation session: each proves, changes or recovers a way in.
 function flowContext(context: Context): FlowContext {
   const { db, schema, mailer, rejectBreachedPasswords, effects, hooks, mfa } =
     context;
@@ -1749,6 +1766,38 @@ async function sendVerification(
       error,
     );
   }
+}
+
+/** Thrown to roll back a rehearsed write once it succeeded. */
+class Rehearsed extends Error {}
+
+/**
+ * Runs a write in a transaction that is always rolled back: it throws what
+ * the write would, and otherwise leaves nothing, not even its files.
+ */
+async function rehearse(context: Context, write: RecordWrite): Promise<void> {
+  const effects = new Effects();
+  const run = async (tx: Tx): Promise<never> => {
+    await writeRecord({ ...context, tx, effects }, write);
+    throw new Rehearsed();
+  };
+  try {
+    if (context.tx) await context.tx.transaction(run);
+    else await context.db.transaction(run, txOptions(context.statementTimeout));
+  } catch (error) {
+    if (error instanceof Rehearsed) {
+      context.effects.obsoleteFiles.push(...effects.newFiles);
+      return;
+    }
+    context.effects.newFiles.push(...effects.newFiles);
+    throw error;
+  }
+}
+
+/** An address nobody has, at the same domain, so domain checks still apply. */
+function unusedEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  return `${newId()}${at === -1 ? '' : email.slice(at)}`;
 }
 
 /** Whether a write failed only because its email is registered already. */
@@ -1784,6 +1833,8 @@ async function tellOwnerOfSignUp(
   mailer.send('signUpAttempt', collection.name, owner.email as string);
 }
 
+// Always 204, so it does not reveal which accounts exist. None is open to
+// an impersonation session: each proves, changes or recovers a way in.
 function flow(
   name: string,
   run: (

@@ -164,6 +164,68 @@ describe('email verification options', () => {
     expect(invalid.status).toBe(400);
   });
 
+  it('answers another taken field the same whether or not the email is registered', async () => {
+    await admin.collections.create({
+      name: 'handles',
+      type: 'auth',
+      createRule: '',
+      emailVerification: { required: true },
+      fields: [{ id: 'username00', name: 'username', type: 'text' }],
+      indexes: [
+        { name: 'handles_username', unique: true, fields: ['username00'] },
+      ],
+    });
+    const join = (email: string, username: string) =>
+      call(nextbase, 'POST', '/collections/handles/sign-up', {
+        body: {
+          email,
+          username,
+          password: PASSWORD,
+          passwordConfirm: PASSWORD,
+        },
+      });
+    expect((await join('gil@example.com', 'gil')).status).toBe(202);
+    expect((await join('mine@example.com', 'mine')).status).toBe(202);
+    const fresh = await join('new@example.com', 'mine');
+    const registered = await join('gil@example.com', 'mine');
+    expect(fresh.status).toBe(400);
+    expect(registered.status).toBe(fresh.status);
+    expect(registered.body).toEqual(fresh.body);
+    // A clean duplicate leaves no record and no stored file behind.
+    const again = await join('gil@example.com', 'other');
+    expect(again.status).toBe(202);
+    expect(
+      (await t.pool.query('SELECT username FROM nextbase.handles ORDER BY 1'))
+        .rows,
+    ).toEqual([{ username: 'gil' }, { username: 'mine' }]);
+  });
+
+  it('ends sessions from before verification was required', async () => {
+    await admin.collections.create({
+      name: 'later',
+      type: 'auth',
+      createRule: '',
+    });
+    const reply = await signUp('later', 'hal@example.com');
+    const token = reply.body.token as string;
+    const before = await call(nextbase, 'GET', '/session', { token });
+    expect(before.status).toBe(200);
+    await admin.collections.update('later', {
+      emailVerification: { required: true },
+    });
+    const after = await call(nextbase, 'GET', '/session', { token });
+    expect(after.status).toBe(401);
+  });
+
+  it('keeps every option off for superusers', async () => {
+    const updated = await admin.collections.update('_superusers', {
+      emailVerification: { required: true, sendOnSignUp: true },
+    });
+    expect(updated).toMatchObject({
+      emailVerification: { required: false, sendOnSignUp: false },
+    });
+  });
+
   it('keeps the duplicate error where an account signs in at once', async () => {
     await admin.collections.create({
       name: 'open',

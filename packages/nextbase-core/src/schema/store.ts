@@ -129,6 +129,9 @@ function fromRow(row: CollectionRow): Collection {
     mfa: defaultMfa(),
     emailVerification: defaultEmailVerification(),
     ...(row.options as Partial<AuthOptions>),
-    ...(row.id === '_superusers' && { implicitLinking: false }),
+    ...(row.id === '_superusers' && {
+      implicitLinking: false,
+      emailVerification: defaultEmailVerification(),
+    }),
   } as AuthCollection;
 }
