@@ -1,3 +1,4 @@
+import { AuthStore } from './auth-store.ts';
 import { authSync } from './auth-sync.ts';
 import { ClientError } from './client-error.ts';
 import { hasFiles, toFormData } from './files.ts';
@@ -6,6 +7,7 @@ import type { RealtimeEvent, SubscribeOptions } from './realtime.ts';
 import type {
   AuthMethods,
   AuthResponse,
+  ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
   RecordModel,
@@ -21,6 +23,11 @@ export interface RecordOptions extends SendOptions {
 export interface AuthOptions extends RecordOptions {
   /** Keep the session in an HttpOnly cookie instead of returning a token. */
   cookie?: boolean;
+}
+
+export interface ImpersonateOptions extends AuthOptions {
+  /** Seconds, from 60 to 3600. Defaults to 3600. The session is never extended. */
+  duration?: number;
 }
 
 export interface ListOptions extends RecordOptions {
@@ -240,6 +247,50 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
     if (unchanged()) this.#save(response);
     return response;
+  }
+
+  /**
+   * As a superuser, starts a session that acts as the record, to see the app
+   * as its owner does. By default the result has a new client signed in as
+   * the record, with its own in-memory auth store: this client stays signed
+   * in as the superuser. With `cookie: true`, this browser's cookie session
+   * becomes the record's instead, and `signOut()` gives the superuser theirs
+   * back; the auth store is then saved as for a cookie sign-in.
+   */
+  async impersonate(
+    id: string,
+    options: ImpersonateOptions & { cookie: true },
+  ): Promise<ImpersonateResponse<T>>;
+  async impersonate(
+    id: string,
+    options?: ImpersonateOptions,
+  ): Promise<ImpersonateResponse<T> & { client: NextBaseClient }>;
+  async impersonate(
+    id: string,
+    options: ImpersonateOptions = {},
+  ): Promise<ImpersonateResponse<T> & { client?: NextBaseClient }> {
+    const { cookie, duration, ...rest } = options;
+    const apply = cookie
+      ? authSync(this.#client.authStore).intent()
+      : undefined;
+    const response = await this.#send<ImpersonateResponse<T>>(
+      `/impersonate/${encodeURIComponent(id)}`,
+      {
+        ...rest,
+        method: 'POST',
+        body: {
+          ...(duration !== undefined && { duration }),
+          ...(cookie && { cookie: true }),
+        },
+      },
+    );
+    if (apply) {
+      apply(() => this.#save(response));
+      return response;
+    }
+    const store = new AuthStore({ storage: null });
+    store.save(response.token ?? '', response.record);
+    return { ...response, client: this.#client.withAuthStore(store) };
   }
 
   /**

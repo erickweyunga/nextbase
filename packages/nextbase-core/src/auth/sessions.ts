@@ -16,11 +16,21 @@ export const SESSION_COOKIES = {
   plain: 'nextbase_session',
 } as const;
 
+/** Keeps a superuser's cookie session while they impersonate in this browser. */
+export const IMPERSONATOR_COOKIES = {
+  secure: '__Host-nextbase_impersonator',
+  plain: 'nextbase_impersonator',
+} as const;
+
+const SUPERUSERS = '_superusers';
+
 // Extend at most once a day, so active users stay signed in without a write per request.
 const UPDATE_AGE = 86_400;
 /** Absolute lifetime, so a stolen session cannot be kept alive forever by using it. */
 const MAX_AGE = 30 * 86_400;
 const MAX_USER_AGENT = 512;
+/** Impersonation sessions last from a minute to an hour. */
+export const IMPERSONATION_DURATION = { min: 60, max: 3600 } as const;
 
 /** A session row, without its secrets. */
 export interface Session {
@@ -30,6 +40,8 @@ export interface Session {
   created: Date;
   expires: Date;
   userAgent: string;
+  /** The superuser acting as the record, on an impersonation session. */
+  impersonatedBy: string | null;
 }
 
 export interface ActiveSession {
@@ -56,7 +68,17 @@ function sessionKey(collection: AuthCollection, record: Row): string {
 }
 
 const COLUMNS = `id, collection_id AS "collectionId", record_id AS "recordId",
-  created, expires, user_agent AS "userAgent"`;
+  created, expires, user_agent AS "userAgent", impersonator_id AS "impersonatedBy"`;
+
+export interface SessionOptions {
+  /** Seconds; defaults to the collection's auth token duration. */
+  duration?: number;
+  /**
+   * The superuser who acts as the record. The session ends once they are
+   * deleted or their key changes, and it is never extended.
+   */
+  impersonator?: { collection: AuthCollection; record: Row };
+}
 
 /** The returned token is shown only once. */
 export async function createSession(
@@ -64,6 +86,7 @@ export async function createSession(
   collection: AuthCollection,
   record: Row,
   userAgent: string,
+  { duration, impersonator }: SessionOptions = {},
 ): Promise<{ token: string; session: Session }> {
   const token = randomBytes(32).toString('base64url');
   // Expired sessions are removed in the same statement.
@@ -73,9 +96,11 @@ export async function createSession(
          DELETE FROM {{${table('_sessions')}}} WHERE expires <= now()
        )
        INSERT INTO {{${table('_sessions')}}}
-         (id, token_hash, collection_id, record_id, key_hash, user_agent, expires)
+         (id, token_hash, collection_id, record_id, key_hash, user_agent, expires,
+          impersonator_id, impersonator_key_hash)
        VALUES ({:id}, {:tokenHash}, {:collectionId}, {:recordId}, {:keyHash}, {:userAgent},
-               now() + make_interval(secs => least({:duration}, ${MAX_AGE})))
+               now() + make_interval(secs => least({:duration}, ${MAX_AGE})),
+               {:impersonatorId}, {:impersonatorKeyHash})
        RETURNING ${COLUMNS}`,
     )
     .bind({
@@ -85,7 +110,11 @@ export async function createSession(
       recordId: record.id,
       keyHash: sessionKey(collection, record),
       userAgent: userAgent.slice(0, MAX_USER_AGENT),
-      duration: collection.tokens.auth.duration,
+      duration: duration ?? collection.tokens.auth.duration,
+      impersonatorId: impersonator ? (impersonator.record.id as string) : null,
+      impersonatorKeyHash: impersonator
+        ? sessionKey(impersonator.collection, impersonator.record)
+        : null,
     })
     .all<Session>();
   return { token, session: session as Session };
@@ -100,7 +129,11 @@ interface SessionRow {
   created: Date;
   expires: Date;
   userAgent: string;
+  impersonatedBy: string | null;
   keyHash: string;
+  impersonatorKeyHash: string | null;
+  /** The impersonator's current tokenKey; null once they are deleted. */
+  impersonatorTokenKey: string | null;
   now: Date;
   record: Row | null;
 }
@@ -138,7 +171,12 @@ async function readSessions(
       `SELECT m.schema_version AS "schemaVersion",
               s.id, s.collection_id AS "collectionId", s.record_id AS "recordId",
               s.created, s.expires, s.user_agent AS "userAgent",
-              s.key_hash AS "keyHash", now() AS now,
+              s.impersonator_id AS "impersonatedBy",
+              s.key_hash AS "keyHash",
+              s.impersonator_key_hash AS "impersonatorKeyHash",
+              (SELECT su."tokenKey" FROM {{${table(SUPERUSERS)}}} su
+               WHERE su.id = s.impersonator_id) AS "impersonatorTokenKey",
+              now() AS now,
               CASE s.collection_id ${branches.join(' ')} END AS record
        FROM {{${table('_meta')}}} m
        CROSS JOIN unnest({:tokenHashes}::text[]) WITH ORDINALITY AS h(hash, i)
@@ -184,7 +222,9 @@ export async function findSession(
   const { duration } = collection.tokens.auth;
   const remaining = (session.expires.getTime() - now.getTime()) / 1000;
   const cap = session.created.getTime() + MAX_AGE * 1000;
+  // Impersonation sessions end when they were set to.
   const due =
+    session.impersonatedBy === null &&
     remaining < duration - Math.min(UPDATE_AGE, duration / 2) &&
     session.expires.getTime() < cap;
   let extended = false;
@@ -229,8 +269,29 @@ export async function findSessions(
 }
 
 /**
+ * The token's session as `schema` finds it, never extended, or undefined,
+ * as when a table of `schema` is gone since.
+ */
+export async function sessionIn(
+  db: DB,
+  schema: Schema,
+  token: string,
+): Promise<Omit<ActiveSession, 'extended'> | undefined> {
+  try {
+    const row = await readSession(db, schema, tokenHash(token));
+    return await activeSession(db, schema, schema, row);
+  } catch (error) {
+    if (SCHEMA_RACE.has((error as { code?: string }).code ?? ''))
+      return undefined;
+    throw error;
+  }
+}
+
+/**
  * The session of a row `readSessions` read, if it is still valid: its
  * record exists in an auth collection and its key matches the record's.
+ * An impersonation session also needs its superuser, with the key they had
+ * when it started, so deleting them or changing their password ends it.
  */
 async function activeSession(
   db: DB,
@@ -238,11 +299,31 @@ async function activeSession(
   built: Schema,
   row: SessionRow,
 ): Promise<Omit<ActiveSession, 'extended'> | undefined> {
-  const { schemaVersion, id, keyHash, now, record: json, ...rest } = row;
+  const {
+    schemaVersion,
+    id,
+    keyHash,
+    impersonatorKeyHash,
+    impersonatorTokenKey,
+    now,
+    record: json,
+    ...rest
+  } = row;
   if (id === null) return undefined;
   const session: Session = { id, ...rest };
   const collection = schema.find(session.collectionId);
   if (collection?.type !== 'auth') return undefined;
+  if (session.impersonatedBy !== null) {
+    const superusers = schema.find(SUPERUSERS);
+    if (
+      superusers?.type !== 'auth' ||
+      impersonatorTokenKey === null ||
+      sessionKey(superusers, { tokenKey: impersonatorTokenKey }) !==
+        impersonatorKeyHash
+    ) {
+      return undefined;
+    }
+  }
   // When the schema changed, the record may come from the wrong table, so read it again.
   const record =
     schema.version === built.version
@@ -258,7 +339,7 @@ async function activeSession(
   return { session, collection, record };
 }
 
-/** Never past the session's absolute end. */
+/** Never past the session's absolute end; never an impersonation session. */
 export async function extendSession(
   q: Builder,
   collection: AuthCollection,
@@ -267,8 +348,10 @@ export async function extendSession(
   const [expires] = await q
     .newQuery(
       `UPDATE {{${table('_sessions')}}}
-       SET expires = least(now() + make_interval(secs => {:duration}),
-                          created + make_interval(secs => ${MAX_AGE}))
+       SET expires = CASE WHEN impersonator_id IS NULL
+         THEN least(now() + make_interval(secs => {:duration}),
+                    created + make_interval(secs => ${MAX_AGE}))
+         ELSE expires END
        WHERE id = {:id} RETURNING expires`,
     )
     .bind({ id, duration: collection.tokens.auth.duration })
@@ -352,6 +435,9 @@ export function sessionModel(session: Session, current: boolean): SessionModel {
     expires: session.expires.toISOString(),
     userAgent: session.userAgent,
     current,
+    ...(session.impersonatedBy !== null && {
+      impersonatedBy: session.impersonatedBy,
+    }),
   };
 }
 
@@ -377,6 +463,16 @@ export function sessionCookie(request: Request): string | undefined {
   );
 }
 
+/** The superuser session kept while impersonating in this browser. */
+export function impersonatorCookie(request: Request): string | undefined {
+  return readCookie(
+    request,
+    isSecure(request)
+      ? IMPERSONATOR_COOKIES.secure
+      : IMPERSONATOR_COOKIES.plain,
+  );
+}
+
 export function readCookie(
   request: Request,
   wanted: string,
@@ -396,11 +492,27 @@ export function setSessionCookie(
   request: Request,
   session?: { token: string; expires: Date },
 ): string {
+  return cookieHeader(request, SESSION_COOKIES, session);
+}
+
+/** As `setSessionCookie`, for the superuser session kept while impersonating. */
+export function setImpersonatorCookie(
+  request: Request,
+  session?: { token: string; expires: Date },
+): string {
+  return cookieHeader(request, IMPERSONATOR_COOKIES, session);
+}
+
+function cookieHeader(
+  request: Request,
+  names: { secure: string; plain: string },
+  session: { token: string; expires: Date } | undefined,
+): string {
   const maxAge = session
     ? Math.max(0, Math.floor((session.expires.getTime() - Date.now()) / 1000))
     : 0;
   const secure = isSecure(request);
-  const name = secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain;
+  const name = secure ? names.secure : names.plain;
   return [
     `${name}=${session?.token ?? ''}`,
     'Path=/',

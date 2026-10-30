@@ -52,6 +52,7 @@ as `GET /api/nextbase/collections/posts/records`, and its `data`:
 | `execTime` | Milliseconds to the response. For a realtime stream, until it opened. |
 | `auth` | The caller's collection, such as `users` or `_superusers`, or `""` when signed out. |
 | `authId` | With `authId: true`, the caller's record id. |
+| `impersonatedBy` | The id of the superuser [impersonating](/docs/guides/auth/impersonation) the caller, if one is. |
 | `ip` | With `ip: true`, the client's IP, when NextBase knows it. |
 | `userAgent` | At most 512 characters. |
 | `referer` | The referring page's origin and path, without its query, at most 512 characters. |
@@ -87,6 +88,13 @@ when it fails, with `data.type` saying what it was:
 
 `data.error` and `data.stack` say what went wrong. These still go to the
 server console too, as before.
+
+## Impersonations
+
+Each [impersonation](/docs/guides/auth/impersonation) a superuser starts is
+logged at info, with `data.type` `impersonate`, the `superuserId`, the
+`collection`, the `recordId`, the `sessionId` and when it `expires`. Like
+every entry, it is not written with `logs: false`.
 
 ## Reading the log
 

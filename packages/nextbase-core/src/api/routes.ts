@@ -36,6 +36,7 @@ import {
   requestPhoneVerification,
 } from '../auth/phone.ts';
 import {
+  forbidImpersonated,
   type Principal,
   recordIn,
   requireSuperuser,
@@ -47,11 +48,15 @@ import {
   deleteOtherSessions,
   deleteSession,
   extendSession,
+  IMPERSONATION_DURATION,
+  impersonatorCookie,
   listSessions,
   type OriginPolicy,
   type Session,
   sessionCookie,
+  sessionIn,
   sessionModel,
+  setImpersonatorCookie,
   setSessionCookie,
 } from '../auth/sessions.ts';
 import type { Sms } from '../auth/sms.ts';
@@ -68,7 +73,7 @@ import {
 } from '../files/serve.ts';
 import type { Storage } from '../files/storage.ts';
 import { readJsonObject, readRecordBody } from '../http.ts';
-import type { Logger } from '../logs/logger.ts';
+import { LOG_LEVELS, type Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
   logModel,
@@ -482,8 +487,19 @@ export const ROUTES: readonly Route[] = [
       if (!principal.record || !principal.collection) {
         throw new ApiError(401, 'Sign in to get a file token.');
       }
+      // A file token from an impersonation session ends with it.
+      const remaining =
+        principal.impersonatedBy !== undefined && principal.session
+          ? Math.floor(
+              (principal.session.expires.getTime() - Date.now()) / 1000,
+            )
+          : undefined;
       return Response.json({
-        token: await fileToken(principal.collection, principal.record),
+        token: await fileToken(
+          principal.collection,
+          principal.record,
+          remaining,
+        ),
       });
     },
   },
@@ -659,6 +675,7 @@ export const ROUTES: readonly Route[] = [
       if (query.get('link') === 'true') {
         // Linking adds a way into the account, so only this site may start it.
         checkSameOrigin(request, origins);
+        forbidImpersonated(principal, 'link a provider');
         if (!principal.record || principal.collection?.id !== collection.id) {
           throw new ApiError(
             401,
@@ -717,10 +734,12 @@ export const ROUTES: readonly Route[] = [
         }
         const provider = oauth2.provider(state.provider);
         const collection = authCollection(schema, state.collectionId);
-        // A link is for the record that started it, still signed in here.
+        // A link is for the record that started it, still signed in here,
+        // and never for a superuser acting as it.
         if (
           state.linkRecordId !== null &&
-          principal.record?.id !== state.linkRecordId
+          (principal.record?.id !== state.linkRecordId ||
+            principal.impersonatedBy !== undefined)
         ) {
           throw new OAuth2Error(
             'oauth2_failed',
@@ -795,6 +814,7 @@ export const ROUTES: readonly Route[] = [
     tags: ['delete'],
     async handler({ params, db, schema, principal, mailer, oauth2 }) {
       const { collection, id } = ownRecord(schema, principal, params);
+      forbidImpersonated(principal, 'unlink a provider');
       const unlinked = await unlinkAccount(
         db,
         collection.id,
@@ -885,6 +905,7 @@ export const ROUTES: readonly Route[] = [
       if (!session) {
         throw new ApiError(401, 'Sign in to this collection to refresh.');
       }
+      forbidImpersonated(principal, 'be refreshed');
       await checkAuthRule(db, schema, collection, record.id as string);
       const body = await authRecord(context, collection, record);
       const expires = await extendSession(db, collection, session.id);
@@ -903,6 +924,14 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/impersonate/${segment}$`),
+    // Only superusers may, and they skip rate limits, but it starts a
+    // session like the sign-ins.
+    tags: ['auth'],
+    handler: impersonate,
+  },
+  {
     method: 'GET',
     pattern: /^\/session$/,
     async handler({ principal }) {
@@ -917,12 +946,24 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'DELETE',
     pattern: /^\/session$/,
-    async handler({ request, db, principal }) {
+    async handler({ request, db, schema, principal }) {
       if (principal.session) await deleteSession(db, principal.session);
       const response = new Response(null, { status: 204 });
-      // Removed even when the session was already gone.
-      if (request.headers.has('cookie')) {
-        response.headers.append('set-cookie', setSessionCookie(request));
+      // Removed even when the session was already gone, but not when a
+      // superuser acting as someone by token leaves: the cookie is their own.
+      const tokenImpersonation =
+        principal.impersonatedBy !== undefined && !principal.viaCookie;
+      if (request.headers.has('cookie') && !tokenImpersonation) {
+        response.headers.append(
+          'set-cookie',
+          setSessionCookie(
+            request,
+            await restoredSession(request, db, schema, principal),
+          ),
+        );
+      }
+      if (impersonatorCookie(request) !== undefined && !tokenImpersonation) {
+        response.headers.append('set-cookie', setImpersonatorCookie(request));
       }
       return response;
     },
@@ -946,7 +987,9 @@ export const ROUTES: readonly Route[] = [
     method: 'DELETE',
     pattern: /^\/sessions$/,
     async handler({ db, principal }) {
-      await deleteOtherSessions(db, requireSession(principal));
+      const current = requireSession(principal);
+      forbidImpersonated(principal, 'revoke other sessions');
+      await deleteOtherSessions(db, current);
       return new Response(null, { status: 204 });
     },
   },
@@ -956,6 +999,9 @@ export const ROUTES: readonly Route[] = [
     async handler({ request, params, db, principal }) {
       const current = requireSession(principal);
       const id = params[0] as string;
+      // Its own session it may end, as by signing out.
+      if (id !== current.id)
+        forbidImpersonated(principal, 'revoke other sessions');
       const deleted = await deleteSession(db, {
         id,
         collectionId: current.collectionId,
@@ -1279,7 +1325,8 @@ function parseBatch(input: Record<string, unknown>): BatchWrite[] {
   });
 }
 
-// Always 204, so it does not reveal which accounts exist.
+// Always 204, so it does not reveal which accounts exist. None is open to
+// an impersonation session: each proves, changes or recovers a way in.
 function flow(
   name: string,
   run: (
@@ -1297,6 +1344,7 @@ function flow(
       async handler(context) {
         const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
+        forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
         const { rejectBreachedPasswords, effects, hooks } = context;
         await run(
@@ -1329,6 +1377,7 @@ function phoneFlow(
       async handler(context) {
         const { request, params, schema, principal } = context;
         const collection = authCollection(schema, params[0] as string);
+        forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
         await run(phoneContext(context), collection, input, principal);
         return new Response(null, { status: 204 });
@@ -1389,11 +1438,13 @@ function authRecord(
   context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
+  impersonatedBy?: string,
 ): Promise<Record<string, unknown>> {
   const principal: Principal = {
     collection,
     record,
     superuser: collection.id === SUPERUSERS,
+    ...(impersonatedBy !== undefined && { impersonatedBy }),
   };
   return outputRecord(
     recordsContext({ ...context, principal }, {}),
@@ -1408,6 +1459,124 @@ function authResponse(
   token: string | undefined,
 ): Response {
   return Response.json({ ...(token !== undefined && { token }), record });
+}
+
+/**
+ * Starts a session in which the calling superuser acts as the record, like
+ * a sign-in that skips the collection's auth rule. It lasts `duration`
+ * seconds and is never extended. With `cookie`, the superuser's own cookie
+ * session is kept in another cookie, and signing out restores it.
+ */
+async function impersonate(context: Context): Promise<Response> {
+  const { request, params, db, schema, principal, inProcess, origins } =
+    context;
+  forbidImpersonated(principal, 'impersonate');
+  requireSuperuser(principal);
+  const superuser = principal.record;
+  if (!superuser || !principal.collection || !principal.session) {
+    throw new ApiError(403, 'Sign in as a superuser to impersonate.');
+  }
+  const collection = authCollection(schema, params[0] as string);
+  if (collection.id === SUPERUSERS) {
+    throw new ApiError(403, 'Superusers cannot be impersonated.');
+  }
+  const { duration = IMPERSONATION_DURATION.max, cookie } =
+    await readJsonObject(request);
+  const { min, max } = IMPERSONATION_DURATION;
+  if (
+    typeof duration !== 'number' ||
+    !Number.isInteger(duration) ||
+    duration < min ||
+    duration > max
+  ) {
+    throw new ApiError(400, 'Failed to impersonate.', {
+      duration: {
+        code: 'validation_invalid_value',
+        message: `Must be a whole number of seconds from ${min} to ${max}.`,
+      },
+    });
+  }
+  // Another site must not sign the browser in to an account of its choosing.
+  if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+  const id = params[1] as string;
+  const [record] = await db
+    .select()
+    .from(table(collection.name))
+    .where(hash({ id }))
+    .all();
+  if (!record) throw new ApiError(404, 'Record not found.');
+  const superuserId = superuser.id as string;
+  // Before the session starts, so a refused `expand` or `fields` starts none.
+  const body = await authRecord(context, collection, record, superuserId);
+  const { token, session } = await createSession(
+    db,
+    collection,
+    record,
+    request.headers.get('user-agent') ?? '',
+    {
+      duration,
+      impersonator: { collection: principal.collection, record: superuser },
+    },
+  );
+  context.logger.add(LOG_LEVELS.info, 'Impersonation started', {
+    type: 'impersonate',
+    superuserId,
+    collection: collection.name,
+    recordId: id,
+    sessionId: session.id,
+    expires: session.expires.toISOString(),
+  });
+  const response = Response.json({
+    ...(cookie !== true && { token }),
+    record: body,
+    session: sessionModel(session, false),
+  });
+  if (cookie === true) {
+    const own = principal.viaCookie ? sessionCookie(request) : undefined;
+    // Kept as long as the impersonation lasts, to be restored when it ends.
+    if (own !== undefined) {
+      response.headers.append(
+        'set-cookie',
+        setImpersonatorCookie(request, {
+          token: own,
+          expires: session.expires,
+        }),
+      );
+    }
+    response.headers.append(
+      'set-cookie',
+      setSessionCookie(request, { token, expires: session.expires }),
+    );
+  }
+  return response;
+}
+
+/**
+ * Signing out of an impersonation session in the browser that started it
+ * gives the superuser back their own session, if it is still valid.
+ */
+async function restoredSession(
+  request: Request,
+  db: DB,
+  schema: Schema,
+  principal: Principal,
+): Promise<{ token: string; expires: Date } | undefined> {
+  const kept = impersonatorCookie(request);
+  if (
+    kept === undefined ||
+    !principal.viaCookie ||
+    principal.impersonatedBy === undefined
+  ) {
+    return undefined;
+  }
+  const active = await sessionIn(db, schema, kept);
+  if (
+    active?.collection.id !== SUPERUSERS ||
+    active.record.id !== principal.impersonatedBy
+  ) {
+    return undefined;
+  }
+  return { token: kept, expires: active.session.expires };
 }
 
 function requireSession(principal: Principal): Session {

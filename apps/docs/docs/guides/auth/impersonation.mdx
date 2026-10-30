@@ -1,0 +1,114 @@
+---
+title: Impersonation
+---
+
+# Impersonation
+
+A superuser can act as a user, to see the app as they do or reproduce what
+they report. They get a session of the user's account without its password.
+That session is short, shows in the user's own list of sessions, is logged,
+and cannot change how the account signs in.
+
+## Start one
+
+```ts
+const { client, record, session } = await nb
+  .collection("users")
+  .impersonate(userId, { duration: 900 });
+
+// Requests through `client` are made as the user, under the same rules.
+await client.collection("orders").getList();
+
+// Ends it before it runs out.
+await client.signOut();
+```
+
+`nb` must be signed in as a superuser. `client` is a new client of the same
+server with an in-memory auth store, so `nb` stays signed in as the superuser.
+`session.impersonatedBy` is the superuser's id.
+
+`duration` is in seconds, from 60 to 3600, and defaults to 3600. The session
+is never extended and cannot be refreshed: it ends when it was set to. The
+collection's `authRule` is not checked, so you can also look at an account
+that may not sign in, such as one with an unverified email. Superusers cannot
+be impersonated.
+
+Server code with `client({ superuser: true })` cannot impersonate: there is
+no superuser for the session to belong to. Sign in as one.
+
+## In the browser, with the cookie
+
+```ts
+await nb.collection("users").impersonate(userId, { cookie: true });
+// The page now acts as the user, server components included.
+
+await nb.signOut();
+// The superuser is signed in again.
+```
+
+With `cookie: true`, the browser's session cookie becomes the user's. If the
+superuser was signed in with the cookie, their session is kept aside in an
+`HttpOnly` cookie, `__Host-nextbase_impersonator` (`nextbase_impersonator`
+over plain HTTP), for as long as the impersonation lasts. Signing out of the
+impersonation puts it back, if it is still valid. Once the impersonation has
+run out, sign in again.
+
+The request must come from your site, as with any cookie sign-in.
+
+## What it cannot do
+
+The session can do what the user can, as the user, but nothing that would
+leave the superuser a way back into the account after it ends, or that
+changes who else is signed in. Each of these is a `403`:
+
+- changing the password, email, phone, whether they are verified, or an
+  identity field, of any account, including ones the user may manage;
+- the account flows: email verification, password reset, email change and
+  phone verification, by email or by code;
+- linking or unlinking an OAuth2 provider;
+- refreshing the session, which would extend it;
+- revoking other sessions; it can end only itself;
+- impersonating.
+
+File tokens it gets end when it does.
+
+## What ends it
+
+- Its duration runs out.
+- The user revokes it. It shows in their `nb.listSessions()` with
+  `impersonatedBy`, and `nb.revokeOtherSessions()` ends it too.
+- The user changes their password, or anything else rotates their token key.
+- The superuser is deleted or changes their own password.
+- Signing out of it.
+
+## Tell it apart
+
+Rules can read `@request.impersonatedBy`, the superuser's id, or `""` when no
+one is impersonating. To keep something from a superuser even then:
+
+```txt
+@request.auth.id != "" && @request.impersonatedBy = ""
+```
+
+Hooks get it as `e.principal.impersonatedBy`, and realtime streams apply rules
+with it, as every request does. `GET /session` returns it, so the app can show
+a banner:
+
+```ts
+const session = await nb.getSession();
+if (session?.impersonatedBy) showBanner("A superuser is acting as you.");
+```
+
+## The log
+
+Every impersonation started is logged at info, with `data.type`
+`impersonate`, the superuser's id, the collection, the record's id, the
+session's id and when it expires. Requests the session makes carry
+`impersonatedBy` in their entries. See [Logs](/docs/guides/logs); with
+`logs: false`, nothing is written.
+
+No email is sent to the user.
+
+## REST API
+
+See [Impersonate](/docs/api/auth#impersonate).

@@ -1,0 +1,6 @@
+---
+"@nextbasejs/core": patch
+"@nextbasejs/client": patch
+---
+
+Superusers can impersonate a record of an auth collection with `POST /collections/{collection}/impersonate/{id}`, or `nb.collection("users").impersonate(id)` in the SDK, which returns a new client signed in as the record and leaves the superuser's own auth store alone. The session lasts 60 to 3600 seconds, an hour by default, skips the collection's `authRule`, is never extended, and ends when its superuser is deleted or changes their password. With `cookie: true`, the browser's cookie session becomes the record's and signing out restores the superuser's. An impersonation session cannot change the password, email, phone, verification or identity fields of any account, use the email, password reset or phone flows, link or unlink an OAuth2 provider, be refreshed, revoke other sessions or impersonate, and its file tokens end with it. It shows in the record's sessions with `impersonatedBy`, which `GET /session`, hooks and rules (`@request.impersonatedBy`) see too. Each impersonation is logged with `data.type` `impersonate`, and request log entries name the superuser in `impersonatedBy`. `nb.withAuthStore(store)` returns a client of the same server with another auth store.

@@ -44,6 +44,7 @@ export type {
 export type {
   AuthOptions,
   FullListOptions,
+  ImpersonateOptions,
   ListOptions,
   OAuth2Options,
   RecordOptions,
@@ -58,6 +59,7 @@ export type {
   ErrorData,
   FieldError,
   HealthResponse,
+  ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
   LogModel,
@@ -160,6 +162,18 @@ export class NextBaseClient<
   ): RecordService<T>;
   collection(idOrName: string): RecordService<RecordModel> {
     return new RecordService(this, idOrName);
+  }
+
+  /**
+   * A client of the same server, signed in through `authStore` instead,
+   * such as one acting as another account.
+   */
+  withAuthStore(authStore: AuthStore): NextBaseClient<Schema> {
+    return new NextBaseClient<Schema>({
+      baseUrl: this.#baseUrl,
+      fetch: this.#fetch,
+      authStore,
+    });
   }
 
   /** Starts a batch of record writes applied all or nothing. */

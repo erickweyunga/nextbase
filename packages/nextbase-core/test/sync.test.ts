@@ -93,6 +93,7 @@ describe('migrate', () => {
       '0010_realtime',
       '0011_logs',
       '0012_rate_limits',
+      '0013_impersonation',
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

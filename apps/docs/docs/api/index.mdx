@@ -10,7 +10,7 @@ NextBase serves a REST API under the route you mount it at, by default
 | Area | Paths |
 | ---- | ----- |
 | [Records](/docs/api/records) | `/collections/{collection}/records` |
-| [Auth](/docs/api/auth) | `/collections/{collection}/auth-with-password`, `/session`, `/sessions` |
+| [Auth](/docs/api/auth) | `/collections/{collection}/auth-with-password`, `/collections/{collection}/impersonate/{id}`, `/session`, `/sessions` |
 | [Realtime](/docs/api/realtime) | `/realtime` |
 | [Collections](/docs/api/collections) | `/collections` (superusers) |
 | [Setup and health](/docs/api/setup) | `/setup`, `/health` |
@@ -35,6 +35,10 @@ browser sends on its own. If both are present, the header wins.
 - A write (`POST`, `PATCH`, `DELETE`) authenticated by the cookie must send an
   `Origin` header naming the same host, or it gets a `403`. Browsers do this
   on their own.
+- An [impersonation session](/docs/guides/auth/impersonation) gets a `403`
+  for anything that would change how an account signs in, such as a new
+  password or email, the account flows, linking a provider, refreshing, or
+  revoking other sessions.
 
 ## Requests
 

@@ -174,15 +174,17 @@ async function deleteExpiredUploads(
  * A short-lived token for protected files, for links that cannot send an
  * Authorization header. Bound to the record's tokenKey.
  */
+/** Lasts the collection's file token duration, or `limit` seconds if fewer. */
 export function fileToken(
   collection: AuthCollection,
   record: Record<string, unknown>,
+  limit?: number,
 ): Promise<string> {
   const { secret, duration } = collection.tokens.file;
   return signToken(
     `${record.tokenKey as string}${secret}`,
     { type: 'file', id: record.id, collectionId: collection.id },
-    duration,
+    limit === undefined ? duration : Math.max(1, Math.min(duration, limit)),
   );
 }
 

@@ -33,6 +33,27 @@ await posts.delete(id);
 `create` and `update` return `null` when the write succeeded but the rules do
 not let the caller view the result.
 
+## Impersonation
+
+Superusers only. Act as a user to see the app as they do:
+
+```ts
+const { client, record, session } = await nb
+  .collection("users")
+  .impersonate(userId, { duration: 900 });
+await client.collection("posts").getList(); // as the user
+await client.signOut(); // ends the impersonation early
+```
+
+`client` is a new client of the same server with an in-memory auth store, so
+`nb` stays signed in as the superuser. With `{ cookie: true }`, the browser's
+cookie session becomes the user's instead, `nb.authStore` holds their record,
+and `nb.signOut()` puts the superuser's own session back. See
+[Impersonation](/docs/guides/auth/impersonation).
+
+`nb.withAuthStore(store)` gives a client of the same server signed in through
+another auth store.
+
 ## Realtime
 
 ```ts

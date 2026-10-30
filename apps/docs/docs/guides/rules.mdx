@@ -57,6 +57,14 @@ rule reads, or deleting a collection it reads with `@collection`.
 @request.auth.id != ""
 ```
 
+**Not while a superuser impersonates the user**
+
+```txt
+@request.auth.id != "" && @request.impersonatedBy = ""
+```
+
+See [Impersonation](/docs/guides/auth/impersonation).
+
 **Owner only**
 
 ```txt
