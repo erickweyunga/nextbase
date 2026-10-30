@@ -208,8 +208,10 @@ secret means its account must use a recovery code, and set the app up again.
   read.
 - Review every collection's rules. New collections default to superuser-only.
 - Set `NEXTBASE_SECRET_KEY` before turning on
-  [multi-factor sign-in](/docs/guides/auth/mfa), and keep it in your secret
-  store, never in the repository.
+  [multi-factor sign-in](/docs/guides/auth/mfa) or an OAuth2 provider's
+  [`storeTokens`](/docs/guides/auth/oauth2#call-the-providers-api), and keep
+  it in your secret store, never in the repository. Losing it loses the
+  authenticator apps and provider tokens it sealed.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.
 - Request bodies are limited to 1 MiB, or 32 MiB for form data carrying

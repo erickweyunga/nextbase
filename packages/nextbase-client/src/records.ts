@@ -92,6 +92,23 @@ export interface OAuth2Options {
   errorRedirect?: string;
   /** Takes the second step of this sign-in, with a provider linked to the account. */
   mfaId?: string;
+  /**
+   * More parameters for the provider's authorization page, such as
+   * `{ login_hint: "ann@example.com" }`, over the provider's own.
+   */
+  params?: Record<string, string>;
+  /** Passed to the provider's `mapProfile` on the server; it cannot trust it. */
+  data?: Record<string, unknown>;
+  /** Scopes to ask for besides the provider's, such as more of its API. */
+  scopes?: string[];
+}
+
+/** A linked account's access token at a provider that stores tokens. */
+export interface AccessToken {
+  accessToken: string;
+  /** ISO 8601; null when the provider did not say. */
+  expiresAt: string | null;
+  scopes: string[];
 }
 
 const MAX_PER_PAGE = 1000;
@@ -295,6 +312,34 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
   }
 
+  /**
+   * Signs in with an ID token from a provider's native SDK, such as Google
+   * Sign-In or Sign in with Apple on iOS and Android, and saves the session
+   * like `signInWithPassword`. `nonce` is the one given to the SDK, if any.
+   * A new account goes through the provider's `mapProfile` with `data`.
+   */
+  async signInWithIdToken(
+    provider: string,
+    token: string,
+    options: SecondStepOptions & {
+      nonce?: string;
+      data?: Record<string, unknown>;
+    } = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, nonce, data, ...rest } = options;
+    return this.#signIn(
+      `/auth-with-id-token/${encodeURIComponent(provider)}`,
+      rest,
+      {
+        token,
+        ...(nonce !== undefined && { nonce }),
+        ...(data !== undefined && { data }),
+        ...(mfaId !== undefined && { mfaId }),
+        ...(cookie && { cookie: true }),
+      },
+    );
+  }
+
   /** The second step of a sign-in, with a code from the account's authenticator app. */
   async signInWithTotp(
     code: string,
@@ -489,6 +534,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
         redirect: options.redirect,
         errorRedirect: options.errorRedirect,
         mfaId: options.mfaId,
+        params: options.params && JSON.stringify(options.params),
+        data: options.data && JSON.stringify(options.data),
+        scopes: options.scopes?.join(' '),
       },
     );
   }
@@ -503,7 +551,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
     link: OAuth2LinkOptions,
     options?: SendOptions,
   ): Promise<string> {
-    const { password, mfaCode, redirect, errorRedirect } = link;
+    const { password, mfaCode, redirect, errorRedirect, params, data, scopes } =
+      link;
     const { url } = await this.#client.send<{ url: string }>(
       `/collections/${encodeURIComponent(this.#collection)}/link-oauth2/${encodeURIComponent(provider)}`,
       {
@@ -514,6 +563,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
           ...(mfaCode !== undefined && { mfaCode }),
           ...(redirect !== undefined && { redirect }),
           ...(errorRedirect !== undefined && { errorRedirect }),
+          ...(params !== undefined && { params }),
+          ...(data !== undefined && { data }),
+          ...(scopes !== undefined && { scopes }),
         },
       },
     );
@@ -542,6 +594,26 @@ export class RecordService<T extends RecordModel = RecordModel> {
       );
     }
     location.assign(await this.oauth2LinkUrl(provider, link, options));
+  }
+
+  /**
+   * The access token of a record's linked account, at a provider with
+   * `storeTokens`: refreshed first when it is about to expire, or when
+   * `refresh`. Only its own record, unless a superuser.
+   */
+  async getAccessToken(
+    recordId: string,
+    provider: string,
+    options: SendOptions & { refresh?: boolean } = {},
+  ): Promise<AccessToken> {
+    const { refresh, ...rest } = options;
+    return this.#send<AccessToken>(
+      `/records/${encodeURIComponent(recordId)}/linked-accounts/${encodeURIComponent(provider)}/token`,
+      {
+        ...rest,
+        query: { ...rest.query, refresh: refresh ? 'true' : undefined },
+      },
+    );
   }
 
   /** OAuth2 providers linked to a record. Only its own record, unless a superuser. */

@@ -43,6 +43,7 @@ export type {
   SubscribeOptions,
 } from './realtime.ts';
 export type {
+  AccessToken,
   AuthOptions,
   FullListOptions,
   ImpersonateOptions,
