@@ -238,6 +238,7 @@ GET /collections/{collection}/auth-with-oauth2/{provider}
 | `mfaId` | string | Optional. Makes this the [second step](#multi-factor-sign-in) of a sign-in: the provider account must already be linked to the account signing in. Nothing is linked or signed up. |
 | `params` | string | Optional. A JSON object of strings for the provider's page, such as `{"login_hint":"ann@example.com"}`, over the provider's own `params`. Those NextBase sets itself answer `400`. |
 | `data` | string | Optional. A JSON object, at most 2 KB, passed to the provider's `mapProfile` when the sign-in creates an account. |
+| `scopes` | string | Optional. Scopes to ask for besides the provider's, separated by spaces. |
 
 **Responses**
 
@@ -395,6 +396,7 @@ POST /collections/{collection}/link-oauth2/{provider}
 | `redirect` | string | Optional. A path on your app to return to. |
 | `errorRedirect` | string | Optional. A path to return to with `?error=`. |
 | `params` | object | Optional. Strings for the provider's page, as on sign-in. |
+| `scopes` | string[] | Optional. Scopes to ask for besides the provider's, such as more of its API. |
 
 ```json
 { "url": "https://github.com/login/oauth/authorize?..." }
@@ -402,6 +404,32 @@ POST /collections/{collection}/link-oauth2/{provider}
 
 It also sets the short-lived cookie that ties the link to this browser. The
 callback then links the provider and returns to `redirect`.
+
+## Get a provider's access token
+
+The access token of a record's linked account, at a provider with
+`storeTokens`, refreshed first when it expires within a minute. Only its own
+record, unless a superuser; never an impersonation session. See
+[Call the provider's API](/docs/guides/auth/oauth2#call-the-providers-api).
+
+```ts
+const { accessToken } = await nb
+  .collection("users")
+  .getAccessToken(user.id, "google");
+```
+
+```http
+GET /collections/{collection}/records/{id}/linked-accounts/{provider}/token
+```
+
+| Query | Description |
+| ----- | ----------- |
+| `refresh` | Optional. `true` refreshes the token anyway. |
+
+Answers `{ accessToken, expiresAt, scopes }`, with `expiresAt` null when
+the provider did not say. A provider that stores no tokens answers `400`;
+one not linked, or with no token stored yet, `404`; an expired token the
+provider will not refresh, `400`.
 
 ## Unlink a provider
 

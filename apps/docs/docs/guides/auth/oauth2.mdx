@@ -56,6 +56,7 @@ first sign-in creates their account; later ones sign in to it.
 | `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`) are refused. |
 | `disableSignUp` | Optional. Signs in, or links, existing accounts only; a new one fails with `sign_up_disabled`. |
 | `mapProfile` | Optional. Fills a new account's fields from the provider's profile; see [New accounts](#new-accounts). |
+| `storeTokens` | Optional. Keeps each linked account's access and refresh tokens, encrypted, for [calling the provider's API](#call-the-providers-api). Needs `secretKey`. |
 
 `appUrl` must be the address users open your app at, and serve NextBase: the
 sign-in starts and ends there. Redirects are always built from it, never from
@@ -246,6 +247,47 @@ someone who took over a session cannot add or remove a way in. A superuser
 unlinking another account's provider needs neither. The link starts with a
 `POST`, which answers the provider's URL; `linkOAuth2` opens it, and
 `oauth2LinkUrl` returns it.
+
+## Call the provider's API
+
+With `storeTokens`, each sign-in and link keeps the account's access and
+refresh tokens, encrypted with the [`secretKey`](/docs/guides/production)
+option (`NEXTBASE_SECRET_KEY`). The account, or server code, then gets an
+access token to call the provider's API with:
+
+```ts
+// In the app, for the signed-in account:
+const { accessToken, expiresAt, scopes } = await nb
+  .collection("users")
+  .getAccessToken(user.id, "google");
+
+// In server code, such as a scheduled job:
+const token = await nextbase.getAccessToken("users", userId, "google");
+```
+
+A token that expires within a minute is refreshed first, and
+`{ refresh: true }` refreshes it anyway; concurrent requests refresh it once.
+A provider gives a refresh token only when asked: Google, for example, with
+`params: { access_type: "offline", prompt: "consent" }`, others with the
+`offline_access` scope. Without one, an expired token answers `400`, and the
+user signs in with the provider again.
+
+Ask for more scopes when the app needs them, by linking the provider again
+with them; the user approves them at the provider, and the stored tokens and
+`scopes` are updated:
+
+```ts
+await nb.collection("users").linkOAuth2("google", {
+  password,
+  scopes: ["https://www.googleapis.com/auth/drive.file"],
+  redirect: "/settings",
+});
+```
+
+A browser sign-in takes `scopes` too. Only the account itself, or a
+superuser, gets its tokens, never a superuser
+[impersonating](/docs/guides/auth/impersonation) it. Unlinking the provider,
+or deleting the account, deletes them.
 
 ## Protections
 

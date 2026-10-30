@@ -1,11 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { AuthCollection, AuthProvider } from '@nextbasejs/client';
-import type { Builder } from '@nextbasejs/dbx';
+import type { Builder, DB } from '@nextbasejs/dbx';
 import { createRemoteJWKSet, type JWTPayload, jwtVerify } from 'jose';
 import * as oauth from 'oauth4webapi';
 import { table } from '../db/system.ts';
 import { ApiError } from '../errors.ts';
 import { unstorableText } from '../storable.ts';
+import type { SecretKeys } from './secret-keys.ts';
 import { isSecure, readCookie } from './sessions.ts';
 import { spendToken } from './used-tokens.ts';
 
@@ -42,6 +43,11 @@ export interface OAuth2ProviderOptions {
   /** Signs in accounts that exist, or link it, but creates none. */
   disableSignUp?: boolean;
   /**
+   * Keeps each linked account's access and refresh tokens, encrypted with
+   * `secretKey`, for `getAccessToken`. Needs `secretKey`.
+   */
+  storeTokens?: boolean;
+  /**
    * The fields of an account this provider creates, from its profile: the
    * ID token's claims, or GitHub's user. `data` is what the app passed to the
    * sign-in, untrusted. Sign-in fields (email, password, phone, verification)
@@ -63,6 +69,25 @@ export interface Identity {
   emailVerified: boolean;
   /** What the provider said about the account, for `mapProfile`. */
   profile: Record<string, unknown>;
+  /** Set when the provider stores tokens. */
+  tokens?: ProviderTokens;
+}
+
+/** A linked account's tokens, kept when the provider has `storeTokens`. */
+export interface ProviderTokens {
+  accessToken: string;
+  refreshToken: string | undefined;
+  /** Undefined when the provider did not say. */
+  expiresAt: Date | undefined;
+  scopes: string[];
+}
+
+/** An access token for a linked account, refreshed when it was due. */
+export interface AccessTokenModel {
+  accessToken: string;
+  /** ISO 8601; null when the provider did not say. */
+  expiresAt: string | null;
+  scopes: string[];
 }
 
 export interface OAuth2State {
@@ -98,6 +123,7 @@ interface Provider extends AuthProvider {
   /** Parameters for the authorization page, `prompt` among them. */
   params: Record<string, string>;
   disableSignUp: boolean;
+  storeTokens: boolean;
   mapProfile: OAuth2ProviderOptions['mapProfile'];
   /** Identity comes from a nonce-checked ID token. */
   oidc: boolean;
@@ -142,15 +168,23 @@ export class OAuth2 {
   readonly #keys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
   readonly #appUrl: URL | undefined;
   readonly #callbackBase: string | undefined;
+  readonly #secretKeys: SecretKeys;
 
   constructor(
     options: OAuth2Options | undefined,
     appUrl: URL | undefined,
     basePath: string,
+    secretKeys: SecretKeys,
   ) {
     for (const [name, provider] of Object.entries(options ?? {})) {
       this.#providers.set(name, newProvider(name, provider));
+      if (provider.storeTokens && !secretKeys.configured) {
+        throw new TypeError(
+          `OAuth2 provider "${name}" stores tokens, which needs the secretKey option or NEXTBASE_SECRET_KEY.`,
+        );
+      }
     }
+    this.#secretKeys = secretKeys;
     if (this.#providers.size > 0 && !appUrl) {
       throw new TypeError(
         "OAuth2 needs your app's URL to build its callback URL: pass the appUrl option.",
@@ -197,6 +231,7 @@ export class OAuth2 {
       mfaIdHash,
       params = {},
       data = null,
+      scopes = [],
     }: {
       collection: AuthCollection;
       provider: Provider;
@@ -207,6 +242,8 @@ export class OAuth2 {
       /** For the provider's authorization page, over the provider's own. */
       params?: Record<string, string>;
       data?: Record<string, unknown> | null;
+      /** Asked for besides the provider's, such as more of its API. */
+      scopes?: string[];
     },
   ): Promise<{ location: string; state: string }> {
     const server = await provider.server();
@@ -251,7 +288,10 @@ export class OAuth2 {
     url.searchParams.set('client_id', provider.client.client_id);
     url.searchParams.set('redirect_uri', this.callbackUrl(provider));
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', provider.scope);
+    url.searchParams.set(
+      'scope',
+      [...new Set([...provider.scope.split(' '), ...scopes])].join(' '),
+    );
     url.searchParams.set('state', state);
     url.searchParams.set(
       'code_challenge',
@@ -320,7 +360,152 @@ export class OAuth2 {
       response,
       provider.oidc ? { expectedNonce: state.nonce, requireIdToken: true } : {},
     );
-    return provider.identity(server, tokens);
+    const identity = await provider.identity(server, tokens);
+    return provider.storeTokens
+      ? { ...identity, tokens: tokensOf(tokens, provider.scope) }
+      : identity;
+  }
+
+  /** Keeps a linked account's tokens; a refresh token left out keeps the last. */
+  async saveTokens(
+    q: Builder,
+    collectionId: string,
+    recordId: string,
+    provider: string,
+    tokens: ProviderTokens,
+  ): Promise<void> {
+    const aad = tokenAad(collectionId, recordId, provider);
+    const seal = (text: string): string =>
+      this.#secretKeys.encrypt(Buffer.from(text), aad);
+    await q
+      .newQuery(
+        `UPDATE {{${table('_linked_accounts')}}}
+         SET access_token = {:access},
+             refresh_token = coalesce({:refresh}, refresh_token),
+             token_expires = {:expires},
+             scopes = {:scopes}::text[]
+         WHERE collection_id = {:collectionId} AND record_id = {:recordId}
+           AND provider = {:provider}`,
+      )
+      .bind({
+        access: seal(tokens.accessToken),
+        refresh:
+          tokens.refreshToken === undefined ? null : seal(tokens.refreshToken),
+        expires: tokens.expiresAt ?? null,
+        scopes: tokens.scopes,
+        collectionId,
+        recordId,
+        provider,
+      })
+      .execute();
+  }
+
+  /**
+   * The access token of a record's linked account, refreshed first when it
+   * expires within a minute, or when `refresh`. The row stays locked while
+   * it refreshes, so concurrent requests spend a refresh token once.
+   */
+  async accessToken(
+    db: DB,
+    collection: AuthCollection,
+    recordId: string,
+    providerName: string,
+    { refresh = false }: { refresh?: boolean } = {},
+  ): Promise<AccessTokenModel> {
+    const provider = this.provider(providerName);
+    if (!provider.storeTokens) {
+      throw new ApiError(
+        400,
+        `${provider.displayName} does not store tokens: set its storeTokens option.`,
+      );
+    }
+    const aad = tokenAad(collection.id, recordId, provider.name);
+    const open = (sealed: string | null): string | undefined => {
+      if (sealed === null) return undefined;
+      const plain = this.#secretKeys.decrypt(sealed, aad);
+      if (!plain) {
+        throw new ApiError(500, 'A stored token cannot be decrypted.');
+      }
+      return plain.toString();
+    };
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .newQuery(
+          `SELECT access_token, refresh_token, token_expires, scopes
+           FROM {{${table('_linked_accounts')}}}
+           WHERE collection_id = {:collectionId} AND record_id = {:recordId}
+             AND provider = {:provider}
+           FOR UPDATE`,
+        )
+        .bind({
+          collectionId: collection.id,
+          recordId,
+          provider: provider.name,
+        })
+        .all<{
+          access_token: string | null;
+          refresh_token: string | null;
+          token_expires: Date | null;
+          scopes: string[] | null;
+        }>();
+      if (!row) throw new ApiError(404, 'The provider is not linked.');
+      const accessToken = open(row.access_token);
+      if (accessToken === undefined) {
+        throw new ApiError(
+          404,
+          'No token is stored for this provider yet: sign in with it again.',
+        );
+      }
+      const due =
+        refresh ||
+        (row.token_expires !== null &&
+          row.token_expires.getTime() - Date.now() < REFRESH_AHEAD_MS);
+      if (!due) {
+        return {
+          accessToken,
+          expiresAt: row.token_expires?.toISOString() ?? null,
+          scopes: row.scopes ?? [],
+        };
+      }
+      const refreshToken = open(row.refresh_token);
+      if (refreshToken === undefined) {
+        throw new ApiError(
+          400,
+          'The token expired, and the provider gave no refresh token: sign in with it again.',
+        );
+      }
+      let fresh: ProviderTokens;
+      try {
+        const server = await provider.server();
+        const response = await oauth.refreshTokenGrantRequest(
+          server,
+          provider.client,
+          provider.clientAuth,
+          refreshToken,
+          { signal },
+        );
+        fresh = tokensOf(
+          await oauth.processRefreshTokenResponse(
+            server,
+            provider.client,
+            response,
+          ),
+          (row.scopes ?? []).join(' '),
+        );
+      } catch (error) {
+        console.error('[nextbase] refreshing an OAuth2 token failed:', error);
+        throw new ApiError(
+          400,
+          'The provider refused to refresh the token: sign in with it again.',
+        );
+      }
+      await this.saveTokens(tx, collection.id, recordId, provider.name, fresh);
+      return {
+        accessToken: fresh.accessToken,
+        expiresAt: fresh.expiresAt?.toISOString() ?? null,
+        scopes: fresh.scopes,
+      };
+    });
   }
 
   /**
@@ -451,6 +636,35 @@ function stateCookieName(request: Request): string {
   return isSecure(request) ? STATE_COOKIES.secure : STATE_COOKIES.plain;
 }
 
+/** Refreshed this long before it expires, so a token handed out still works. */
+const REFRESH_AHEAD_MS = 60_000;
+
+/** Binds a sealed token to its linked account. */
+function tokenAad(
+  collectionId: string,
+  recordId: string,
+  provider: string,
+): string {
+  return `${collectionId}:${recordId}:${provider}`;
+}
+
+/** The tokens of a token endpoint's answer; `asked` when it names no scopes. */
+function tokensOf(
+  response: oauth.TokenEndpointResponse,
+  asked: string,
+): ProviderTokens {
+  return {
+    accessToken: response.access_token,
+    refreshToken: response.refresh_token,
+    expiresAt:
+      typeof response.expires_in === 'number'
+        ? new Date(Date.now() + response.expires_in * 1000)
+        : undefined,
+    // GitHub separates them with commas.
+    scopes: (response.scope ?? asked).split(/[\s,]+/).filter(Boolean),
+  };
+}
+
 /** Google's ID tokens name its issuer with or without the scheme. */
 function issuersOf(issuer: string): string[] {
   return issuer === 'https://accounts.google.com'
@@ -502,6 +716,7 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
     clientAuth: oauth.ClientSecretPost(options.clientSecret),
     params,
     disableSignUp: options.disableSignUp === true,
+    storeTokens: options.storeTokens === true,
     mapProfile: options.mapProfile,
   };
   const withScopes = <P extends { scope: string }>(provider: P): P => ({
@@ -557,6 +772,26 @@ export function checkParams(
   }
   if (JSON.stringify(value).length > MAX_EXTRA) refuse('is too long.');
   return value as Record<string, string>;
+}
+
+/** RFC 6749's scope-token: printable ASCII but space, `"` and `\\`. */
+const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/;
+
+/** Scopes a sign-in asks for besides its provider's: at most 20 of them. */
+export function checkScopes(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 20 ||
+    value.some((scope) => typeof scope !== 'string' || !SCOPE.test(scope))
+  ) {
+    throw new ApiError(400, 'scopes must be a list of OAuth2 scopes.', {
+      scopes: {
+        code: 'validation_invalid_value',
+        message: 'At most 20 scopes, without spaces or quotes.',
+      },
+    });
+  }
+  return value as string[];
 }
 
 /** What an app passes through a sign-in to `mapProfile`: a small JSON object. */

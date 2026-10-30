@@ -40,6 +40,8 @@ describe('OAuth2 sign-in', () => {
   const grants = new Map<string, Grant>();
   /** The record hooks that ran for `users`, with their source. */
   const hooked: string[] = [];
+  /** Refresh grants the fake provider answered. */
+  let refreshes = 0;
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -69,6 +71,21 @@ describe('OAuth2 sign-in', () => {
       url.href === 'https://github.com/login/oauth/access_token';
     if (tokenEndpoint && request.method === 'POST') {
       const body = new URLSearchParams(await request.text());
+      if (body.get('grant_type') === 'refresh_token') {
+        const refresh = body.get('refresh_token') ?? '';
+        if (
+          !refresh.startsWith('rt-') ||
+          body.get('client_secret') !== 'secret'
+        ) {
+          return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        }
+        refreshes++;
+        return Response.json({
+          access_token: `at${refreshes}-${refresh.slice(3)}`,
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+      }
       const grant = grants.get(body.get('code') ?? '');
       grants.delete(body.get('code') ?? '');
       const verifier = createHash('sha256')
@@ -109,6 +126,8 @@ describe('OAuth2 sign-in', () => {
         access_token: accessToken,
         token_type: 'Bearer',
         id_token: idToken,
+        expires_in: 3600,
+        refresh_token: `rt-${grant.account.sub}`,
       });
     }
     if (url.hostname === 'api.github.com') {
@@ -301,6 +320,7 @@ describe('OAuth2 sign-in', () => {
     nextbase = new NextBase({
       database: t.pool,
       appUrl: origin,
+      secretKey: randomBytes(32).toString('base64'),
       oauth2: {
         idp: { issuer: ISSUER, clientId: 'client', clientSecret: 'secret' },
         github: { clientId: 'client', clientSecret: 'secret' },
@@ -328,6 +348,13 @@ describe('OAuth2 sign-in', () => {
           issuer: ISSUER,
           clientId: ['web', 'ios', 'android'],
           clientSecret: 'secret',
+        },
+        vault: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          scopes: ['offline_access'],
+          storeTokens: true,
         },
       },
       mail: {
@@ -379,6 +406,7 @@ describe('OAuth2 sign-in', () => {
         { name: 'shop', displayName: 'shop' },
         { name: 'closed', displayName: 'closed' },
         { name: 'mobile', displayName: 'mobile' },
+        { name: 'vault', displayName: 'vault' },
       ],
     });
     const superusers = await nextbase
@@ -463,6 +491,108 @@ describe('OAuth2 sign-in', () => {
         )
       ).rows,
     ).toEqual([]);
+  });
+
+  describe('stored provider tokens', () => {
+    const tokenOf = async (
+      cookie: string,
+      id: string,
+      provider = 'vault',
+      query = '',
+    ) => {
+      const response = await raw(
+        'GET',
+        `/collections/users/records/${id}/linked-accounts/${provider}/token${query}`,
+        { cookie },
+      );
+      return {
+        status: response.status,
+        body: (await response.json()) as Record<string, unknown>,
+      };
+    };
+
+    it('keeps the tokens sealed, and hands out the access token to its owner', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v1', email: 'vera@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      const { rows } = await t.pool.query(
+        "SELECT access_token, refresh_token FROM nextbase._linked_accounts WHERE provider = 'vault' AND provider_id = 'v1'",
+      );
+      expect(rows[0].access_token).not.toContain('at-v1');
+      expect(rows[0].refresh_token).not.toContain('rt-v1');
+      const token = await tokenOf(cookie, id);
+      expect(token.status).toBe(200);
+      expect(token.body).toMatchObject({
+        accessToken: 'at-v1',
+        scopes: ['openid', 'email', 'offline_access'],
+      });
+      expect(typeof token.body.expiresAt).toBe('string');
+
+      // Other accounts, and providers that keep no tokens, get none.
+      const other = sessionOf(
+        await signIn('vault', { sub: 'v2', email: 'walt@example.com' }),
+      );
+      expect((await tokenOf(other, id)).status).toBe(404);
+      expect((await tokenOf(cookie, id, 'idp')).status).toBe(400);
+      expect((await tokenOf(cookie, id, 'nope')).status).toBe(404);
+    });
+
+    it('refreshes a token that is due, once for requests that come together', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v3', email: 'xena@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET token_expires = now() - interval '1 minute' WHERE provider_id = 'v3'",
+      );
+      const before = refreshes;
+      const tokens = await Promise.all(
+        Array.from({ length: 5 }, () => tokenOf(cookie, id)),
+      );
+      expect(refreshes).toBe(before + 1);
+      const fresh = `at${before + 1}-v3`;
+      for (const token of tokens) {
+        expect(token.body.accessToken).toBe(fresh);
+      }
+      // `refresh` forces one; the refresh token is kept for the next.
+      const forced = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(forced.body.accessToken).toBe(`at${before + 2}-v3`);
+    });
+
+    it('asks for more scopes on a new link, and keeps the scopes granted', async () => {
+      const start = await raw(
+        'GET',
+        `/collections/users/auth-with-oauth2/vault?scopes=${encodeURIComponent(
+          'drive.file calendar',
+        )}`,
+      );
+      expect(
+        new URL(start.headers.get('location') ?? '').searchParams.get('scope'),
+      ).toBe('openid email offline_access drive.file calendar');
+      const refused = await raw(
+        'GET',
+        '/collections/users/auth-with-oauth2/vault?scopes=%22quoted%22',
+      );
+      expect(refused.status).toBe(400);
+    });
+
+    it('needs the secret key to store tokens', () => {
+      expect(
+        () =>
+          new NextBase({
+            appUrl: origin,
+            oauth2: {
+              vault: {
+                issuer: ISSUER,
+                clientId: 'a',
+                clientSecret: 'b',
+                storeTokens: true,
+              },
+            },
+          }),
+      ).toThrow(/secretKey/);
+    });
   });
 
   describe('ID tokens from native apps', () => {

@@ -99,6 +99,16 @@ export interface OAuth2Options {
   params?: Record<string, string>;
   /** Passed to the provider's `mapProfile` on the server; it cannot trust it. */
   data?: Record<string, unknown>;
+  /** Scopes to ask for besides the provider's, such as more of its API. */
+  scopes?: string[];
+}
+
+/** A linked account's access token at a provider that stores tokens. */
+export interface AccessToken {
+  accessToken: string;
+  /** ISO 8601; null when the provider did not say. */
+  expiresAt: string | null;
+  scopes: string[];
 }
 
 const MAX_PER_PAGE = 1000;
@@ -526,6 +536,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
         mfaId: options.mfaId,
         params: options.params && JSON.stringify(options.params),
         data: options.data && JSON.stringify(options.data),
+        scopes: options.scopes?.join(' '),
       },
     );
   }
@@ -540,7 +551,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
     link: OAuth2LinkOptions,
     options?: SendOptions,
   ): Promise<string> {
-    const { password, mfaCode, redirect, errorRedirect, params, data } = link;
+    const { password, mfaCode, redirect, errorRedirect, params, data, scopes } =
+      link;
     const { url } = await this.#client.send<{ url: string }>(
       `/collections/${encodeURIComponent(this.#collection)}/link-oauth2/${encodeURIComponent(provider)}`,
       {
@@ -553,6 +565,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
           ...(errorRedirect !== undefined && { errorRedirect }),
           ...(params !== undefined && { params }),
           ...(data !== undefined && { data }),
+          ...(scopes !== undefined && { scopes }),
         },
       },
     );
@@ -581,6 +594,26 @@ export class RecordService<T extends RecordModel = RecordModel> {
       );
     }
     location.assign(await this.oauth2LinkUrl(provider, link, options));
+  }
+
+  /**
+   * The access token of a record's linked account, at a provider with
+   * `storeTokens`: refreshed first when it is about to expire, or when
+   * `refresh`. Only its own record, unless a superuser.
+   */
+  async getAccessToken(
+    recordId: string,
+    provider: string,
+    options: SendOptions & { refresh?: boolean } = {},
+  ): Promise<AccessToken> {
+    const { refresh, ...rest } = options;
+    return this.#send<AccessToken>(
+      `/records/${encodeURIComponent(recordId)}/linked-accounts/${encodeURIComponent(provider)}/token`,
+      {
+        ...rest,
+        query: { ...rest.query, refresh: refresh ? 'true' : undefined },
+      },
+    );
   }
 
   /** OAuth2 providers linked to a record. Only its own record, unless a superuser. */

@@ -550,12 +550,22 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
-    name: '0015_oauth2_data',
+    name: '0015_oauth2',
     async up(tx) {
       // What the app passed to a sign-in, for `mapProfile`.
       await tx
         .newQuery(
           `ALTER TABLE {{${table('_oauth2_states')}}} ADD COLUMN data jsonb NULL`,
+        )
+        .execute();
+      // A provider's tokens, sealed with secretKey, when it stores them.
+      await tx
+        .newQuery(
+          `ALTER TABLE {{${table('_linked_accounts')}}}
+             ADD COLUMN access_token text NULL,
+             ADD COLUMN refresh_token text NULL,
+             ADD COLUMN token_expires timestamptz NULL,
+             ADD COLUMN scopes text[] NULL`,
         )
         .execute();
     },

@@ -49,6 +49,8 @@ import {
   checkData,
   checkParams,
   checkRedirect,
+  checkScopes,
+  type Identity,
   type OAuth2,
   OAuth2Error,
   setStateCookie,
@@ -828,6 +830,9 @@ export const ROUTES: readonly Route[] = [
         linkRecordId: null,
         mfaIdHash,
         ...extras(query.get('params'), query.get('data')),
+        scopes: query.has('scopes')
+          ? checkScopes((query.get('scopes') ?? '').split(' ').filter(Boolean))
+          : [],
       });
       return new Response(null, {
         status: 302,
@@ -965,6 +970,7 @@ export const ROUTES: readonly Route[] = [
         linkRecordId: record.id as string,
         mfaIdHash: null,
         ...extra,
+        scopes: input.scopes === undefined ? [] : checkScopes(input.scopes),
       });
       const response = Response.json({ url: location });
       response.headers.append('set-cookie', setStateCookie(request, state));
@@ -1021,7 +1027,7 @@ export const ROUTES: readonly Route[] = [
         if (state.mfaIdHash !== null) {
           return await oauth2Step(context, collection, state.mfaIdHash, {
             provider: provider.name,
-            identity: identity.id,
+            identity,
             back,
           });
         }
@@ -1037,6 +1043,15 @@ export const ROUTES: readonly Route[] = [
           identity,
           state.linkRecordId,
         );
+        if (identity.tokens) {
+          await oauth2.saveTokens(
+            db,
+            collection.id,
+            record.id as string,
+            provider.name,
+            identity.tokens,
+          );
+        }
         if (linkedTo !== undefined) {
           mailer.send('oauth2Linked', collection.name, linkedTo, {
             provider: provider.displayName,
@@ -1167,6 +1182,24 @@ export const ROUTES: readonly Route[] = [
         });
       }
       return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: new RegExp(
+      `^/collections/${segment}/records/${segment}/linked-accounts/${segment}/token$`,
+    ),
+    tags: ['view'],
+    async handler({ request, params, db, schema, principal, oauth2 }) {
+      const { collection, id } = ownRecord(schema, principal, params);
+      // A superuser acting as the account must not walk off with its
+      // access to the provider.
+      forbidImpersonated(principal, 'read provider tokens');
+      return Response.json(
+        await oauth2.accessToken(db, collection, id, params[2] as string, {
+          refresh: new URL(request.url).searchParams.get('refresh') === 'true',
+        }),
+      );
     },
   },
   {
@@ -2265,9 +2298,9 @@ async function oauth2Step(
     provider,
     identity,
     back,
-  }: { provider: string; identity: string; back: () => Response },
+  }: { provider: string; identity: Identity; back: () => Response },
 ): Promise<Response> {
-  const { request, db, schema, principal, mfa } = context;
+  const { request, db, schema, principal, mfa, oauth2 } = context;
   let pending: Pending;
   try {
     pending = await mfa.pendingByHash(db, collection, mfaIdHash);
@@ -2278,11 +2311,20 @@ async function oauth2Step(
     }
     throw error;
   }
-  const linked = await findLinked(db, collection, provider, identity);
+  const linked = await findLinked(db, collection, provider, identity.id);
   if (linked?.id !== pending.record.id) {
     throw new OAuth2Error(
       'mfa_failed',
       'This provider account is not linked to the account signing in.',
+    );
+  }
+  if (identity.tokens) {
+    await oauth2.saveTokens(
+      db,
+      collection.id,
+      pending.record.id as string,
+      provider,
+      identity.tokens,
     );
   }
   let methods: SignInMethod[];

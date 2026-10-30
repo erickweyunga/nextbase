@@ -19,7 +19,11 @@ import { checkAppUrl } from './app-url.ts';
 import { findByEmail } from './auth/identity.ts';
 import { Mailer, type MailOptions } from './auth/mail.ts';
 import { checkPassword, Mfa, resetMfa } from './auth/mfa.ts';
-import { OAuth2, type OAuth2Options } from './auth/oauth2.ts';
+import {
+  type AccessTokenModel,
+  OAuth2,
+  type OAuth2Options,
+} from './auth/oauth2.ts';
 import { type Principal, resolvePrincipal } from './auth/principal.ts';
 import { SecretKeys, secretKeysFromEnv } from './auth/secret-keys.ts';
 import {
@@ -122,7 +126,11 @@ export type {
   MailOptions,
   MailTemplate,
 } from './auth/mail.ts';
-export type { OAuth2Options, OAuth2ProviderOptions } from './auth/oauth2.ts';
+export type {
+  AccessTokenModel,
+  OAuth2Options,
+  OAuth2ProviderOptions,
+} from './auth/oauth2.ts';
 export type {
   SmsContext,
   SmsKind,
@@ -362,11 +370,17 @@ export class NextBase<C extends Collections = Collections> {
       (options.mail?.appUrl === undefined
         ? undefined
         : checkAppUrl(options.mail.appUrl, 'mail.appUrl'));
-    this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
+    const secretKeys = new SecretKeys(
+      options.secretKey ?? secretKeysFromEnv(process.env.NEXTBASE_SECRET_KEY),
+    );
+    this.#oauth2 = new OAuth2(
+      options.oauth2,
+      this.#appUrl,
+      this.#basePath,
+      secretKeys,
+    );
     this.#mfa = new Mfa({
-      secretKeys: new SecretKeys(
-        options.secretKey ?? secretKeysFromEnv(process.env.NEXTBASE_SECRET_KEY),
-      ),
+      secretKeys,
       mailer: this.#mailer,
       sms: this.#sms,
       issuer: this.#appUrl?.hostname ?? 'NextBase',
@@ -526,6 +540,32 @@ export class NextBase<C extends Collections = Collections> {
       found.record,
       undefined,
       code,
+    );
+  }
+
+  /**
+   * The access token of a record's linked account at a provider with
+   * `storeTokens`, refreshed when due or when `refresh`, for server code
+   * that calls the provider's API, such as a scheduled job.
+   */
+  async getAccessToken(
+    collectionName: string,
+    recordId: string,
+    provider: string,
+    options: { refresh?: boolean } = {},
+  ): Promise<AccessTokenModel> {
+    await this.migrate();
+    const db = this.#connection();
+    const collection = (await this.#schema.get(db)).get(collectionName);
+    if (collection.type !== 'auth') {
+      throw new TypeError(`${collectionName} is not an auth collection.`);
+    }
+    return this.#oauth2.accessToken(
+      db,
+      collection,
+      recordId,
+      provider,
+      options,
     );
   }
 
