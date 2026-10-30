@@ -176,6 +176,13 @@ export interface AuthCollection extends CollectionBase {
   identityFields: string[];
   /** Sign-in with SMS codes; records may then have a phone instead of an email. */
   phoneSignIn: boolean;
+  /**
+   * Links a provider account to an existing account with the same email when
+   * both verified it, at the first sign-in with it. `false`: such a sign-in
+   * answers `account_exists`, and the owner links the provider from their
+   * account. Never done for an account that takes a second sign-in step.
+   */
+  implicitLinking: boolean;
   tokens: Record<TokenType, TokenConfig>;
   /** A second sign-in step. */
   mfa: MfaConfig;

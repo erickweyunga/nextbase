@@ -162,6 +162,10 @@ export function parseCollection(
       manageRule: parseRule(r, 'manageRule', previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
       phoneSignIn: r.boolean('phoneSignIn', previous?.phoneSignIn ?? false),
+      implicitLinking: r.boolean(
+        'implicitLinking',
+        previous?.implicitLinking ?? true,
+      ),
       tokens: parseTokens(r, previous?.tokens),
       mfa: parseMfa(r, previous?.mfa),
     };
@@ -191,6 +195,7 @@ export function superusersCollection(): AuthCollection {
     manageRule: null,
     identityFields: ['email'],
     phoneSignIn: false,
+    implicitLinking: false,
     tokens,
     mfa: defaultMfa(),
   };

@@ -546,6 +546,56 @@ describe('OAuth2 sign-in', () => {
     });
   });
 
+  it('links by email neither when the collection says not to, nor for an account with a second step', async () => {
+    const users = admin.collection('users');
+    await users.create({
+      email: 'nolink@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      emailVerified: true,
+    });
+    const provider = {
+      sub: 'u-nolink',
+      email: 'nolink@example.com',
+      emailVerified: true,
+    };
+    const linked = async (): Promise<number> =>
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase._linked_accounts WHERE provider_id = 'u-nolink'",
+        )
+      ).rows.length;
+
+    await admin.collections.update('users', { implicitLinking: false });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', { implicitLinking: true });
+    }
+
+    // Whoever holds the inbox could otherwise link a provider and count it
+    // as a second step alongside an email code.
+    await admin.collections.update('users', {
+      mfa: {
+        enabled: true,
+        rule: 'email = "nolink@example.com"',
+        duration: 300,
+      },
+    });
+    try {
+      expect(errorOf(await signIn('idp', provider))).toBe('account_exists');
+      expect(await linked()).toBe(0);
+    } finally {
+      await admin.collections.update('users', {
+        mfa: { enabled: false, rule: null, duration: 300 },
+      });
+    }
+    // With neither, the same sign-in links as before.
+    expect(errorOf(await signIn('idp', provider))).toBeNull();
+    expect(await linked()).toBe(1);
+  });
+
   it('links and unlinks a provider for the signed-in account', async () => {
     const { token, record } = await passwordAccount('fay@example.com');
     const linked = await signIn(

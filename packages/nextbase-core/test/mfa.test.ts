@@ -21,6 +21,7 @@ import {
 import { type Io, run } from '../src/cli/run.ts';
 import { type MailMessage, NextBase, type SmsMessage } from '../src/index.ts';
 import { timings } from '../src/realtime/timings.ts';
+import { fromBase32 } from './base32.ts';
 import { origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
 import { waitFor } from './wait.ts';
@@ -41,22 +42,6 @@ const RFC_VECTORS: [number, string][] = [
   [2000000000, '279037'],
   [20000000000, '353130'],
 ];
-
-function fromBase32(text: string): Buffer {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = 0;
-  let value = 0;
-  const out: number[] = [];
-  for (const char of text) {
-    value = (value << 5) | alphabet.indexOf(char);
-    bits += 5;
-    if (bits >= 8) {
-      out.push((value >>> (bits - 8)) & 255);
-      bits -= 8;
-    }
-  }
-  return Buffer.from(out);
-}
 
 describe('TOTP and secret keys', () => {
   it('matches the RFC 6238 SHA-1 test vectors', () => {

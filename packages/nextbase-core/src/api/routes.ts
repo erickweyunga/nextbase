@@ -13,10 +13,12 @@ import {
 } from '@nextbasejs/dbx';
 import {
   approveEmailChange,
+  confirmAccountDeletion,
   confirmEmailChange,
   confirmEmailVerification,
   confirmPasswordReset,
   type FlowContext,
+  requestAccountDeletion,
   requestEmailChange,
   requestEmailVerification,
   requestPasswordReset,
@@ -303,12 +305,16 @@ export const ROUTES: readonly Route[] = [
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
+      // Optional: deleting one's own account takes `password` or `mfaCode`.
+      const body = context.request.headers.has('content-type')
+        ? await readJsonObject(context.request)
+        : {};
       return replyOf(
         await writeRecord(context, {
           method: 'DELETE',
           collection,
           id,
-          body: {},
+          body,
           query: parse(context).url.searchParams,
         }),
       );
@@ -1176,6 +1182,12 @@ export const ROUTES: readonly Route[] = [
   ),
   ...flow('confirm-email-change', (ctx, collection, input) =>
     confirmEmailChange(ctx, collection, input),
+  ),
+  ...flow('request-account-deletion', (ctx, collection, _input, principal) =>
+    requestAccountDeletion(ctx, collection, principal),
+  ),
+  ...flow('confirm-account-deletion', (ctx, collection, input) =>
+    confirmAccountDeletion(ctx, collection, input),
   ),
   {
     method: 'POST',

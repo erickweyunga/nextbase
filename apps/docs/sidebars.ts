@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'guides/auth/verification',
         'guides/auth/password-reset',
         'guides/auth/email-change',
+        'guides/auth/account-deletion',
       ],
     },
     {

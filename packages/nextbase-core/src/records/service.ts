@@ -12,7 +12,7 @@ import {
   Tx,
 } from '@nextbasejs/dbx';
 import { checkBreached } from '../auth/breached.ts';
-import { hasAuthenticator, type Mfa } from '../auth/mfa.ts';
+import { checkPassword, hasAuthenticator, type Mfa } from '../auth/mfa.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
 import {
   type PasswordOrigin,
@@ -82,6 +82,8 @@ export interface RecordsContext {
   mfa?: Mfa;
   /** How a system write sets the password; `chosen` otherwise. */
   passwordOrigin?: PasswordOrigin;
+  /** Set when an emailed link confirmed the owner's deletion of their account. */
+  deletionConfirmed?: boolean;
 }
 
 /**
@@ -865,12 +867,12 @@ export async function planUpdateRecord(
         });
       }
       // How it was set, for MFA: a reset by email or text does not pair
-      // with a code sent to the same place for a while.
+      // with a code sent to the same place for a while. Kept while MFA is
+      // off too, so turning it on just after a reset still holds.
       if (
         password &&
         prepared.values[password.name] !== undefined &&
-        collection.type === 'auth' &&
-        collection.mfa.enabled
+        collection.type === 'auth'
       ) {
         await setPasswordOrigin(
           tx,
@@ -916,13 +918,17 @@ export async function planUpdateRecord(
  * the rest of the work to run in that transaction.
  */
 export async function planDeleteRecord(
-  ctx: RecordsContext,
+  context: RecordsContext,
   collection: Collection,
   id: string,
 ): Promise<Apply<void>> {
   checkWritable(collection);
   checkId(collection, id);
-  denyNullRule(ctx, collection.deleteRule);
+  denyNullRule(context, collection.deleteRule);
+  // Credentials confirm the delete; rules and hooks never see them.
+  const { password, mfaCode, ...body } = context.request.body;
+  await checkOwnDeletion(context, collection, id, password, mfaCode);
+  const ctx = { ...context, request: { ...context.request, body } };
   const notFound = new ApiError(404, 'Record not found.');
   if (ctx.hooks?.hasBefore(collection, 'delete')) {
     await ctx.hooks.before(hookScope(ctx), collection, 'delete', {
@@ -960,6 +966,42 @@ export async function planDeleteRecord(
       i = end;
     }
   };
+}
+
+/** Within this, a session counts as recent enough to delete its own account. */
+const FRESH_SESSION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Deleting one's own account needs more than a session, which may be stolen:
+ * the current password in `password`, or a session signed in within the last
+ * day; with an authenticator app, a code from it in `mfaCode` too. An emailed
+ * link (`request-account-deletion`) is the third way. Deletes by superusers,
+ * or of other records, are left to the delete rule alone.
+ */
+async function checkOwnDeletion(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string,
+  password: unknown,
+  mfaCode: unknown,
+): Promise<void> {
+  const { principal } = ctx;
+  if (
+    collection.type !== 'auth' ||
+    principal.superuser ||
+    ctx.deletionConfirmed ||
+    principal.collection?.id !== collection.id ||
+    principal.record?.id !== id
+  ) {
+    return;
+  }
+  forbidImpersonated(principal, 'delete the account');
+  const record = principal.record;
+  const created = principal.session?.created.getTime() ?? 0;
+  if (password !== undefined || Date.now() - created > FRESH_SESSION_MS) {
+    await checkPassword(ctx.pool, collection, record, password);
+  }
+  await checkStepUp(ctx, collection, record, mfaCode);
 }
 
 async function keepFiles(

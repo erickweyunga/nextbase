@@ -681,6 +681,46 @@ taken by then.
 </TabItem>
 </Tabs>
 
+## Request an account deletion
+
+Emails the signed-in account a link that deletes it, to
+`/delete-account?token=...` in your app, for an owner who can confirm neither
+with a password nor a recent sign-in. See
+[Account deletion](/docs/guides/auth/account-deletion). Answers `204`.
+
+```ts
+await nb.collection("users").requestAccountDeletion();
+```
+
+```http
+POST /collections/{collection}/request-account-deletion
+```
+
+Needs a signed-in session of an account with a verified email; otherwise
+`401` or `400`.
+
+## Confirm an account deletion
+
+Deletes the account the link was sent for, as its owner: the collection's
+`deleteRule` still decides. Answers `204`.
+
+```ts
+await nb.collection("users").confirmAccountDeletion(token);
+```
+
+```http
+POST /collections/{collection}/confirm-account-deletion
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `token` | string | Required. From the link. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
+
+An invalid, used or expired token, or one sent before the account's email
+changed, answers `400` with `data.token.code` `validation_invalid_token`. A
+`deleteRule` that does not let the owner delete answers `403`.
+
 ## Request a phone code
 
 Texts a six-digit sign-in code, to a collection with [phone sign-in](/docs/guides/auth/phone). A new number can then sign up. Answers 204 whether or not the number has an account. At most 5 texts per number per hour.

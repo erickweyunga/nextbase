@@ -16,6 +16,7 @@ export type MailKind =
   | 'passwordReset'
   | 'emailChange'
   | 'emailChangeApproval'
+  | 'accountDeletion'
   | 'passwordChanged'
   | 'emailChanged'
   | 'oauth2Linked'
@@ -33,7 +34,7 @@ export interface MailContext {
   /** The auth collection name. */
   collection: string;
   to: string;
-  /** Link with the token, for verification, reset and email change. */
+  /** Link with the token, for verification, reset, email change and deletion. */
   url?: string;
   token?: string;
   /** Set for `oauth2Linked` and `oauth2Unlinked`. */
@@ -57,9 +58,9 @@ export interface MailOptions {
   /** Sends one email through any provider (SMTP, Resend, SES, Postmark...). */
   send(message: MailMessage): Promise<void>;
   /**
-   * Base URL of `/verify-email`, `/reset-password`, `/approve-email-change`
-   * and `/confirm-email-change` (each with `?token=`). Defaults to the
-   * `appUrl` option.
+   * Base URL of `/verify-email`, `/reset-password`, `/approve-email-change`,
+   * `/confirm-email-change` and `/delete-account` (each with `?token=`).
+   * Defaults to the `appUrl` option.
    */
   appUrl?: string;
   templates?: Partial<Record<MailKind, MailTemplate>>;
@@ -70,6 +71,7 @@ const PATHS: Partial<Record<MailKind, string>> = {
   passwordReset: '/reset-password',
   emailChange: '/confirm-email-change',
   emailChangeApproval: '/approve-email-change',
+  accountDeletion: '/delete-account',
 };
 
 const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
@@ -88,6 +90,10 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   emailChangeApproval: ({ url }) => ({
     subject: 'Approve the change of your email',
     text: `Someone signed in to your account asked to move it to another email. Open this link to approve it, and the new address will get a link to confirm:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
+  }),
+  accountDeletion: ({ url }) => ({
+    subject: 'Confirm the deletion of your account',
+    text: `Someone signed in to your account asked to delete it. Open this link to confirm; the account and its data are then deleted for good:\n\n${url}\n\nIf this was not you, do not open it, and change your password right away.`,
   }),
   passwordChanged: () => ({
     subject: 'Your password was changed',

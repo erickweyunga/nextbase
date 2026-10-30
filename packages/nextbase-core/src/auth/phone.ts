@@ -167,9 +167,7 @@ export async function authWithPhoneCode(
     new URLSearchParams(),
   );
   // Nobody knows the generated password, so it is never a sign-in step.
-  if (collection.mfa.enabled) {
-    await setPasswordOrigin(ctx.db, collection.id, id, 'random');
-  }
+  await setPasswordOrigin(ctx.db, collection.id, id, 'random');
   return (await findRecord(ctx.db, collection, id)) as Row;
 }
 

@@ -15,6 +15,7 @@ import { newRecord, systemContext, updateRecord } from '../records/service.ts';
 import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
 import { findByEmail } from './identity.ts';
+import { takesSecondStep } from './mfa.ts';
 import { type Identity, OAuth2Error } from './oauth2.ts';
 import { setPasswordOrigin } from './password-origins.ts';
 
@@ -115,7 +116,19 @@ async function findAccount(
   }
   const existing = await findByEmail(tx, collection, identity.email);
   if (existing) {
-    if (existing.emailVerified !== true) {
+    // A provider linked here would be a second factor proven by the same
+    // inbox as an email code or reset password, so an account with a second
+    // step links one only from inside, after re-entering its password.
+    if (
+      existing.emailVerified !== true ||
+      !collection.implicitLinking ||
+      (await takesSecondStep(
+        ctx.db,
+        ctx.schema,
+        collection,
+        existing.id as string,
+      ))
+    ) {
       throw new OAuth2Error(
         'account_exists',
         'An account with this email exists. Sign in to it, then link this provider.',
@@ -304,8 +317,6 @@ async function signUp(
     throw error;
   }
   // Nobody knows the generated password, so it is never a sign-in step.
-  if (collection.mfa.enabled) {
-    await setPasswordOrigin(tx, collection.id, id, 'random');
-  }
+  await setPasswordOrigin(tx, collection.id, id, 'random');
   return (await findRecord(tx, collection, id)) as Row;
 }

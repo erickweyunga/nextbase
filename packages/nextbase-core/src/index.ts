@@ -12,13 +12,13 @@ import {
   type HealthResponse,
   NextBaseClient,
 } from '@nextbasejs/client';
-import { DB, type Pool, type Row, type Tx } from '@nextbasejs/dbx';
+import { DB, hash, type Pool, type Row, type Tx } from '@nextbasejs/dbx';
 import { waitUntil as vercelWaitUntil } from '@vercel/functions';
 import { beginRoute, ROUTES, type Route } from './api/routes.ts';
 import { checkAppUrl } from './app-url.ts';
 import { findByEmail } from './auth/identity.ts';
 import { Mailer, type MailOptions } from './auth/mail.ts';
-import { Mfa, resetMfa } from './auth/mfa.ts';
+import { checkPassword, Mfa, resetMfa } from './auth/mfa.ts';
 import { OAuth2, type OAuth2Options } from './auth/oauth2.ts';
 import { type Principal, resolvePrincipal } from './auth/principal.ts';
 import { SecretKeys, secretKeysFromEnv } from './auth/secret-keys.ts';
@@ -44,6 +44,7 @@ import {
 } from './client-ip.ts';
 import { migrate } from './db/migrations.ts';
 import { sharedPool } from './db/pool.ts';
+import { table } from './db/system.ts';
 import { TYPES } from './db/types.ts';
 import { Effects } from './effects.ts';
 import { ApiError } from './errors.ts';
@@ -526,6 +527,38 @@ export class NextBase<C extends Collections = Collections> {
       undefined,
       code,
     );
+  }
+
+  /**
+   * Whether `password` is the record's current password, for server code
+   * that confirms a sensitive action of its own, as `delete` does. Counted
+   * against the account like a sign-in: too many wrong ones throw a 429.
+   * False for an auth collection's record that does not exist.
+   */
+  async verifyPassword(
+    collectionName: string,
+    recordId: string,
+    password: string,
+  ): Promise<boolean> {
+    await this.migrate();
+    const db = this.#connection();
+    const collection = (await this.#schema.get(db)).get(collectionName);
+    if (collection.type !== 'auth') {
+      throw new TypeError(`${collectionName} is not an auth collection.`);
+    }
+    const [record] = await db
+      .select()
+      .from(table(collection.name))
+      .where(hash({ id: recordId }))
+      .all();
+    if (!record) return false;
+    try {
+      await checkPassword(db, collection, record, password);
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 400) return false;
+      throw error;
+    }
   }
 
   async #superuser(

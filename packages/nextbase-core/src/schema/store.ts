@@ -28,6 +28,7 @@ type AuthOptions = Pick<
   | 'manageRule'
   | 'identityFields'
   | 'phoneSignIn'
+  | 'implicitLinking'
   | 'tokens'
   | 'mfa'
 >;
@@ -55,6 +56,7 @@ export async function saveCollectionRow(
           manageRule: collection.manageRule,
           identityFields: collection.identityFields,
           phoneSignIn: collection.phoneSignIn,
+          implicitLinking: collection.implicitLinking,
           tokens: collection.tokens,
           mfa: collection.mfa,
         }
@@ -119,8 +121,9 @@ function fromRow(row: CollectionRow): Collection {
   return {
     ...base,
     type: 'auth',
-    // Collections stored before phone sign-in or MFA existed.
+    // Collections stored before these options existed.
     phoneSignIn: false,
+    implicitLinking: true,
     mfa: defaultMfa(),
     ...(row.options as Partial<AuthOptions>),
   } as AuthCollection;

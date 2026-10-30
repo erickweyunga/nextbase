@@ -6,7 +6,11 @@ import type { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
 import { newId } from '../random.ts';
 import type { Hooks } from '../records/hooks.ts';
-import { planUpdateRecord, systemContext } from '../records/service.ts';
+import {
+  planDeleteRecord,
+  planUpdateRecord,
+  systemContext,
+} from '../records/service.ts';
 import { EMAIL_PATTERN } from '../records/values.ts';
 import type { Schema } from '../schema/cache.ts';
 import { unstorableText } from '../storable.ts';
@@ -26,7 +30,7 @@ import {
 } from './throttle.ts';
 import { peekToken, signToken, verifyToken } from './tokens.ts';
 
-// Email verification, password reset and email change.
+// Email verification, password reset, email change and account deletion.
 // - Answers and timing are the same whether or not the account exists.
 // - Tokens are bound to the record's tokenKey; rotating it on reset or email
 //   change makes each token single-use and ends every session.
@@ -44,6 +48,9 @@ export interface FlowContext {
 
 /** The claim type of the link the current inbox approves an email change with. */
 const APPROVAL = 'emailChangeApproval';
+
+/** The claim type of the link that confirms an account's deletion. */
+const DELETION = 'accountDeletion';
 
 const invalidToken = (): ApiError =>
   new ApiError(400, 'The link is invalid or has expired.', {
@@ -292,6 +299,75 @@ export async function confirmEmailChange(
     emailVerified: true,
   });
   ctx.mailer.send('emailChanged', collection.name, record.email as string);
+}
+
+/**
+ * For an owner who can confirm neither with their password nor with a recent
+ * sign-in, such as one who signed up through a provider: a link goes to
+ * their verified email, and opening it deletes the account.
+ */
+export async function requestAccountDeletion(
+  ctx: FlowContext,
+  collection: AuthCollection,
+  principal: Principal,
+): Promise<void> {
+  const record = recordIn(principal, collection, 'delete its account');
+  if (record.emailVerified !== true) {
+    throw new ApiError(
+      400,
+      'Verify your email first, or confirm with your password.',
+    );
+  }
+  ctx.mailer.check();
+  const email = record.email as string;
+  await countAttempt(ctx.db, [mailKey(collection.id, email)]);
+  ctx.mailer.send('accountDeletion', collection.name, email, {
+    token: await token(
+      collection,
+      record,
+      'verification',
+      { email, jti: newId() },
+      DELETION,
+    ),
+  });
+}
+
+/**
+ * Deletes the account the link was sent for, as its owner, so the
+ * collection's delete rule still decides. With an authenticator app, a code
+ * from it or a recovery code is needed in `mfaCode` too.
+ */
+export async function confirmAccountDeletion(
+  ctx: FlowContext,
+  collection: AuthCollection,
+  input: Record<string, unknown>,
+): Promise<void> {
+  const { record, claims } = await verified(
+    ctx.db,
+    collection,
+    input.token,
+    'verification',
+    DELETION,
+  );
+  if (claims.email !== record.email || typeof claims.jti !== 'string') {
+    throw invalidToken();
+  }
+  await ctx.mfa.stepUp(ctx.db, collection, record, input.mfaCode);
+  if (!(await spendToken(ctx.db, claims.jti, claims.exp))) throw invalidToken();
+  const owner: Principal = { collection, record, superuser: false };
+  const apply = await planDeleteRecord(
+    {
+      ...systemContext(ctx, {}, owner),
+      principal: owner,
+      request: { method: 'DELETE', query: {}, headers: {}, body: {} },
+      source: 'request',
+      deletionConfirmed: true,
+    },
+    collection,
+    record.id as string,
+  );
+  await ctx.db.transaction(apply);
+  ctx.effects.commit();
 }
 
 function checkEmail(value: unknown, field = 'email'): string {

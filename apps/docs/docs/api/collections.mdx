@@ -130,6 +130,7 @@ POST /collections
 | `authRule`, `manageRule` | string or null | Optional, auth collections. Defaults `""` and `null`. |
 | `identityFields` | string[] | Optional, auth collections. Fields to sign in with. Default `["email"]`. Add `"phone"` to sign in with phone and password. |
 | `phoneSignIn` | boolean | Optional, auth collections. Sign-in with codes texted to the `phone` field; records may then have a phone instead of an email. Default `false`. |
+| `implicitLinking` | boolean | Optional, auth collections. Links a provider account to an existing account with the same email when both verified it. Never for an account with a second sign-in step. Default `true`. |
 
 **Responses**
 

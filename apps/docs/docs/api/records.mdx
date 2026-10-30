@@ -364,6 +364,16 @@ curl -X DELETE https://app.example/api/nextbase/collections/posts/records/k3j2h1
 DELETE /collections/{collection}/records/{id}
 ```
 
+**Body** (optional, JSON)
+
+Only for deleting the signed-in account itself; see
+[Account deletion](/docs/guides/auth/account-deletion).
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `password` | string | The account's current password. Required once the session signed in more than a day ago. |
+| `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
+
 **Responses**
 
 <Tabs>
@@ -377,7 +387,8 @@ No body.
 ```json
 { "status": 400, "message": "The last superuser cannot be deleted.", "data": {} }
 ```
-Also returned when clearing a reference would leave a required field empty.
+Also returned when clearing a reference would leave a required field empty,
+or when deleting your own account without the password or code it needs.
 
 </TabItem>
 <TabItem value="404" label="404">

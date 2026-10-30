@@ -227,11 +227,22 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return record ?? null;
   }
 
-  /** Deletes a record. Deleting the signed-in record signs out. */
-  async delete(id: string, options?: SendOptions): Promise<void> {
+  /**
+   * Deletes a record. Deleting the signed-in record signs out, and needs its
+   * current `password` unless the session signed in within the last day,
+   * plus `mfaCode` with an authenticator app. Without either, see
+   * `requestAccountDeletion`.
+   */
+  async delete(
+    id: string,
+    options: SendOptions & { password?: string; mfaCode?: string } = {},
+  ): Promise<void> {
+    const { password, mfaCode, ...rest } = options;
+    const body = stepUp({ password, mfaCode });
     await this.#send(`/records/${encodeURIComponent(id)}`, {
-      ...options,
+      ...rest,
       method: 'DELETE',
+      ...(Object.keys(body).length > 0 && { body }),
     });
     // Checked once deleted: another account may have signed in meanwhile.
     const store = this.#client.authStore;
@@ -639,6 +650,32 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post(
       '/confirm-email-change',
       { token, password, ...(mfaCode !== undefined && { mfaCode }) },
+      rest,
+    );
+  }
+
+  /**
+   * Emails the signed-in account a link that deletes it, for an owner who
+   * can confirm neither with a password nor a recent sign-in. Needs a
+   * verified email.
+   */
+  async requestAccountDeletion(options?: SendOptions): Promise<void> {
+    await this.#post('/request-account-deletion', {}, options);
+  }
+
+  /**
+   * Deletes the account with the token of its deletion link, and with an
+   * authenticator app a code from it or a recovery code. Its sessions end
+   * with it.
+   */
+  async confirmAccountDeletion(
+    token: string,
+    options: SendOptions & { mfaCode?: string } = {},
+  ): Promise<void> {
+    const { mfaCode, ...rest } = options;
+    await this.#post(
+      '/confirm-account-deletion',
+      { token, ...(mfaCode !== undefined && { mfaCode }) },
       rest,
     );
   }

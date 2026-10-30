@@ -290,7 +290,7 @@ describe('round trips per request', () => {
     expect(trips()).toBe(6);
   });
 
-  it('takes 13 to change a password, with no MFA lookups while MFA is off', async () => {
+  it('takes 14 to change a password, with no MFA lookups while MFA is off', async () => {
     const admin = nextbase.client({ superuser: true });
     await admin.collections.create({
       name: 'people',
@@ -323,7 +323,8 @@ describe('round trips per request', () => {
       },
     );
     expect(change.status).toBe(204);
-    expect(trips()).toBe(13);
+    // One of them records how the password was set, which MFA reads once on.
+    expect(trips()).toBe(14);
   });
 
   it('sees schema changes made elsewhere on the next read', async () => {

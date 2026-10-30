@@ -132,6 +132,20 @@ they usually do and links the provider from their account.
 This keeps someone who controls a provider account claiming your email from
 signing in to your account.
 
+Two cases never link automatically, and answer `account_exists` instead:
+
+- an account that takes a [second sign-in step](/docs/guides/auth/mfa):
+  whoever holds its inbox could otherwise add a provider and count it as a
+  second step beside an email code;
+- every account of a collection with `implicitLinking: false`, for apps that
+  want users to link providers only from a settings page:
+
+```ts
+await superuser.collections.update("users", { implicitLinking: false });
+```
+
+New users can still sign up through a provider either way.
+
 ## Link and unlink providers
 
 A signed-in user, with a cookie session, can link a provider to their

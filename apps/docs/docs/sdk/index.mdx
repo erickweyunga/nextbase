@@ -33,6 +33,11 @@ await posts.delete(id);
 `create` and `update` return `null` when the write succeeded but the rules do
 not let the caller view the result.
 
+Deleting the signed-in account takes `{ password }` once its session is older
+than a day, and `{ mfaCode }` with an authenticator app. Without either,
+`requestAccountDeletion()` emails a link that `confirmAccountDeletion(token)`
+opens. See [Account deletion](/docs/guides/auth/account-deletion).
+
 ## Files
 
 ```ts

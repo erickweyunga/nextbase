@@ -861,7 +861,7 @@ async function recordState(
 }
 
 /** The current password, counted against the account like a sign-in. */
-async function checkPassword(
+export async function checkPassword(
   db: DB,
   collection: AuthCollection,
   record: Row,
@@ -887,6 +887,18 @@ async function checkPassword(
     });
   }
   await clearAttempts(db, keys);
+}
+
+/** Whether a sign-in to the record must take a second step. */
+export async function takesSecondStep(
+  db: DB,
+  schema: Schema,
+  collection: AuthCollection,
+  id: string,
+): Promise<boolean> {
+  if (!collection.mfa.enabled) return false;
+  const state = await recordState(db, collection.id, id);
+  return required(db, schema, collection, id, state);
 }
 
 /** Whether the record must take a second step: it has an app, or the rule says so. */
