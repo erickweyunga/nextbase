@@ -549,6 +549,17 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    name: '0015_oauth2_data',
+    async up(tx) {
+      // What the app passed to a sign-in, for `mapProfile`.
+      await tx
+        .newQuery(
+          `ALTER TABLE {{${table('_oauth2_states')}}} ADD COLUMN data jsonb NULL`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**

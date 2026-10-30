@@ -20,6 +20,8 @@ interface Account {
   emailVerified?: boolean;
   /** Overrides the nonce in the ID token. */
   nonce?: string;
+  /** More claims for the ID token, such as `name`. */
+  claims?: Record<string, unknown>;
 }
 
 interface Grant {
@@ -89,6 +91,7 @@ describe('OAuth2 sign-in', () => {
         });
       }
       const idToken = await new SignJWT({
+        ...grant.account.claims,
         ...(grant.account.email !== undefined && {
           email: grant.account.email,
           email_verified: grant.account.emailVerified ?? true,
@@ -301,6 +304,26 @@ describe('OAuth2 sign-in', () => {
       oauth2: {
         idp: { issuer: ISSUER, clientId: 'client', clientSecret: 'secret' },
         github: { clientId: 'client', clientSecret: 'secret' },
+        shop: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          scopes: ['offline_access', 'email'],
+          prompt: 'select_account',
+          params: { hd: 'example.com' },
+          mapProfile: (profile, { data }) => ({
+            name: `${String(profile.name)} via ${String(data?.ref ?? 'none')}`,
+            // Never taken from a profile.
+            email: 'someone@else.example',
+            emailVerified: false,
+          }),
+        },
+        closed: {
+          issuer: ISSUER,
+          clientId: 'client',
+          clientSecret: 'secret',
+          disableSignUp: true,
+        },
       },
       mail: {
         from: 'app@example.com',
@@ -329,6 +352,7 @@ describe('OAuth2 sign-in', () => {
       type: 'auth',
       createRule: '',
       viewRule: 'id = @request.auth.id',
+      fields: [{ name: 'name', type: 'text' }],
     });
   });
   afterAll(async () => {
@@ -347,6 +371,8 @@ describe('OAuth2 sign-in', () => {
       providers: [
         { name: 'idp', displayName: 'idp' },
         { name: 'github', displayName: 'GitHub' },
+        { name: 'shop', displayName: 'shop' },
+        { name: 'closed', displayName: 'closed' },
       ],
     });
     const superusers = await nextbase
@@ -354,6 +380,83 @@ describe('OAuth2 sign-in', () => {
       .collection('_superusers')
       .listAuthMethods();
     expect(superusers.oauth2).toEqual({ enabled: false, providers: [] });
+  });
+
+  it('asks the provider for its scopes, prompt and parameters', async () => {
+    const start = await raw(
+      'GET',
+      `/collections/users/auth-with-oauth2/shop?params=${encodeURIComponent(
+        JSON.stringify({ login_hint: 'pat@example.com', hd: 'other.com' }),
+      )}`,
+    );
+    const authorize = new URL(start.headers.get('location') ?? '');
+    expect(authorize.searchParams.get('scope')).toBe(
+      'openid email offline_access',
+    );
+    expect(authorize.searchParams.get('prompt')).toBe('select_account');
+    // A sign-in's own parameters win over the provider's.
+    expect(authorize.searchParams.get('hd')).toBe('other.com');
+    expect(authorize.searchParams.get('login_hint')).toBe('pat@example.com');
+
+    for (const params of [{ state: 'x' }, { redirect_uri: 'x' }, { n: 1 }]) {
+      const refused = await raw(
+        'GET',
+        `/collections/users/auth-with-oauth2/shop?params=${encodeURIComponent(
+          JSON.stringify(params),
+        )}`,
+      );
+      expect(refused.status).toBe(400);
+    }
+    expect(
+      (await raw('GET', '/collections/users/auth-with-oauth2/shop?data=nope'))
+        .status,
+    ).toBe(400);
+    expect(
+      () =>
+        new NextBase({
+          appUrl: origin,
+          oauth2: {
+            bad: {
+              issuer: ISSUER,
+              clientId: 'a',
+              clientSecret: 'b',
+              params: { client_id: 'c' },
+            },
+          },
+        }),
+    ).toThrow(/client_id/);
+  });
+
+  it('fills a new account from the profile and the data the app passed', async () => {
+    const response = await signIn(
+      'shop',
+      { sub: 'pat', email: 'pat@example.com', claims: { name: 'Pat' } },
+      {
+        query: `?data=${encodeURIComponent(JSON.stringify({ ref: 'spring' }))}`,
+      },
+    );
+    expect(errorOf(response)).toBeNull();
+    const { rows } = await t.pool.query(
+      `SELECT name, email, "emailVerified" FROM nextbase.users WHERE email = 'pat@example.com'`,
+    );
+    expect(rows).toEqual([
+      { name: 'Pat via spring', email: 'pat@example.com', emailVerified: true },
+    ]);
+  });
+
+  it('signs in existing accounts only, with a provider that creates none', async () => {
+    const response = await signIn('closed', {
+      sub: 'nobody',
+      email: 'nobody@example.com',
+    });
+    expect(errorOf(response)).toBe('sign_up_disabled');
+    expect(
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase.users WHERE email = 'nobody@example.com'",
+        )
+      ).rows,
+    ).toEqual([]);
   });
 
   it('signs up a new account with the email the provider verified', async () => {

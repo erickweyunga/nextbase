@@ -23,6 +23,27 @@ export interface OAuth2ProviderOptions {
   issuer?: string;
   /** Shown on sign-in buttons; defaults to the provider's name. */
   displayName?: string;
+  /** Scopes asked for besides those NextBase needs to know the account. */
+  scopes?: string[];
+  /** The provider's `prompt`, such as `select_account` or `consent`. */
+  prompt?: string;
+  /**
+   * More parameters for the provider's authorization page, such as Google's
+   * `hd` for one Workspace domain. Those NextBase sets itself are refused.
+   */
+  params?: Record<string, string>;
+  /** Signs in accounts that exist, or link it, but creates none. */
+  disableSignUp?: boolean;
+  /**
+   * The fields of an account this provider creates, from its profile: the
+   * ID token's claims, or GitHub's user. `data` is what the app passed to the
+   * sign-in, untrusted. Sign-in fields (email, password, phone, verification)
+   * are never taken from it; the create rule and field checks still apply.
+   */
+  mapProfile?: (
+    profile: Record<string, unknown>,
+    context: { data: Record<string, unknown> | undefined },
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
 }
 
 /** Providers by name: `google`, `github`, or any OpenID Connect issuer. */
@@ -33,6 +54,8 @@ export interface Identity {
   id: string;
   email: string | undefined;
   emailVerified: boolean;
+  /** What the provider said about the account, for `mapProfile`. */
+  profile: Record<string, unknown>;
 }
 
 export interface OAuth2State {
@@ -47,6 +70,8 @@ export interface OAuth2State {
   linkRecordId: string | null;
   /** The hash of the `mfaId` this sign-in is the second step of, if any. */
   mfaIdHash: string | null;
+  /** What the app passed to the sign-in, untrusted. */
+  data: Record<string, unknown> | null;
 }
 
 /** Sent back to the app as `?error=code`, not JSON, since the browser is navigating. */
@@ -61,6 +86,10 @@ export class OAuth2Error extends Error {
 
 interface Provider extends AuthProvider {
   scope: string;
+  /** Parameters for the authorization page, `prompt` among them. */
+  params: Record<string, string>;
+  disableSignUp: boolean;
+  mapProfile: OAuth2ProviderOptions['mapProfile'];
   /** Identity comes from a nonce-checked ID token. */
   oidc: boolean;
   client: oauth.Client;
@@ -76,6 +105,20 @@ const TIMEOUT_MS = 10_000;
 /** Seconds a sign-in may take at the provider before it must start over. */
 const STATE_MAX_AGE = 600;
 const MAX_REDIRECT = 2048;
+/** Bytes of JSON in `params` or `data`, which the state keeps. */
+const MAX_EXTRA = 2048;
+
+/** Set by NextBase: changing one would break the sign-in or its checks. */
+const RESERVED_PARAMS = new Set([
+  'client_id',
+  'redirect_uri',
+  'response_type',
+  'scope',
+  'state',
+  'code_challenge',
+  'code_challenge_method',
+  'nonce',
+]);
 
 const STATE_COOKIES = {
   secure: '__Host-nextbase_oauth2',
@@ -141,6 +184,8 @@ export class OAuth2 {
       errorRedirect,
       linkRecordId,
       mfaIdHash,
+      params = {},
+      data = null,
     }: {
       collection: AuthCollection;
       provider: Provider;
@@ -148,6 +193,9 @@ export class OAuth2 {
       errorRedirect: string;
       linkRecordId: string | null;
       mfaIdHash: string | null;
+      /** For the provider's authorization page, over the provider's own. */
+      params?: Record<string, string>;
+      data?: Record<string, unknown> | null;
     },
   ): Promise<{ location: string; state: string }> {
     const server = await provider.server();
@@ -164,9 +212,9 @@ export class OAuth2 {
       .newQuery(
         `INSERT INTO {{${table('_oauth2_states')}}}
            (id, collection_id, provider, code_verifier, nonce, redirect, error_redirect,
-            link_record_id, mfa_id, expires)
+            link_record_id, mfa_id, data, expires)
          VALUES ({:id}, {:collectionId}, {:provider}, {:codeVerifier}, {:nonce}, {:redirect},
-                 {:errorRedirect}, {:linkRecordId}, {:mfaIdHash},
+                 {:errorRedirect}, {:linkRecordId}, {:mfaIdHash}, {:data}::jsonb,
                  now() + make_interval(secs => ${STATE_MAX_AGE}))`,
       )
       .bind({
@@ -179,9 +227,16 @@ export class OAuth2 {
         errorRedirect,
         linkRecordId,
         mfaIdHash,
+        data: data === null ? null : JSON.stringify(data),
       })
       .execute();
     const url = new URL(server.authorization_endpoint as string);
+    for (const [key, value] of Object.entries({
+      ...provider.params,
+      ...params,
+    })) {
+      url.searchParams.set(key, value);
+    }
     url.searchParams.set('client_id', provider.client.client_id);
     url.searchParams.set('redirect_uri', this.callbackUrl(provider));
     url.searchParams.set('response_type', 'code');
@@ -215,7 +270,7 @@ export class OAuth2 {
          RETURNING collection_id AS "collectionId", provider,
            code_verifier AS "codeVerifier", nonce, redirect,
            error_redirect AS "errorRedirect", link_record_id AS "linkRecordId",
-           mfa_id AS "mfaIdHash"`,
+           mfa_id AS "mfaIdHash", data`,
       )
       .bind({ id: stateHash(returned) })
       .all<OAuth2State>();
@@ -338,17 +393,30 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
       `OAuth2 provider "${name}" needs a clientId and a clientSecret.`,
     );
   }
+  const params = {
+    ...checkParams(options.params ?? {}, `OAuth2 provider "${name}" params`),
+    ...(options.prompt !== undefined && { prompt: options.prompt }),
+  };
   const base = {
     name,
     client: { client_id: options.clientId },
     clientAuth: oauth.ClientSecretPost(options.clientSecret),
+    params,
+    disableSignUp: options.disableSignUp === true,
+    mapProfile: options.mapProfile,
   };
+  const withScopes = <P extends { scope: string }>(provider: P): P => ({
+    ...provider,
+    scope: [
+      ...new Set([...provider.scope.split(' '), ...(options.scopes ?? [])]),
+    ].join(' '),
+  });
   if (options.issuer === undefined && name === 'github') {
-    return {
+    return withScopes({
       ...base,
       displayName: options.displayName ?? 'GitHub',
       ...github(),
-    };
+    });
   }
   const issuer =
     options.issuer ??
@@ -358,11 +426,55 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
       `OAuth2 provider "${name}" needs the issuer of its OpenID Connect provider.`,
     );
   }
-  return {
+  return withScopes({
     ...base,
     displayName: options.displayName ?? (name === 'google' ? 'Google' : name),
     ...openIdConnect(issuer, base.client),
+  });
+}
+
+/**
+ * Parameters for a provider's authorization page: strings, none of those
+ * NextBase sets. Throws a TypeError naming `what`, for options, or an
+ * ApiError on `field`, for a request's.
+ */
+export function checkParams(
+  value: unknown,
+  what: string,
+  field?: string,
+): Record<string, string> {
+  const refuse = (message: string): never => {
+    if (field === undefined) throw new TypeError(`${what} ${message}`);
+    throw new ApiError(400, `${field} ${message}`, {
+      [field]: { code: 'validation_invalid_value', message },
+    });
   };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return refuse('must be an object of strings.');
+  }
+  for (const [key, text] of Object.entries(value)) {
+    if (typeof text !== 'string') refuse('must be an object of strings.');
+    if (RESERVED_PARAMS.has(key)) refuse(`cannot set ${key}.`);
+  }
+  if (JSON.stringify(value).length > MAX_EXTRA) refuse('is too long.');
+  return value as Record<string, string>;
+}
+
+/** What an app passes through a sign-in to `mapProfile`: a small JSON object. */
+export function checkData(value: unknown): Record<string, unknown> {
+  const invalid = (message: string): never => {
+    throw new ApiError(400, `data ${message}`, {
+      data: { code: 'validation_invalid_value', message },
+    });
+  };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return invalid('must be a JSON object.');
+  }
+  if (JSON.stringify(value).length > MAX_EXTRA) invalid('is too long.');
+  if (unstorableText(JSON.stringify(value)) !== undefined) {
+    invalid('cannot be stored.');
+  }
+  return value as Record<string, unknown>;
 }
 
 function openIdConnect(
@@ -411,6 +523,7 @@ function openIdConnect(
         id: sub,
         email: typeof claims.email === 'string' ? claims.email : undefined,
         emailVerified: claims.email_verified === true,
+        profile: claims,
       };
     },
   };
@@ -443,7 +556,10 @@ function github(): Pick<Provider, 'scope' | 'oidc' | 'server' | 'identity'> {
     oidc: false,
     server: async () => server,
     async identity(_server, tokens) {
-      const user = await api<{ id: number }>('/user', tokens.access_token);
+      const user = await api<{ id: number } & Record<string, unknown>>(
+        '/user',
+        tokens.access_token,
+      );
       const emails = await api<
         { email: string; primary: boolean; verified: boolean }[]
       >('/user/emails', tokens.access_token);
@@ -452,6 +568,7 @@ function github(): Pick<Provider, 'scope' | 'oidc' | 'server' | 'identity'> {
         id: String(user.id),
         email: primary?.email,
         emailVerified: primary?.verified === true,
+        profile: user,
       };
     },
   };

@@ -51,6 +51,11 @@ first sign-in creates their account; later ones sign in to it.
 | `clientSecret` | Required. Keep it in an environment variable, never in code. |
 | `issuer` | Required except for `google` and `github`. The provider's OpenID Connect issuer; NextBase discovers its endpoints from it. |
 | `displayName` | Optional. The name to show on sign-in buttons. |
+| `scopes` | Optional. Scopes to ask for besides those NextBase needs to know the account (`openid email`, or GitHub's `read:user user:email`). |
+| `prompt` | Optional. The provider's `prompt`, such as `select_account` or `consent`. |
+| `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`) are refused. |
+| `disableSignUp` | Optional. Signs in, or links, existing accounts only; a new one fails with `sign_up_disabled`. |
+| `mapProfile` | Optional. Fills a new account's fields from the provider's profile; see [New accounts](#new-accounts). |
 
 `appUrl` must be the address users open your app at, and serve NextBase: the
 sign-in starts and ends there. Redirects are always built from it, never from
@@ -85,6 +90,17 @@ export function SignInWithGoogle() {
 }
 ```
 
+A sign-in can add parameters for the provider's page, over the provider's
+own, and pass data of its own to `mapProfile`:
+
+```ts
+nb.collection("users").signInWithOAuth2("google", {
+  redirect: "/dashboard",
+  params: { login_hint: "ann@example.com" },
+  data: { referral: "spring-sale" },
+});
+```
+
 `oauth2Url(provider, options)` returns the same URL for a plain link. To build
 buttons from the providers you set up, read them from `listAuthMethods()`:
 
@@ -106,7 +122,7 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 | `account_exists` | An account with this email exists but cannot be linked automatically (see below). Sign in to it, then link the provider. |
 | `email_required` | The provider did not share an email address, which a new account needs. |
 | `email_not_verified` | The provider did not verify the email it shared, or the account linking a provider has not verified its email. |
-| `sign_up_disabled` | The collection's `createRule` does not allow this sign-up. |
+| `sign_up_disabled` | The collection's `createRule` does not allow this sign-up, or the provider has `disableSignUp`. |
 | `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
 | `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
 | `already_linked` | The provider account belongs to another user, or this user already linked one from this provider. |
@@ -119,6 +135,32 @@ provider that did not verify the email creates no account; the sign-in fails
 with `email_not_verified`. The account gets a random password that nobody
 knows; to sign in with a password too, the user sets one through
 [password reset](/docs/guides/auth/password-reset).
+
+To fill other fields, give the provider a `mapProfile`. It gets the
+provider's profile, the ID token's claims or GitHub's user, and the `data`
+the sign-in passed:
+
+```ts title="lib/nextbase.ts"
+oauth2: {
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID!,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    scopes: ["profile"],
+    mapProfile: (profile, { data }) => ({
+      name: profile.name,
+      avatarUrl: profile.picture,
+      referral: typeof data?.referral === "string" ? data.referral : "",
+    }),
+  },
+},
+```
+
+It runs only when the sign-in creates an account. The fields go through the
+`createRule` and the fields' checks, as a sign-up's do, and a value they
+refuse fails the sign-in with `sign_up_failed`. Sign-in fields (`email`,
+`emailVerified`, `password`, `phone`, `phoneVerified`, `tokenKey`, `id`) are
+never taken from it. `data` comes from the browser, as JSON of at most 2 KB:
+check it as you would any user input.
 
 ## Existing accounts with the same email
 

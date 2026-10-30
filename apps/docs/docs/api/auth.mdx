@@ -236,6 +236,8 @@ GET /collections/{collection}/auth-with-oauth2/{provider}
 | `redirect` | string | Optional. A path on your app to return to, such as `/dashboard`. Defaults to `appUrl`. |
 | `errorRedirect` | string | Optional. A path to return to with `?error=` when the sign-in fails, such as `/sign-in`. Defaults to `redirect`. |
 | `mfaId` | string | Optional. Makes this the [second step](#multi-factor-sign-in) of a sign-in: the provider account must already be linked to the account signing in. Nothing is linked or signed up. |
+| `params` | string | Optional. A JSON object of strings for the provider's page, such as `{"login_hint":"ann@example.com"}`, over the provider's own `params`. Those NextBase sets itself answer `400`. |
+| `data` | string | Optional. A JSON object, at most 2 KB, passed to the provider's `mapProfile` when the sign-in creates an account. |
 
 **Responses**
 
@@ -365,6 +367,7 @@ POST /collections/{collection}/link-oauth2/{provider}
 | `mfaCode` | string | Required once the account has an [authenticator app](/docs/guides/auth/mfa): a code from it, or a recovery code. |
 | `redirect` | string | Optional. A path on your app to return to. |
 | `errorRedirect` | string | Optional. A path to return to with `?error=`. |
+| `params` | object | Optional. Strings for the provider's page, as on sign-in. |
 
 ```json
 { "url": "https://github.com/login/oauth/authorize?..." }

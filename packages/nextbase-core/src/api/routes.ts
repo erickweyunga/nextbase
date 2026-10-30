@@ -45,6 +45,8 @@ import {
   type Pending,
 } from '../auth/mfa.ts';
 import {
+  checkData,
+  checkParams,
   checkRedirect,
   type OAuth2,
   OAuth2Error,
@@ -824,6 +826,7 @@ export const ROUTES: readonly Route[] = [
         errorRedirect,
         linkRecordId: null,
         mfaIdHash,
+        ...extras(query.get('params'), query.get('data')),
       });
       return new Response(null, {
         status: 302,
@@ -860,6 +863,10 @@ export const ROUTES: readonly Route[] = [
           typeof input.errorRedirect === 'string' ? input.errorRedirect : null,
           'errorRedirect',
         ) || redirect;
+      const extra = extras(
+        input.params === undefined ? null : JSON.stringify(input.params),
+        input.data === undefined ? null : JSON.stringify(input.data),
+      );
       await mfa.reauthenticate(db, collection, record, input);
       const { location, state } = await oauth2.start(db, {
         collection,
@@ -868,6 +875,7 @@ export const ROUTES: readonly Route[] = [
         errorRedirect,
         linkRecordId: record.id as string,
         mfaIdHash: null,
+        ...extra,
       });
       const response = Response.json({ url: location });
       response.headers.append('set-cookie', setStateCookie(request, state));
@@ -931,7 +939,12 @@ export const ROUTES: readonly Route[] = [
         const { record, linkedTo } = await accountFor(
           { db, schema, effects: context.effects, hooks: context.hooks },
           collection,
-          provider.name,
+          {
+            name: provider.name,
+            disableSignUp: provider.disableSignUp,
+            mapProfile: provider.mapProfile,
+            data: state.data,
+          },
           identity,
           state.linkRecordId,
         );
@@ -1766,6 +1779,32 @@ async function sendVerification(
       error,
     );
   }
+}
+
+/**
+ * The `params` and `data` of a sign-in, each a JSON object, as the query
+ * of `auth-with-oauth2` carries them.
+ */
+function extras(
+  params: string | null,
+  data: string | null,
+): { params: Record<string, string>; data: Record<string, unknown> | null } {
+  const json = (text: string, field: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new ApiError(400, `${field} must be JSON.`, {
+        [field]: { code: 'validation_invalid_value', message: 'Must be JSON.' },
+      });
+    }
+  };
+  return {
+    params:
+      params === null
+        ? {}
+        : checkParams(json(params, 'params'), 'params', 'params'),
+    data: data === null ? null : checkData(json(data, 'data')),
+  };
 }
 
 /** Thrown to roll back a rehearsed write once it succeeded. */
