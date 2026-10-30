@@ -1043,15 +1043,13 @@ export const ROUTES: readonly Route[] = [
           identity,
           state.linkRecordId,
         );
-        if (identity.tokens) {
-          await oauth2.saveTokens(
-            db,
-            collection.id,
-            record.id as string,
-            provider.name,
-            identity.tokens,
-          );
-        }
+        await oauth2.saveTokens(
+          db,
+          collection.id,
+          record.id as string,
+          provider,
+          identity.tokens,
+        );
         if (linkedTo !== undefined) {
           mailer.send('oauth2Linked', collection.name, linkedTo, {
             provider: provider.displayName,
@@ -2318,15 +2316,13 @@ async function oauth2Step(
       'This provider account is not linked to the account signing in.',
     );
   }
-  if (identity.tokens) {
-    await oauth2.saveTokens(
-      db,
-      collection.id,
-      pending.record.id as string,
-      provider,
-      identity.tokens,
-    );
-  }
+  await oauth2.saveTokens(
+    db,
+    collection.id,
+    pending.record.id as string,
+    oauth2.provider(provider),
+    identity.tokens,
+  );
   let methods: SignInMethod[];
   try {
     await checkAuthRule(db, schema, collection, pending.record.id as string);

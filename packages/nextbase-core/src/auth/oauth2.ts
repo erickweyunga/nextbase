@@ -104,6 +104,8 @@ export interface OAuth2State {
   mfaIdHash: string | null;
   /** What the app passed to the sign-in, untrusted. */
   data: Record<string, unknown> | null;
+  /** The scopes asked for; null for states from before they were kept. */
+  scope: string | null;
 }
 
 /** Sent back to the app as `?error=code`, not JSON, since the browser is navigating. */
@@ -143,17 +145,24 @@ const MAX_REDIRECT = 2048;
 /** Bytes of JSON in `params` or `data`, which the state keeps. */
 const MAX_EXTRA = 2048;
 
-/** Set by NextBase: changing one would break the sign-in or its checks. */
+/**
+ * Set by NextBase, or able to change how the provider answers: changing one
+ * would break the sign-in or its checks. Compared without regard to case.
+ */
 const RESERVED_PARAMS = new Set([
   'client_id',
   'redirect_uri',
   'response_type',
+  'response_mode',
   'scope',
   'state',
   'code_challenge',
   'code_challenge_method',
   'nonce',
+  'request',
+  'request_uri',
 ]);
+const PARAM_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 
 const STATE_COOKIES = {
   secure: '__Host-nextbase_oauth2',
@@ -247,6 +256,9 @@ export class OAuth2 {
     },
   ): Promise<{ location: string; state: string }> {
     const server = await provider.server();
+    const scope = [...new Set([...provider.scope.split(' '), ...scopes])].join(
+      ' ',
+    );
     const state = oauth.generateRandomState();
     const codeVerifier = oauth.generateRandomCodeVerifier();
     const nonce = oauth.generateRandomNonce();
@@ -260,9 +272,9 @@ export class OAuth2 {
       .newQuery(
         `INSERT INTO {{${table('_oauth2_states')}}}
            (id, collection_id, provider, code_verifier, nonce, redirect, error_redirect,
-            link_record_id, mfa_id, data, expires)
+            link_record_id, mfa_id, data, scope, expires)
          VALUES ({:id}, {:collectionId}, {:provider}, {:codeVerifier}, {:nonce}, {:redirect},
-                 {:errorRedirect}, {:linkRecordId}, {:mfaIdHash}, {:data}::jsonb,
+                 {:errorRedirect}, {:linkRecordId}, {:mfaIdHash}, {:data}::jsonb, {:scope},
                  now() + make_interval(secs => ${STATE_MAX_AGE}))`,
       )
       .bind({
@@ -276,6 +288,7 @@ export class OAuth2 {
         linkRecordId,
         mfaIdHash,
         data: data === null ? null : JSON.stringify(data),
+        scope,
       })
       .execute();
     const url = new URL(server.authorization_endpoint as string);
@@ -288,10 +301,7 @@ export class OAuth2 {
     url.searchParams.set('client_id', provider.client.client_id);
     url.searchParams.set('redirect_uri', this.callbackUrl(provider));
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set(
-      'scope',
-      [...new Set([...provider.scope.split(' '), ...scopes])].join(' '),
-    );
+    url.searchParams.set('scope', scope);
     url.searchParams.set('state', state);
     url.searchParams.set(
       'code_challenge',
@@ -321,7 +331,7 @@ export class OAuth2 {
          RETURNING collection_id AS "collectionId", provider,
            code_verifier AS "codeVerifier", nonce, redirect,
            error_redirect AS "errorRedirect", link_record_id AS "linkRecordId",
-           mfa_id AS "mfaIdHash", data`,
+           mfa_id AS "mfaIdHash", data, scope`,
       )
       .bind({ id: stateHash(returned) })
       .all<OAuth2State>();
@@ -362,19 +372,38 @@ export class OAuth2 {
     );
     const identity = await provider.identity(server, tokens);
     return provider.storeTokens
-      ? { ...identity, tokens: tokensOf(tokens, provider.scope) }
+      ? { ...identity, tokens: tokensOf(tokens, state.scope ?? provider.scope) }
       : identity;
   }
 
-  /** Keeps a linked account's tokens; a refresh token left out keeps the last. */
+  /**
+   * Keeps a linked account's tokens, at a provider with `storeTokens`; a
+   * refresh token left out keeps the last. At another provider, it clears
+   * any it kept before `storeTokens` was turned off.
+   */
   async saveTokens(
     q: Builder,
     collectionId: string,
     recordId: string,
-    provider: string,
-    tokens: ProviderTokens,
+    provider: Provider,
+    tokens: ProviderTokens | undefined,
   ): Promise<void> {
-    const aad = tokenAad(collectionId, recordId, provider);
+    const where = `collection_id = {:collectionId} AND record_id = {:recordId}
+       AND provider = {:provider}`;
+    const keys = { collectionId, recordId, provider: provider.name };
+    if (!tokens) {
+      await q
+        .newQuery(
+          `UPDATE {{${table('_linked_accounts')}}}
+           SET access_token = NULL, refresh_token = NULL, token_expires = NULL,
+               scopes = NULL, tokens_saved = NULL, refreshing_until = NULL
+           WHERE ${where} AND access_token IS NOT NULL`,
+        )
+        .bind(keys)
+        .execute();
+      return;
+    }
+    const aad = tokenAad(collectionId, recordId, provider.name);
     const seal = (text: string): string =>
       this.#secretKeys.encrypt(Buffer.from(text), aad);
     await q
@@ -383,27 +412,28 @@ export class OAuth2 {
          SET access_token = {:access},
              refresh_token = coalesce({:refresh}, refresh_token),
              token_expires = {:expires},
-             scopes = {:scopes}::text[]
-         WHERE collection_id = {:collectionId} AND record_id = {:recordId}
-           AND provider = {:provider}`,
+             scopes = {:scopes}::text[],
+             tokens_saved = now(),
+             refreshing_until = NULL
+         WHERE ${where}`,
       )
       .bind({
+        ...keys,
         access: seal(tokens.accessToken),
         refresh:
           tokens.refreshToken === undefined ? null : seal(tokens.refreshToken),
         expires: tokens.expiresAt ?? null,
         scopes: tokens.scopes,
-        collectionId,
-        recordId,
-        provider,
       })
       .execute();
   }
 
   /**
    * The access token of a record's linked account, refreshed first when it
-   * expires within a minute, or when `refresh`. The row stays locked while
-   * it refreshes, so concurrent requests spend a refresh token once.
+   * expires within a minute, or when `refresh` and it was not refreshed in
+   * the last few seconds. One request claims the refresh for a while; the
+   * others wait for its result. No connection or lock is held while the
+   * provider answers.
    */
   async accessToken(
     db: DB,
@@ -419,93 +449,174 @@ export class OAuth2 {
         `${provider.displayName} does not store tokens: set its storeTokens option.`,
       );
     }
-    const aad = tokenAad(collection.id, recordId, provider.name);
-    const open = (sealed: string | null): string | undefined => {
-      if (sealed === null) return undefined;
-      const plain = this.#secretKeys.decrypt(sealed, aad);
-      if (!plain) {
-        throw new ApiError(500, 'A stored token cannot be decrypted.');
-      }
-      return plain.toString();
+    const keys = {
+      collectionId: collection.id,
+      recordId,
+      provider: provider.name,
     };
-    return db.transaction(async (tx) => {
-      const [row] = await tx
+    const where = `collection_id = {:collectionId} AND record_id = {:recordId}
+       AND provider = {:provider}`;
+    const aad = tokenAad(collection.id, recordId, provider.name);
+    const signInAgain = (message: string): ApiError =>
+      new ApiError(404, `${message}: sign in with the provider again.`);
+    const read = async () => {
+      const [row] = await db
         .newQuery(
-          `SELECT access_token, refresh_token, token_expires, scopes
-           FROM {{${table('_linked_accounts')}}}
-           WHERE collection_id = {:collectionId} AND record_id = {:recordId}
-             AND provider = {:provider}
-           FOR UPDATE`,
+          `SELECT access_token, refresh_token, token_expires, scopes,
+             tokens_saved > now() - make_interval(secs => ${FORCED_REFRESH_GAP}) AS fresh,
+             token_expires < now() + make_interval(secs => ${REFRESH_AHEAD}) AS due,
+             refreshing_until > now() AS claimed
+           FROM {{${table('_linked_accounts')}}} WHERE ${where}`,
         )
-        .bind({
-          collectionId: collection.id,
-          recordId,
-          provider: provider.name,
-        })
-        .all<{
-          access_token: string | null;
-          refresh_token: string | null;
-          token_expires: Date | null;
-          scopes: string[] | null;
-        }>();
+        .bind(keys)
+        .all<TokenRow>();
       if (!row) throw new ApiError(404, 'The provider is not linked.');
-      const accessToken = open(row.access_token);
-      if (accessToken === undefined) {
-        throw new ApiError(
-          404,
-          'No token is stored for this provider yet: sign in with it again.',
-        );
+      if (row.access_token === null) {
+        throw signInAgain('No token is stored for this provider yet');
       }
-      const due =
-        refresh ||
-        (row.token_expires !== null &&
-          row.token_expires.getTime() - Date.now() < REFRESH_AHEAD_MS);
-      if (!due) {
+      return row;
+    };
+    const open = async (sealed: string): Promise<string> => {
+      const plain = this.#secretKeys.decrypt(sealed, aad);
+      if (plain) return plain.toString();
+      // Sealed with a key no longer configured: useless, so let it go.
+      await this.saveTokens(db, collection.id, recordId, provider, undefined);
+      throw signInAgain("The stored token's key was removed");
+    };
+    const model = async (row: TokenRow): Promise<AccessTokenModel> => ({
+      accessToken: await open(row.access_token as string),
+      expiresAt: row.token_expires?.toISOString() ?? null,
+      scopes: row.scopes ?? [],
+    });
+
+    let row = await read();
+    const wanted = (r: TokenRow): boolean =>
+      r.due === true || (refresh && r.fresh !== true);
+    for (let waited = 0; wanted(row); waited += CLAIM_POLL_MS) {
+      // One request refreshes; the rest wait for it, a few seconds at most.
+      const [claimed] = await db
+        .newQuery(
+          `UPDATE {{${table('_linked_accounts')}}}
+           SET refreshing_until = now() + make_interval(secs => ${CLAIM_SECONDS})
+           WHERE ${where} AND access_token IS NOT NULL
+             AND (refreshing_until IS NULL OR refreshing_until <= now())
+           RETURNING refresh_token`,
+        )
+        .bind(keys)
+        .all<{ refresh_token: string | null }>();
+      if (claimed) {
+        if (claimed.refresh_token === null) {
+          await this.#release(db, where, keys);
+          if (row.due !== true) return model(row);
+          throw new ApiError(
+            400,
+            'The token expired, and the provider gave no refresh token: sign in with it again.',
+          );
+        }
+        const fresh = await this.#refresh(
+          db,
+          provider,
+          await open(claimed.refresh_token),
+          (row.scopes ?? []).join(' '),
+          { collectionId: collection.id, recordId, where, keys },
+        );
         return {
-          accessToken,
-          expiresAt: row.token_expires?.toISOString() ?? null,
-          scopes: row.scopes ?? [],
+          accessToken: fresh.accessToken,
+          expiresAt: fresh.expiresAt?.toISOString() ?? null,
+          scopes: fresh.scopes,
         };
       }
-      const refreshToken = open(row.refresh_token);
-      if (refreshToken === undefined) {
-        throw new ApiError(
-          400,
-          'The token expired, and the provider gave no refresh token: sign in with it again.',
-        );
+      if (waited >= CLAIM_SECONDS * 1000) {
+        throw new ApiError(409, 'The token is being refreshed. Try again.');
       }
-      let fresh: ProviderTokens;
-      try {
-        const server = await provider.server();
-        const response = await oauth.refreshTokenGrantRequest(
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+      row = await read();
+      // Another request refreshed it meanwhile.
+      if (row.fresh === true) return model(row);
+    }
+    return model(row);
+  }
+
+  /** Ends a claim on a refresh that did not happen. */
+  async #release(
+    db: DB,
+    where: string,
+    keys: Record<string, string>,
+  ): Promise<void> {
+    await db
+      .newQuery(
+        `UPDATE {{${table('_linked_accounts')}}} SET refreshing_until = NULL WHERE ${where}`,
+      )
+      .bind(keys)
+      .execute();
+  }
+
+  /** Refreshes with the provider, holding no connection, then saves. */
+  async #refresh(
+    db: DB,
+    provider: Provider,
+    refreshToken: string,
+    asked: string,
+    {
+      collectionId,
+      recordId,
+      where,
+      keys,
+    }: {
+      collectionId: string;
+      recordId: string;
+      where: string;
+      keys: Record<string, string>;
+    },
+  ): Promise<ProviderTokens> {
+    let fresh: ProviderTokens;
+    try {
+      const server = await provider.server();
+      const response = await oauth.refreshTokenGrantRequest(
+        server,
+        provider.client,
+        provider.clientAuth,
+        refreshToken,
+        { signal },
+      );
+      fresh = tokensOf(
+        await oauth.processRefreshTokenResponse(
           server,
           provider.client,
-          provider.clientAuth,
-          refreshToken,
-          { signal },
-        );
-        fresh = tokensOf(
-          await oauth.processRefreshTokenResponse(
-            server,
-            provider.client,
-            response,
-          ),
-          (row.scopes ?? []).join(' '),
-        );
-      } catch (error) {
-        console.error('[nextbase] refreshing an OAuth2 token failed:', error);
-        throw new ApiError(
-          400,
-          'The provider refused to refresh the token: sign in with it again.',
-        );
+          response,
+        ),
+        asked,
+      );
+    } catch (error) {
+      // A rotated refresh token the response carried replaces the spent
+      // one, even when the rest of the response was refused.
+      const rotated = rotatedRefreshToken(error);
+      if (rotated !== undefined) {
+        await db
+          .newQuery(
+            `UPDATE {{${table('_linked_accounts')}}} SET refresh_token = {:refresh} WHERE ${where}`,
+          )
+          .bind({
+            ...keys,
+            refresh: this.#secretKeys.encrypt(
+              Buffer.from(rotated),
+              tokenAad(collectionId, recordId, provider.name),
+            ),
+          })
+          .execute();
       }
-      await this.saveTokens(tx, collection.id, recordId, provider.name, fresh);
-      return {
-        accessToken: fresh.accessToken,
-        expiresAt: fresh.expiresAt?.toISOString() ?? null,
-        scopes: fresh.scopes,
-      };
-    });
+      await this.#release(db, where, keys);
+      // Never the error itself: its cause can hold the response's tokens.
+      console.error(
+        `[nextbase] refreshing a ${provider.name} token failed: ${describeOAuthError(error)}`,
+      );
+      throw new ApiError(
+        400,
+        'The provider refused to refresh the token: sign in with it again.',
+      );
+    }
+    await this.saveTokens(db, collectionId, recordId, provider, fresh);
+    return fresh;
   }
 
   /**
@@ -565,7 +676,10 @@ export class OAuth2 {
       }
     }
     // Once: a token seen elsewhere, such as in a log, cannot sign in again.
-    const id = `id-token:${server.issuer}:${claims.jti ?? stateHash(token)}`;
+    // Keyed by what the signature covers: the signature's own last
+    // character has spare bits, so other spellings of it verify too.
+    const signed = token.split('.').slice(0, 2).join('.');
+    const id = `id-token:${server.issuer}:${claims.jti ?? stateHash(signed)}`;
     if (!(await spendToken(q, id, claims.exp))) {
       invalid('The ID token was already used.');
     }
@@ -636,8 +750,49 @@ function stateCookieName(request: Request): string {
   return isSecure(request) ? STATE_COOKIES.secure : STATE_COOKIES.plain;
 }
 
-/** Refreshed this long before it expires, so a token handed out still works. */
-const REFRESH_AHEAD_MS = 60_000;
+/** Seconds before it expires that a token is refreshed, so one handed out still works. */
+const REFRESH_AHEAD = 60;
+/** Seconds after a refresh in which `refresh` asks for no other. */
+const FORCED_REFRESH_GAP = 10;
+/** Seconds a refresh is claimed for: the provider's timeout, and some. */
+const CLAIM_SECONDS = 15;
+const CLAIM_POLL_MS = 200;
+
+interface TokenRow {
+  access_token: string | null;
+  refresh_token: string | null;
+  token_expires: Date | null;
+  scopes: string[] | null;
+  fresh: boolean | null;
+  due: boolean | null;
+  claimed: boolean | null;
+}
+
+/** What is safe to log of an OAuth2 failure: never a response's body. */
+function describeOAuthError(error: unknown): string {
+  if (error instanceof oauth.ResponseBodyError) {
+    return `${error.name} ${error.error}`;
+  }
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return `${error.name}${typeof code === 'string' ? ` ${code}` : ''}: ${error.message}`;
+  }
+  return 'unknown error';
+}
+
+/** A refresh token in the parsed body a failed response check carries. */
+function rotatedRefreshToken(error: unknown): string | undefined {
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  const body =
+    typeof cause === 'object' && cause !== null && 'body' in cause
+      ? (cause as { body: unknown }).body
+      : undefined;
+  const token =
+    typeof body === 'object' && body !== null
+      ? (body as { refresh_token?: unknown }).refresh_token
+      : undefined;
+  return typeof token === 'string' && token !== '' ? token : undefined;
+}
 
 /** Binds a sealed token to its linked account. */
 function tokenAad(
@@ -768,7 +923,8 @@ export function checkParams(
   }
   for (const [key, text] of Object.entries(value)) {
     if (typeof text !== 'string') refuse('must be an object of strings.');
-    if (RESERVED_PARAMS.has(key)) refuse(`cannot set ${key}.`);
+    if (!PARAM_NAME.test(key)) refuse(`cannot set ${JSON.stringify(key)}.`);
+    if (RESERVED_PARAMS.has(key.toLowerCase())) refuse(`cannot set ${key}.`);
   }
   if (JSON.stringify(value).length > MAX_EXTRA) refuse('is too long.');
   return value as Record<string, string>;

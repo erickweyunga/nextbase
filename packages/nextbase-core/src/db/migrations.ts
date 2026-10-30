@@ -552,10 +552,13 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: '0015_oauth2',
     async up(tx) {
-      // What the app passed to a sign-in, for `mapProfile`.
+      // What the app passed to a sign-in, for `mapProfile`, and the scopes
+      // it asked for, kept when the provider does not say which it granted.
       await tx
         .newQuery(
-          `ALTER TABLE {{${table('_oauth2_states')}}} ADD COLUMN data jsonb NULL`,
+          `ALTER TABLE {{${table('_oauth2_states')}}}
+             ADD COLUMN data jsonb NULL,
+             ADD COLUMN scope text NULL`,
         )
         .execute();
       // A provider's tokens, sealed with secretKey, when it stores them.
@@ -565,7 +568,9 @@ const MIGRATIONS: readonly Migration[] = [
              ADD COLUMN access_token text NULL,
              ADD COLUMN refresh_token text NULL,
              ADD COLUMN token_expires timestamptz NULL,
-             ADD COLUMN scopes text[] NULL`,
+             ADD COLUMN scopes text[] NULL,
+             ADD COLUMN tokens_saved timestamptz NULL,
+             ADD COLUMN refreshing_until timestamptz NULL`,
         )
         .execute();
     },

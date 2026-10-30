@@ -42,6 +42,8 @@ describe('OAuth2 sign-in', () => {
   const hooked: string[] = [];
   /** Refresh grants the fake provider answered. */
   let refreshes = 0;
+  /** Makes the next refresh answer a token type NextBase refuses. */
+  let badRefresh = false;
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -80,6 +82,14 @@ describe('OAuth2 sign-in', () => {
           return Response.json({ error: 'invalid_grant' }, { status: 400 });
         }
         refreshes++;
+        if (badRefresh) {
+          badRefresh = false;
+          return Response.json({
+            access_token: 'at-leaked',
+            token_type: 'mac',
+            refresh_token: `rt-rotated-${refresh.slice(3)}`,
+          });
+        }
         return Response.json({
           access_token: `at${refreshes}-${refresh.slice(3)}`,
           token_type: 'Bearer',
@@ -432,7 +442,15 @@ describe('OAuth2 sign-in', () => {
     expect(authorize.searchParams.get('hd')).toBe('other.com');
     expect(authorize.searchParams.get('login_hint')).toBe('pat@example.com');
 
-    for (const params of [{ state: 'x' }, { redirect_uri: 'x' }, { n: 1 }]) {
+    for (const params of [
+      { state: 'x' },
+      { redirect_uri: 'x' },
+      { Redirect_URI: 'x' },
+      { response_mode: 'form_post' },
+      { request_uri: 'https://evil.example/r' },
+      { 'bad name': 'x' },
+      { n: 1 },
+    ]) {
       const refused = await raw(
         'GET',
         `/collections/users/auth-with-oauth2/shop?params=${encodeURIComponent(
@@ -494,6 +512,13 @@ describe('OAuth2 sign-in', () => {
   });
 
   describe('stored provider tokens', () => {
+    /** Makes the account's tokens a minute old, so a forced refresh runs. */
+    const settle = async (sub: string): Promise<void> => {
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET tokens_saved = now() - interval '1 minute' WHERE provider_id = $1",
+        [sub],
+      );
+    };
     const tokenOf = async (
       cookie: string,
       id: string,
@@ -555,9 +580,83 @@ describe('OAuth2 sign-in', () => {
       for (const token of tokens) {
         expect(token.body.accessToken).toBe(fresh);
       }
-      // `refresh` forces one; the refresh token is kept for the next.
+      // `refresh` forces one, once the last is a few seconds old; the
+      // refresh token is kept for the next.
+      await settle('v3');
       const forced = await tokenOf(cookie, id, 'vault', '?refresh=true');
       expect(forced.body.accessToken).toBe(`at${before + 2}-v3`);
+    });
+
+    it('never logs tokens, keeps a rotated refresh token, and forces one refresh at a time', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v4', email: 'yan@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await settle('v4');
+      badRefresh = true;
+      const refused = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(refused.status).toBe(400);
+      const logged = JSON.stringify(errors.mock.calls);
+      errors.mockRestore();
+      expect(logged).not.toContain('at-leaked');
+      expect(logged).not.toContain('rt-rotated');
+      // The next refresh spends the rotated refresh token.
+      await settle('v4');
+      const next = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(next.body.accessToken).toMatch(/-rotated-v4$/);
+      // Forced again right after: answered without another refresh.
+      const before = refreshes;
+      const again = await tokenOf(cookie, id, 'vault', '?refresh=true');
+      expect(refreshes).toBe(before);
+      expect(again.body.accessToken).toBe(next.body.accessToken);
+    });
+
+    it('keeps the scopes the sign-in asked for when the provider names none', async () => {
+      const cookie = sessionOf(
+        await signIn(
+          'vault',
+          { sub: 'v5', email: 'zed@example.com' },
+          { query: '?scopes=drive.file' },
+        ),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      expect((await tokenOf(cookie, id)).body.scopes).toEqual([
+        'openid',
+        'email',
+        'offline_access',
+        'drive.file',
+      ]);
+    });
+
+    it('drops tokens it can no longer use', async () => {
+      const cookie = sessionOf(
+        await signIn('vault', { sub: 'v6', email: 'amy@example.com' }),
+      );
+      const { id } = (await whoami(cookie)) as { id: string };
+      // Sealed with a key no longer configured.
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET access_token = 'v1.unknown.x.y.z' WHERE provider_id = 'v6'",
+      );
+      expect((await tokenOf(cookie, id)).status).toBe(404);
+      const { rows } = await t.pool.query(
+        "SELECT access_token FROM nextbase._linked_accounts WHERE provider_id = 'v6'",
+      );
+      expect(rows[0].access_token).toBeNull();
+      // Kept by a provider whose storeTokens was turned off since.
+      sessionOf(
+        await signIn('idp', { sub: 'idp-drop', email: 'drop@example.com' }),
+      );
+      await t.pool.query(
+        "UPDATE nextbase._linked_accounts SET access_token = 'sealed' WHERE provider_id = 'idp-drop'",
+      );
+      sessionOf(
+        await signIn('idp', { sub: 'idp-drop', email: 'drop@example.com' }),
+      );
+      const idp = await t.pool.query(
+        "SELECT access_token FROM nextbase._linked_accounts WHERE provider_id = 'idp-drop'",
+      );
+      expect(idp.rows[0]?.access_token ?? null).toBeNull();
     });
 
     it('asks for more scopes on a new link, and keeps the scopes granted', async () => {
@@ -647,6 +746,12 @@ describe('OAuth2 sign-in', () => {
       const again = await signInWith('mobile', { token });
       expect(again.status).toBe(400);
       expect(again.body.message).toBe('The ID token was already used.');
+      // Nor another spelling of its signature's spare bits.
+      const last = token.at(-1) as string;
+      const respelled = `${token.slice(0, -1)}${last === 'A' ? 'B' : 'A'}`;
+      expect((await signInWith('mobile', { token: respelled })).status).toBe(
+        400,
+      );
       // The same account, with a new token from another of the apps.
       const android = await signInWith('mobile', {
         token: await idToken(

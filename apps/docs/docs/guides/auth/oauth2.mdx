@@ -53,7 +53,7 @@ first sign-in creates their account; later ones sign in to it.
 | `displayName` | Optional. The name to show on sign-in buttons. |
 | `scopes` | Optional. Scopes to ask for besides those NextBase needs to know the account (`openid email`, or GitHub's `read:user user:email`). |
 | `prompt` | Optional. The provider's `prompt`, such as `select_account` or `consent`. |
-| `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`) are refused. |
+| `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself, or that change how the provider answers (`client_id`, `redirect_uri`, `response_type`, `response_mode`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`, `request`, `request_uri`, in any case), are refused, as are names other than letters, digits, `_`, `.` and `-`. |
 | `disableSignUp` | Optional. Signs in, or links, existing accounts only; a new one fails with `sign_up_disabled`. |
 | `mapProfile` | Optional. Fills a new account's fields from the provider's profile; see [New accounts](#new-accounts). |
 | `storeTokens` | Optional. Keeps each linked account's access and refresh tokens, encrypted, for [calling the provider's API](#call-the-providers-api). Needs `secretKey`. |
@@ -125,7 +125,10 @@ const { token, record } = await nb
 The token must be signed by the provider (its keys come from its OpenID
 Connect issuer), issued to one of the provider's `clientId`s, unexpired, and
 is accepted once. Pass the `nonce` you gave the SDK, if any: the token must
-carry it, as is or as its SHA-256 hex, which Apple's SDK sends. Apple is set
+carry it, as is or as its SHA-256 hex, which Apple's SDK sends. That only
+checks the token came from your app's own request, since whoever holds a
+token can read its nonce; what keeps a leaked token from signing in again
+is that each signs in once. Apple is set
 up by its issuer, `https://appleid.apple.com`, with your app's bundle id
 among the `clientId`s.
 
@@ -266,7 +269,11 @@ const token = await nextbase.getAccessToken("users", userId, "google");
 ```
 
 A token that expires within a minute is refreshed first, and
-`{ refresh: true }` refreshes it anyway; concurrent requests refresh it once.
+`{ refresh: true }` refreshes it anyway, unless it was refreshed in the last
+10 seconds. Concurrent requests refresh it once: one asks the provider while
+the others wait for its answer, with no database connection held meanwhile.
+Turning `storeTokens` off deletes an account's stored tokens at its next
+sign-in with the provider.
 A provider gives a refresh token only when asked: Google, for example, with
 `params: { access_type: "offline", prompt: "consent" }`, others with the
 `offline_access` scope. Without one, an expired token answers `400`, and the
