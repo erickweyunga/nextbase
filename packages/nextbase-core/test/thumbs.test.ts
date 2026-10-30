@@ -1,9 +1,10 @@
-import { chmod, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import {
   ClientError,
+  type FileField,
   type NextBaseClient,
   type RecordModel,
 } from '@nextbasejs/client';
@@ -12,14 +13,16 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
   vi,
 } from 'vitest';
-import { newStorage } from '../src/files/storage.ts';
-import { thumbLimits } from '../src/files/thumbs.ts';
+import { newStorage, type Storage } from '../src/files/storage.ts';
+import { Thumbs, thumbLimits, thumbsPrefix } from '../src/files/thumbs.ts';
 import { NextBase } from '../src/index.ts';
+import { Logger } from '../src/logs/logger.ts';
 import { type FakeS3, startFakeS3 } from './fake-s3.ts';
 import { origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
@@ -479,7 +482,6 @@ describe('thumbnails with local storage', () => {
       '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300"/></svg>',
     );
     const unthumbable: [Buffer, string, string][] = [
-      [await corruptPng(), 'corrupt.png', 'image/png'],
       [hugePng(), 'huge.png', 'image/png'],
       // Under the pixel limit, but slow to decode.
       [await image(1, 20_000), 'strip.png', 'image/png'],
@@ -521,9 +523,9 @@ describe('thumbnails with local storage', () => {
 
     // Each file's failure is logged once: stored files never change.
     const logged = await warnings();
-    expect(logged.map((l) => l.level)).toEqual([4, 4, 4, 4]);
+    expect(logged.map((l) => l.level)).toEqual([4, 4, 4]);
     const errors = logged.map((l) => String(l.error));
-    for (const reason of ['libpng', 'pixel limit', '1x20000', '10x600']) {
+    for (const reason of ['pixel limit', '1x20000', '10x600']) {
       expect(
         errors.some((e) => e.includes(reason)),
         reason,
@@ -537,37 +539,131 @@ describe('thumbnails with local storage', () => {
       expectFallback(await other.handle(new Request(`${origin}${path}`)), path);
     }
     await other.flush();
-    expect(await warnings()).toHaveLength(4);
+    expect(await warnings()).toHaveLength(3);
   });
 
-  it('redirects to the original, remembering nothing, when the file cannot be read', async () => {
-    const png = await image(200, 200);
-    const { post, name } = await upload(png, 'locked.png', 'image/png');
-    const file = join(
-      dir,
-      post?.collectionId as string,
-      post?.id as string,
-      name,
-    );
-    await chmod(file, 0);
-    try {
-      const path = pathOf(post, name, { thumb: '50x50' });
-      expectFallback(await get(path), path);
-    } finally {
-      await chmod(file, 0o644);
-    }
-    expect((await thumbsOf(post)).thumbs).toEqual([]);
-    const response = await get(pathOf(post, name, { thumb: '50x50' }));
-    expect(response.status).toBe(200);
-    expect((await sharp(await bytesOf(response)).metadata()).width).toBe(50);
-    await settle();
-    await nextbase.flush();
-    const { rows } = await t.pool.query<{ message: string }>(
-      "SELECT message FROM nextbase._logs WHERE data->>'type' = 'storage'",
-    );
-    expect(rows.map((r) => r.message)).toContain(
-      'Reading a file to thumb failed',
-    );
+  describe('with storage that fails', () => {
+    const FIELD: FileField = {
+      id: 'abcdefghij',
+      name: 'img',
+      type: 'file',
+      system: false,
+      required: false,
+      hidden: false,
+      maxSelect: 1,
+      maxSize: 1024 * 1024,
+      mimeTypes: [],
+      protected: false,
+      thumbs: ['50x50'],
+    };
+    let n = 0;
+
+    /** A stored file, its key, and its thumbnails' directory. */
+    const stored = async (bytes: Uint8Array) => {
+      const key = `stub/r${n++}/a_abcdefghij.png`;
+      await newStorage({ dir }).put(key, bytes, 'image/png');
+      return { key, thumbs: join(dir, thumbsPrefix(key)) };
+    };
+
+    /** Thumbs over local storage with some methods replaced, and its logger. */
+    const thumbsWith = (override: Partial<Storage> = {}) => {
+      const real = newStorage({ dir });
+      const storage: Storage = {
+        kind: real.kind,
+        put: real.put.bind(real),
+        read: real.read.bind(real),
+        readStart: real.readStart.bind(real),
+        size: real.size.bind(real),
+        copy: real.copy.bind(real),
+        delete: real.delete.bind(real),
+        deletePrefix: real.deletePrefix.bind(real),
+        ...override,
+      };
+      const logger = new Logger(false, {
+        db: () => t.db,
+        ready: async () => {},
+        waitUntil: () => {},
+      });
+      const failure = vi.spyOn(logger, 'failure');
+      return { thumbs: new Thumbs(storage, logger), failure };
+    };
+
+    const listed = (path: string) => readdir(path).catch(() => [] as string[]);
+
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    it('serves the original, remembering nothing, when the file cannot be read', async () => {
+      const { key, thumbs: dirOf } = await stored(await image(200, 200));
+      const failing = thumbsWith({
+        read: () => Promise.reject(new Error('connection reset')),
+      });
+      expect(await failing.thumbs.keyOf(FIELD, key, '50x50')).toBeUndefined();
+      expect(failing.failure).toHaveBeenCalledWith(
+        'storage',
+        'reading a file to thumb failed',
+        expect.objectContaining({ message: 'connection reset' }),
+      );
+      expect(await listed(dirOf)).toEqual([]);
+      const working = thumbsWith();
+      expect(await working.thumbs.keyOf(FIELD, key, '50x50')).toBe(
+        `${thumbsPrefix(key)}50x50_a_abcdefghij.png`,
+      );
+    });
+
+    it('serves what it stored when storage cannot say whether the file still exists', async () => {
+      // The second size check of the file is the one after storing.
+      const sizes = (key: string) => {
+        let checks = 0;
+        return (asked: string) =>
+          asked === key && ++checks === 2
+            ? Promise.reject(new Error('timed out'))
+            : newStorage({ dir }).size(asked);
+      };
+      const thumb = await stored(await image(200, 200));
+      const afterThumb = thumbsWith({ size: sizes(thumb.key) });
+      expect(await afterThumb.thumbs.keyOf(FIELD, thumb.key, '50x50')).toBe(
+        `${thumbsPrefix(thumb.key)}50x50_a_abcdefghij.png`,
+      );
+      expect(afterThumb.failure).toHaveBeenCalledWith(
+        'storage',
+        'checking a thumbed file failed',
+        expect.objectContaining({ message: 'timed out' }),
+      );
+      expect(await listed(thumb.thumbs)).toEqual(['50x50_a_abcdefghij.png']);
+
+      const marked = await stored(await image(10, 600));
+      const afterMarker = thumbsWith({ size: sizes(marked.key) });
+      expect(
+        await afterMarker.thumbs.keyOf(FIELD, marked.key, '50x50'),
+      ).toBeUndefined();
+      expect(afterMarker.failure).toHaveBeenCalledWith(
+        'storage',
+        'checking a thumbed file failed',
+        expect.objectContaining({ message: 'timed out' }),
+      );
+      expect(await listed(marked.thumbs)).toEqual(['.failed']);
+    });
+
+    it('never marks a file for a failed resize, but waits before trying again', async () => {
+      const { key, thumbs: dirOf } = await stored(await corruptPng());
+      const { thumbs, failure } = thumbsWith();
+      const tries = () =>
+        failure.mock.calls.filter((c) => c[0] === 'thumbs').length;
+      expect(await thumbs.keyOf(FIELD, key, '50x50')).toBeUndefined();
+      expect(tries()).toBe(1);
+      expect(await thumbs.keyOf(FIELD, key, '50x50')).toBeUndefined();
+      expect(tries()).toBe(1);
+      // Each size backs off on its own.
+      expect(await thumbs.keyOf(FIELD, key, '100x100')).toBeUndefined();
+      expect(tries()).toBe(2);
+      thumbLimits.backoffMs = 0;
+      expect(await thumbs.keyOf(FIELD, key, '50x50')).toBeUndefined();
+      expect(tries()).toBe(3);
+      expect(await listed(dirOf)).toEqual([]);
+    });
   });
 
   it('does not read files larger than the limit', async () => {

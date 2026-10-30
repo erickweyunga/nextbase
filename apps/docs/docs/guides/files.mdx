@@ -135,8 +135,10 @@ own URL, without `thumb`: for a size the field does not list, other types of
 file, including SVG, files over 50 MB, images that cannot be read, have more
 than 50 megapixels, a side over 16384 pixels or one side more than 50 times
 the other, and while the server is too busy making other thumbnails. Images
-that cannot be thumbed are remembered beside the file, so they are tried
-once, and logged as warnings with `data.type` `"thumbs"`.
+whose header shows they can never be thumbed are remembered beside the file,
+so they are tried once. When resizing an image fails, that size is tried
+again after 5 minutes. Both are logged as warnings with `data.type`
+`"thumbs"`.
 
 Thumbnails are made with [sharp](https://sharp.pixelplumbing.com), which you
 install in your app:

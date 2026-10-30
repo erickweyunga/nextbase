@@ -2,7 +2,7 @@ import { availableParallelism } from 'node:os';
 import type { FileField } from '@nextbasejs/client';
 import type SharpConstructor from 'sharp';
 import { ApiError } from '../errors.ts';
-import type { Logger } from '../logs/logger.ts';
+import { errorMessage, type Logger } from '../logs/logger.ts';
 import type { Storage } from './storage.ts';
 
 // Thumbnails of an image file live beside it, at
@@ -26,7 +26,7 @@ const TIMEOUT_SECONDS = 10;
 const FAILED_MARKER = '.failed';
 /** Thumbnails known to be stored, so repeat views skip the existence check. */
 const MAX_KNOWN = 10_000;
-/** Files known to fail, in front of their markers. */
+/** Files known to fail, in front of their markers; thumbnails backing off. */
 const MAX_FAILED = 1000;
 
 interface ThumbLimits {
@@ -34,18 +34,21 @@ interface ThumbLimits {
   waitMs: number;
   queued: number;
   maxBytes: number;
+  backoffMs: number;
 }
 
 /**
  * How many thumbnails are made at once in the process, how long a request
- * waits for its turn and how many may wait, and the largest file read.
- * Tests lower them; apps have no reason to.
+ * waits for its turn and how many may wait, the largest file read, and how
+ * long a thumbnail whose making failed is not tried again. Tests lower
+ * them; apps have no reason to.
  */
 export const thumbLimits: ThumbLimits = {
   slots: availableParallelism(),
   waitMs: 10_000,
   queued: 100,
   maxBytes: 50 * 1024 * 1024,
+  backoffMs: 5 * 60_000,
 };
 
 type Format = 'jpeg' | 'png' | 'gif' | 'webp';
@@ -205,14 +208,13 @@ class Semaphore {
 // Shared by every instance: decoding uses the process's CPUs and memory.
 const making = new Semaphore();
 
-/** A file that will never give a thumbnail, whatever the size. */
+/**
+ * A file that will never give a thumbnail, whatever the size, found by
+ * NextBase's own checks or by sharp reading its header. Errors of the resize
+ * itself never count: libvips shares one error buffer between the pipelines
+ * running at once, so their messages may belong to another image.
+ */
 class Unthumbable extends Error {}
-
-/** sharp's errors that may not happen on another try. */
-function isTemporary(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /timeout|out of memory/i.test(message);
-}
 
 /**
  * Makes thumbnails on request. Each size of each file is made once at a
@@ -225,6 +227,8 @@ export class Thumbs {
   readonly #making = new Map<string, Promise<boolean>>();
   readonly #known = new Recent(MAX_KNOWN);
   readonly #failed = new Recent(MAX_FAILED);
+  /** When making thumbnails last failed, by key, to wait before trying again. */
+  readonly #failedAt = new Map<string, number>();
   #loggedLoad = false;
 
   constructor(storage: Storage, logger: Logger) {
@@ -250,7 +254,7 @@ export class Thumbs {
     if (!thumb || !format) return undefined;
     const target = `${thumbsPrefix(key)}${size}_${name}`;
     if (this.#known.has(target)) return target;
-    if (this.#failed.has(key)) return undefined;
+    if (this.#failed.has(key) || this.#backingOff(target)) return undefined;
     try {
       if ((await this.#storage.size(target)) !== undefined) {
         this.#known.add(target);
@@ -321,16 +325,15 @@ export class Thumbs {
       try {
         return await resize(sharp, input, size, format);
       } catch (error) {
-        if (isTemporary(error)) {
-          this.#logger.failure(
-            'thumbs',
-            `making the ${target} thumbnail failed, so the original is served`,
-            error,
-            'warn',
-          );
-          return false;
-        }
-        return this.#fail(key, marker, error);
+        if (error instanceof Unthumbable) return this.#fail(key, marker, error);
+        this.#logger.failure(
+          'thumbs',
+          `making the ${target} thumbnail failed, so the original is served for a while`,
+          error,
+          'warn',
+        );
+        this.#backOff(target);
+        return false;
       }
     });
     // Too busy: the original serves this request, and a later one tries again.
@@ -370,12 +373,35 @@ export class Thumbs {
 
   /**
    * Written while the file was being removed, after the removal deleted its
-   * thumbnails: deletes what was written, and the file is gone.
+   * thumbnails: deletes what was written, and the file is gone. When storage
+   * cannot tell, the file most likely still exists.
    */
   async #checkOriginal(key: string): Promise<void> {
-    if ((await this.#storage.size(key)) !== undefined) return;
-    await this.#storage.deletePrefix(thumbsPrefix(key));
+    try {
+      if ((await this.#storage.size(key)) !== undefined) return;
+      await this.#storage.deletePrefix(thumbsPrefix(key));
+    } catch (error) {
+      this.#logger.failure('storage', 'checking a thumbed file failed', error);
+      return;
+    }
     throw new ApiError(404, 'File not found.');
+  }
+
+  #backOff(target: string): void {
+    this.#failedAt.delete(target);
+    this.#failedAt.set(target, Date.now());
+    if (this.#failedAt.size > MAX_FAILED) {
+      const oldest = this.#failedAt.keys().next().value;
+      if (oldest !== undefined) this.#failedAt.delete(oldest);
+    }
+  }
+
+  #backingOff(target: string): boolean {
+    const failed = this.#failedAt.get(target);
+    if (failed === undefined) return false;
+    if (Date.now() - failed < thumbLimits.backoffMs) return true;
+    this.#failedAt.delete(target);
+    return false;
   }
 
   /** sharp, or undefined when it cannot be imported, logged once. */
@@ -416,7 +442,13 @@ async function resize(
     // The first frame of an animation.
     pages: 1,
   });
-  const info = await image.metadata();
+  let info: Awaited<ReturnType<typeof image.metadata>>;
+  try {
+    info = await image.metadata();
+  } catch (error) {
+    // Only this image's header is read, so the error is its own.
+    throw new Unthumbable(errorMessage(error), { cause: error });
+  }
   // The bytes must be the image the extension says, never SVG, PDF or
   // another format a decoder could read.
   if (info.format !== format) {
@@ -427,6 +459,9 @@ async function resize(
   // Under the pixel limit, a thin strip can still take seconds to decode.
   const sourceWidth = info.width ?? 0;
   const sourceHeight = info.pageHeight ?? info.height ?? 0;
+  if (sourceWidth * sourceHeight > MAX_PIXELS) {
+    throw new Unthumbable('Input image exceeds pixel limit');
+  }
   const long = Math.max(sourceWidth, sourceHeight);
   const short = Math.min(sourceWidth, sourceHeight);
   if (long > MAX_SOURCE_SIDE || short === 0 || long / short > MAX_ASPECT) {
