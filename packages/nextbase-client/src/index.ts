@@ -87,6 +87,7 @@ export type {
   Collection,
   DateField,
   EmailField,
+  EmailVerificationConfig,
   Field,
   FieldType,
   FileField,

@@ -23,13 +23,18 @@ import {
   requestEmailVerification,
   requestPasswordReset,
 } from '../auth/flows.ts';
+import { findByEmail } from '../auth/identity.ts';
 import {
   accountFor,
   findLinked,
   listLinkedAccounts,
   unlinkAccount,
 } from '../auth/linked-accounts.ts';
-import { authWithPassword, checkAuthRule } from '../auth/login.ts';
+import {
+  authWithPassword,
+  checkAuthRule,
+  EmailNotVerified,
+} from '../auth/login.ts';
 import type { Mailer } from '../auth/mail.ts';
 import {
   type Challenge,
@@ -82,6 +87,7 @@ import {
 } from '../auth/sessions.ts';
 import type { Sms } from '../auth/sms.ts';
 import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
+import { countAttempt, mailKey } from '../auth/throttle.ts';
 import { table } from '../db/system.ts';
 import type { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
@@ -603,7 +609,16 @@ export const ROUTES: readonly Route[] = [
         collection,
         identity,
         password,
-      );
+      ).catch(async (error: unknown) => {
+        // The password was right: the link goes out again if asked for.
+        if (
+          error instanceof EmailNotVerified &&
+          collection.emailVerification.sendOnSignIn
+        ) {
+          await sendVerification(context, collection, error.email);
+        }
+        throw error;
+      });
       const step =
         named ?? (await cookieStep(context, collection, record, 'password'));
       if (step) {
@@ -1203,17 +1218,38 @@ export const ROUTES: readonly Route[] = [
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
         typeof input.id === 'string' && input.id !== '' ? input.id : newId();
-      await writeRecord(context, {
-        method: 'POST',
-        collection: collection.id,
-        body: { ...input, id },
-        query: new URLSearchParams(),
-      });
+      try {
+        await writeRecord(context, {
+          method: 'POST',
+          collection: collection.id,
+          body: { ...input, id },
+          query: new URLSearchParams(),
+        });
+      } catch (error) {
+        // A new account could not sign in before verifying its email either,
+        // so a registered one answers the same; its owner is told instead.
+        if (
+          collection.emailVerification.required &&
+          typeof input.email === 'string' &&
+          takenEmail(error)
+        ) {
+          await tellOwnerOfSignUp(context, collection, input.email);
+          return new Response(null, { status: 202 });
+        }
+        throw error;
+      }
       const [record] = (await db
         .select()
         .from(table(collection.name))
         .where(hash({ id }))
         .all()) as Row[];
+      if (
+        collection.emailVerification.sendOnSignUp &&
+        record?.email &&
+        record.emailVerified !== true
+      ) {
+        await sendVerification(context, collection, record.email as string);
+      }
       try {
         await checkAuthRule(db, schema, collection, id);
       } catch (error) {
@@ -1687,6 +1723,67 @@ function parseBatch(input: Record<string, unknown>): BatchWrite[] {
 
 // Always 204, so it does not reveal which accounts exist. None is open to
 // an impersonation session: each proves, changes or recovers a way in.
+function flowContext(context: Context): FlowContext {
+  const { db, schema, mailer, rejectBreachedPasswords, effects, hooks, mfa } =
+    context;
+  return { db, schema, mailer, rejectBreachedPasswords, effects, hooks, mfa };
+}
+
+/**
+ * Sends the verification link a collection sends by itself, on sign-up or
+ * sign-in. It never fails the request: a link refused for being too soon
+ * after the last one is not needed, and other failures are logged.
+ */
+async function sendVerification(
+  context: Context,
+  collection: AuthCollection,
+  email: string,
+): Promise<void> {
+  try {
+    await requestEmailVerification(flowContext(context), collection, email);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 429) return;
+    context.logger.failure(
+      'mail',
+      'sending a verification email failed',
+      error,
+    );
+  }
+}
+
+/** Whether a write failed only because its email is registered already. */
+function takenEmail(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const fields = Object.keys(error.data);
+  return (
+    fields.length === 1 &&
+    (error.data.email as { code?: unknown } | undefined)?.code ===
+      'validation_not_unique'
+  );
+}
+
+/**
+ * Emails the owner of an account someone tried to sign up with again, at
+ * most as often as other emails to that address.
+ */
+async function tellOwnerOfSignUp(
+  context: Context,
+  collection: AuthCollection,
+  email: string,
+): Promise<void> {
+  const { db, mailer } = context;
+  const owner = await findByEmail(db, collection, email);
+  if (!owner) return;
+  try {
+    mailer.check();
+    await countAttempt(db, [mailKey(collection.id, owner.email as string)]);
+  } catch {
+    // No email set up, or one sent too recently: nothing to add.
+    return;
+  }
+  mailer.send('signUpAttempt', collection.name, owner.email as string);
+}
+
 function flow(
   name: string,
   run: (
@@ -1702,17 +1799,11 @@ function flow(
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
       tags: ['auth'],
       async handler(context) {
-        const { request, params, db, schema, principal, mailer } = context;
+        const { request, params, schema, principal } = context;
         const collection = authCollection(schema, params[0] as string);
         forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
-        const { rejectBreachedPasswords, effects, hooks, mfa } = context;
-        await run(
-          { db, schema, mailer, rejectBreachedPasswords, effects, hooks, mfa },
-          collection,
-          input,
-          principal,
-        );
+        await run(flowContext(context), collection, input, principal);
         return new Response(null, { status: 204 });
       },
     },

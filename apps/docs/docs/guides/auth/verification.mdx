@@ -44,8 +44,31 @@ A link stops working once the account's email changes. Verifying unlinks any
 [providers linked](/docs/guides/auth/oauth2#link-and-unlink-providers) to the
 account before, as whoever linked them may not own the email.
 
-## Require verification
+## Options
 
-To keep unverified accounts from signing in, set the collection's
-`authRule` to `emailVerified = true`. See
-[Email & Password](/docs/guides/auth/email-password#require-a-verified-email).
+The collection's `emailVerification` option sends the link and requires it
+by itself. Every key is off by default:
+
+```ts
+await superuser.collections.update("users", {
+  emailVerification: { required: true, sendOnSignUp: true, sendOnSignIn: true },
+});
+```
+
+| Option | What it does |
+| ------ | ------------ |
+| `required` | Accounts with an unverified email cannot sign in or refresh: they get a 403, `Verify your email to sign in.`, and `signUp` returns `null`. Accounts without an email, such as phone ones, are not affected. A sign-up with an email that is already registered answers the same `202` as a new one, and the owner gets an email saying someone tried. |
+| `sendOnSignUp` | Sends the link when an account signs up with an email. |
+| `sendOnSignIn` | Sends it again when an unverified account signs in with the right password. |
+
+Links to one address go out at most as often as other emails to it, and a
+link that cannot be sent never fails the sign-up or sign-in; it is logged.
+
+Without `required`, a sign-up with a registered email answers `400` with
+`validation_not_unique` on `email`, since a new account would be signed in
+at once. An `authRule` such as `emailVerified = true` also refuses unverified
+sign-ins, but only `required` keeps sign-up from revealing registered emails.
+
+To run code before or after an email is verified, use the record's update
+[hooks](/docs/guides/hooks): verifying is an update of `emailVerified`, made
+by NextBase itself (`source: "system"`).

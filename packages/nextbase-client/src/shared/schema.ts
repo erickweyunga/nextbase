@@ -186,6 +186,21 @@ export interface AuthCollection extends CollectionBase {
   tokens: Record<TokenType, TokenConfig>;
   /** A second sign-in step. */
   mfa: MfaConfig;
+  /** When the email must be verified, and when the verification email goes out. */
+  emailVerification: EmailVerificationConfig;
+}
+
+export interface EmailVerificationConfig {
+  /**
+   * Accounts with an unverified email cannot sign in. A sign-up with an
+   * email that is already registered answers as a new one does, and the
+   * owner is told.
+   */
+  required: boolean;
+  /** Sends the verification email when an account signs up. */
+  sendOnSignUp: boolean;
+  /** Sends it again when an unverified account signs in with its password. */
+  sendOnSignIn: boolean;
 }
 
 /** Which accounts of an auth collection must take a second sign-in step. */

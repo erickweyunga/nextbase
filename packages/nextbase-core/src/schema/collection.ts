@@ -2,6 +2,7 @@ import type {
   AuthCollection,
   AutodateField,
   Collection,
+  EmailVerificationConfig,
   Field,
   Index,
   MfaConfig,
@@ -57,6 +58,10 @@ const MFA_DURATION = { min: 60, max: 3600, fallback: 300 } as const;
 /** The settings of a collection stored before MFA existed. */
 export function defaultMfa(): MfaConfig {
   return { enabled: false, rule: null, duration: MFA_DURATION.fallback };
+}
+
+export function defaultEmailVerification(): EmailVerificationConfig {
+  return { required: false, sendOnSignUp: false, sendOnSignIn: false };
 }
 
 export interface CollectionContext {
@@ -169,6 +174,7 @@ export function parseCollection(
           : r.boolean('implicitLinking', previous?.implicitLinking ?? true),
       tokens: parseTokens(r, previous?.tokens),
       mfa: parseMfa(r, previous?.mfa),
+      emailVerification: parseEmailVerification(r, previous?.emailVerification),
     };
   }
 
@@ -199,6 +205,7 @@ export function superusersCollection(): AuthCollection {
     implicitLinking: false,
     tokens,
     mfa: defaultMfa(),
+    emailVerification: defaultEmailVerification(),
   };
 }
 
@@ -684,6 +691,25 @@ function parseTokens(
 
 // Unlike the collection's rules, a system collection's MFA settings can
 // change, so superusers can require a second step of each other.
+function parseEmailVerification(
+  r: Reader,
+  existing: EmailVerificationConfig | undefined,
+): EmailVerificationConfig {
+  const previous = existing ?? defaultEmailVerification();
+  const key = 'emailVerification';
+  const input: unknown = r.has(key) ? r.input[key] : {};
+  if (!isRecord(input)) {
+    r.fail(key, 'validation_invalid_type', 'Must be an object.');
+    return previous;
+  }
+  const er = new Reader(input, [key], r.issues);
+  return {
+    required: er.boolean('required', previous.required),
+    sendOnSignUp: er.boolean('sendOnSignUp', previous.sendOnSignUp),
+    sendOnSignIn: er.boolean('sendOnSignIn', previous.sendOnSignIn),
+  };
+}
+
 function parseMfa(r: Reader, existing: MfaConfig | undefined): MfaConfig {
   const previous = existing ?? defaultMfa();
   const input: unknown = r.has('mfa') ? r.input.mfa : {};

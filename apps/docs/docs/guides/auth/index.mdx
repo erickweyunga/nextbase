@@ -61,6 +61,8 @@ Bearer token. See [Sessions and cookies](/docs/guides/auth/sessions).
 - Passwords are hashed with scrypt.
 - Failed sign-ins are limited per account, and repeated emails per address.
 - A password reset or email change signs out every session.
-- Requests never reveal whether an email is registered.
+- Sign-in, verification and password reset requests never reveal whether an
+  email is registered, nor does sign-up once
+  [verification is required](/docs/guides/auth/verification#options).
 - With [multi-factor sign-in](/docs/guides/auth/mfa), a stolen password alone
   does not sign in.

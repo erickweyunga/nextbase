@@ -23,8 +23,20 @@ import {
 // The field caps passwords at 1024 chars; rejecting longer ones bounds hashing cost.
 const MAX_PASSWORD_INPUT = 1024;
 
+/** A sign-in refused until the account's email is verified. */
+export class EmailNotVerified extends ApiError {
+  readonly email: string;
+
+  constructor(email: string) {
+    super(403, 'Verify your email to sign in.');
+    this.email = email;
+  }
+}
+
 /**
  * authRule `null` disables logins, `""` allows all, anything else is a filter.
+ * With `emailVerification.required`, an unverified email is refused too; an
+ * account without an email, such as one that signs in by phone, is not.
  * Call only after the password matched, so the 403 leaks nothing.
  */
 export async function checkAuthRule(
@@ -33,14 +45,26 @@ export async function checkAuthRule(
   collection: AuthCollection,
   id: string,
 ): Promise<void> {
-  if (collection.authRule === '') return;
   const denied = new ApiError(
     403,
     'This account does not meet the requirements to sign in.',
   );
   if (collection.authRule === null) throw denied;
-  if (!(await recordMatches(db, schema, collection, collection.authRule, id))) {
+  if (
+    collection.authRule !== '' &&
+    !(await recordMatches(db, schema, collection, collection.authRule, id))
+  ) {
     throw denied;
+  }
+  if (collection.emailVerification.required) {
+    const [record] = await db
+      .select('email', 'emailVerified')
+      .from(table(collection.name))
+      .where(hash({ id }))
+      .all();
+    if (record && record.email !== '' && record.emailVerified !== true) {
+      throw new EmailNotVerified(record.email as string);
+    }
   }
 }
 
