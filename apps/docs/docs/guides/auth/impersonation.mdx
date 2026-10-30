@@ -30,8 +30,10 @@ server with an in-memory auth store, so `nb` stays signed in as the superuser.
 `duration` is in seconds, from 60 to 3600, and defaults to 3600. The session
 is never extended and cannot be refreshed: it ends when it was set to. The
 collection's `authRule` is not checked, so you can also look at an account
-that may not sign in, such as one with an unverified email. Superusers cannot
-be impersonated.
+that may not sign in, such as one with an unverified email. Nor is a
+[second sign-in step](/docs/guides/auth/mfa) asked for: the session's
+`methods` are `["impersonation"]`, so `@request.auth.mfa` is `false` in it.
+Superusers cannot be impersonated.
 
 Server code with `client({ superuser: true })` cannot impersonate: there is
 no superuser for the session to belong to. Sign in as one.
@@ -70,6 +72,7 @@ changes who else is signed in. Each of these is a `403`:
 - linking or unlinking an OAuth2 provider;
 - refreshing the session, which would extend it;
 - revoking other sessions; it can end only itself;
+- reading or changing the account's authenticator app and recovery codes;
 - impersonating.
 
 File tokens it gets act as it, so rules see `@request.impersonatedBy`, and

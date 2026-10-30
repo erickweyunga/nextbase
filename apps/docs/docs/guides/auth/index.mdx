@@ -41,6 +41,8 @@ is a filter the request must match.
   OpenID Connect provider.
 - [Phone](/docs/guides/auth/phone): sign in with a code texted to a phone, or
   with a phone and password.
+- [Multi-factor](/docs/guides/auth/mfa): a second step after any of these,
+  with an authenticator app, a recovery code, or a code sent by email or text.
 
 ## Account emails
 
@@ -60,3 +62,5 @@ Bearer token. See [Sessions and cookies](/docs/guides/auth/sessions).
 - Failed sign-ins are limited per account, and repeated emails per address.
 - A password reset or email change signs out every session.
 - Requests never reveal whether an email is registered.
+- With [multi-factor sign-in](/docs/guides/auth/mfa), a stolen password alone
+  does not sign in.

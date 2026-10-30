@@ -31,7 +31,7 @@ export type {
   BatchResult,
   BatchWriteOptions,
 } from './batch.ts';
-export { ClientError } from './client-error.ts';
+export { ClientError, isMfaRequired } from './client-error.ts';
 export type { CollectionInput, CollectionService } from './collections.ts';
 export type { FileService, FileUrlOptions } from './files.ts';
 export { type FilterValue, filter } from './filter.ts';
@@ -50,6 +50,7 @@ export type {
   OAuth2Options,
   RecordOptions,
   RecordService,
+  SecondStepOptions,
 } from './records.ts';
 export type {
   ApiErrorBody,
@@ -65,9 +66,14 @@ export type {
   ListResult,
   LogModel,
   LogStat,
+  MfaRequired,
+  MfaStatus,
   RecordModel,
+  RecoveryCodes,
   SessionModel,
   SetupStatus,
+  SignInMethod,
+  TotpSetup,
 } from './shared/api.ts';
 export { DEFAULT_BASE_PATH } from './shared/api.ts';
 export type {
@@ -83,6 +89,7 @@ export type {
   FileField,
   Index,
   JsonField,
+  MfaConfig,
   NumberField,
   PasswordField,
   PhoneField,
@@ -338,10 +345,13 @@ export class NextBaseClient<
       this.authStore.clear();
     }
     if (response.ok) return parsed as T;
+    // A first sign-in step that needs a second one says nothing about the
+    // session in the store.
     if (
       response.status === 401 &&
       (token !== '' || record !== null) &&
-      unchanged()
+      unchanged() &&
+      !(isErrorBody(parsed) && typeof parsed.mfaId === 'string')
     ) {
       this.authStore.clear();
     }

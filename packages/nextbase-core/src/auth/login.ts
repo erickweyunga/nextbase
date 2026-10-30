@@ -39,7 +39,23 @@ export async function checkAuthRule(
     'This account does not meet the requirements to sign in.',
   );
   if (collection.authRule === null) throw denied;
-  const rule = compileFilter(collection.authRule, collection, 't0', {
+  if (!(await recordMatches(db, schema, collection, collection.authRule, id))) {
+    throw denied;
+  }
+}
+
+/**
+ * Whether the record matches a sign-in rule, such as the authRule. The rule
+ * sees no caller: it is about the record signing in.
+ */
+export async function recordMatches(
+  db: DB,
+  schema: Schema,
+  collection: AuthCollection,
+  source: string,
+  id: string,
+): Promise<boolean> {
+  const rule = compileFilter(source, collection, 't0', {
     schema,
     principal: { superuser: false },
     request: { method: 'POST', query: {}, headers: {}, body: {} },
@@ -50,7 +66,7 @@ export async function checkAuthRule(
     .from(`${table(collection.name)} t0`)
     .where(and(hash({ 't0.id': id }), rule))
     .column();
-  if (rows.length === 0) throw denied;
+  return rows.length > 0;
 }
 
 /** Every failure is the same 400, so responses do not reveal which identities exist. */

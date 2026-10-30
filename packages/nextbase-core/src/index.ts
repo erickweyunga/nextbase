@@ -12,13 +12,17 @@ import { DB, type Pool, type Tx } from '@nextbasejs/dbx';
 import { waitUntil as vercelWaitUntil } from '@vercel/functions';
 import { beginRoute, ROUTES, type Route } from './api/routes.ts';
 import { checkAppUrl } from './app-url.ts';
+import { findByEmail } from './auth/identity.ts';
 import { Mailer, type MailOptions } from './auth/mail.ts';
+import { Mfa, resetMfa } from './auth/mfa.ts';
 import { OAuth2, type OAuth2Options } from './auth/oauth2.ts';
 import { type Principal, resolvePrincipal } from './auth/principal.ts';
+import { SecretKeys, secretKeysFromEnv } from './auth/secret-keys.ts';
 import {
   bearerToken,
   checkSameOrigin,
   IMPERSONATOR_COOKIES,
+  MFA_COOKIES,
   type OriginPolicy,
   SESSION_COOKIES,
   sessionCookie,
@@ -98,6 +102,12 @@ export type {
   FieldError,
   HealthResponse,
   LinkedAccountModel,
+  MfaConfig,
+  MfaRequired,
+  MfaStatus,
+  RecoveryCodes,
+  SignInMethod,
+  TotpSetup,
 } from '@nextbasejs/client';
 export type { Pool } from '@nextbasejs/dbx';
 export type {
@@ -178,6 +188,14 @@ export interface NextBaseOptions<C extends Collections = Collections> {
   storage?: StorageOptions;
   /** Sends phone sign-in codes. Without it, production answers 400; dev logs them. */
   sms?: SmsOptions;
+  /**
+   * Encrypts secrets NextBase must read back, such as authenticator apps'
+   * secrets: the base64 of 32 random bytes (`openssl rand -base64 32`). Pass
+   * several to rotate: the first encrypts, every one decrypts. Defaults to
+   * `NEXTBASE_SECRET_KEY`, which may list several separated by commas.
+   * Without one, authenticator apps cannot be set up.
+   */
+  secretKey?: string | string[];
   /**
    * Reject new passwords found in known breaches, via Have I Been Pwned (only a
    * 5-character SHA-1 prefix is sent; accepts if unreachable). Defaults to false.
@@ -272,6 +290,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #mailer: Mailer;
   readonly #oauth2: OAuth2;
   readonly #sms: Sms;
+  readonly #mfa: Mfa;
   readonly #rejectBreachedPasswords: boolean;
   readonly #storage: Storage;
   readonly #thumbs: Thumbs;
@@ -339,6 +358,15 @@ export class NextBase<C extends Collections = Collections> {
         ? undefined
         : checkAppUrl(options.mail.appUrl, 'mail.appUrl'));
     this.#oauth2 = new OAuth2(options.oauth2, this.#appUrl, this.#basePath);
+    this.#mfa = new Mfa({
+      secretKeys: new SecretKeys(
+        options.secretKey ?? secretKeysFromEnv(process.env.NEXTBASE_SECRET_KEY),
+      ),
+      mailer: this.#mailer,
+      sms: this.#sms,
+      issuer: this.#appUrl?.hostname ?? 'NextBase',
+      oauth2: this.#oauth2.list().length > 0,
+    });
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -457,6 +485,25 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
+   * Removes a superuser's authenticator app and recovery codes, for one who
+   * lost them; they sign in with their password again. Returns false when
+   * no superuser has that email. For scripts; never expose it to untrusted input.
+   */
+  async resetSuperuserMfa(email: string): Promise<boolean> {
+    await this.migrate();
+    const db = this.#connection();
+    const schema = await this.#schema.get(db);
+    const superuser = await findByEmail(
+      db,
+      schema.get('_superusers') as AuthCollection,
+      email,
+    );
+    if (!superuser) return false;
+    await resetMfa(db, '_superusers', superuser.id as string);
+    return true;
+  }
+
+  /**
    * The verified session of a request's cookie or Bearer token, or null; for
    * `proxy.ts`. Never extends the session or sets cookies. It hits the database,
    * so match only routes that need it; `hasSessionCookie()` does not.
@@ -513,6 +560,8 @@ export class NextBase<C extends Collections = Collections> {
         const sent = [
           secure ? SESSION_COOKIES.secure : SESSION_COOKIES.plain,
           secure ? IMPERSONATOR_COOKIES.secure : IMPERSONATOR_COOKIES.plain,
+          // A sign-in's second step, after an OAuth2 first step.
+          secure ? MFA_COOKIES.secure : MFA_COOKIES.plain,
         ].flatMap((name) => {
           const value = cookies?.get(name)?.value;
           return value ? [`${name}=${value}`] : [];
@@ -753,6 +802,7 @@ export class NextBase<C extends Collections = Collections> {
       mailer: this.#mailer,
       sms: this.#sms,
       oauth2: this.#oauth2,
+      mfa: this.#mfa,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
       thumbs: this.#thumbs,
@@ -1122,6 +1172,7 @@ function applySessionCookie(cookies: CookieStore, response: Response): void {
 const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set([
   ...Object.values(SESSION_COOKIES),
   ...Object.values(IMPERSONATOR_COOKIES),
+  ...Object.values(MFA_COOKIES),
 ]);
 
 /** Writes a session cookie's Set-Cookie header, or the kept impersonator one, to the store; other cookies are left out. */

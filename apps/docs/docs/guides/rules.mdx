@@ -126,6 +126,15 @@ Auth collections have two more:
   `null` disables sign-in, and a filter such as `emailVerified = true` must match.
 - `manageRule` lets matching callers change other records' email, password
   and verified flag. By default only superusers can.
+- `mfa.rule` decides who must take a [second sign-in step](/docs/guides/auth/mfa).
+
+To let in only sessions that took a second step, use `@request.auth.mfa`:
+
+```txt
+@request.auth.id != "" && @request.auth.mfa = true
+```
+
+Changing a rule does not change sessions that already exist.
 
 ## Next steps
 

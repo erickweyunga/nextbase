@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { AuthCollection } from '@nextbasejs/client';
 import { type Builder, type DB, hash, type Row } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
@@ -10,6 +10,7 @@ import type { Hooks } from '../records/hooks.ts';
 import { newRecord, systemContext, updateRecord } from '../records/service.ts';
 import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
+import { newCode, typedCode } from './codes.ts';
 import { phoneIs } from './identity.ts';
 import type { Mailer } from './mail.ts';
 import { type Principal, recordIn } from './principal.ts';
@@ -87,6 +88,34 @@ async function sendCode(
   if (!usable) return;
   const code = await issueCode(ctx.db, collection, phone, purpose);
   ctx.sms.send(purpose, collection.name, phone, code);
+}
+
+/**
+ * Texts a new sign-in code to a record's verified phone and returns it, for
+ * a second sign-in step that keeps the code itself. Texts per phone are
+ * capped as for every code.
+ */
+export async function textSignInCode(
+  ctx: Pick<PhoneContext, 'db' | 'sms'>,
+  collection: AuthCollection,
+  phone: string,
+): Promise<string> {
+  ctx.sms.check(phone);
+  await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
+  const code = newCode();
+  ctx.sms.send('signIn', collection.name, phone, code);
+  return code;
+}
+
+/** Whether texted codes can be a second sign-in step for `record`. */
+export function textsCodes(collection: AuthCollection, record: Row): boolean {
+  return (
+    collection.phoneSignIn &&
+    collection.id !== '_superusers' &&
+    record.phoneVerified === true &&
+    typeof record.phone === 'string' &&
+    record.phone !== ''
+  );
 }
 
 /** A new phone creates a record under the collection's create rule. */
@@ -279,7 +308,7 @@ async function issueCode(
   purpose: CodePurpose,
   recordId = '',
 ): Promise<string> {
-  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const code = newCode();
   await q
     .newQuery(`DELETE FROM {{${table('_phone_codes')}}} WHERE expires <= now()`)
     .execute();
@@ -318,8 +347,8 @@ async function consumeCode(
 ): Promise<void> {
   const key = phoneKey(collection.id, phone);
   await countAttempt(db, [key]);
-  const code = typeof codeInput === 'string' ? codeInput.trim() : '';
-  if (!/^\d{6}$/.test(code)) throw invalidCode();
+  const code = typedCode(codeInput);
+  if (code === undefined) throw invalidCode();
   const [stored] = await db
     .newQuery(
       `DELETE FROM {{${table('_phone_codes')}}}

@@ -19,7 +19,11 @@ export type MailKind =
   | 'emailChanged'
   | 'oauth2Linked'
   | 'oauth2Unlinked'
-  | 'phoneChanged';
+  | 'phoneChanged'
+  | 'signInCode'
+  | 'totpEnabled'
+  | 'totpDisabled'
+  | 'recoveryCodeUsed';
 
 export interface MailContext {
   kind: MailKind;
@@ -31,6 +35,10 @@ export interface MailContext {
   token?: string;
   /** Set for `oauth2Linked` and `oauth2Unlinked`. */
   provider?: string;
+  /** The code to enter, for `signInCode`. */
+  code?: string;
+  /** Recovery codes left, for `recoveryCodeUsed`. */
+  remaining?: number;
 }
 
 export type MailTemplate = (context: MailContext) => {
@@ -90,6 +98,22 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
     subject: 'A way to sign in was removed',
     text: `Your account can no longer sign in with ${provider}. If this was not you, reset your password and contact support right away.`,
   }),
+  signInCode: ({ code }) => ({
+    subject: 'Your sign-in code',
+    text: `${code} is your sign-in code. It expires in a few minutes. Do not share it.\n\nIf you did not try to sign in, change your password right away.`,
+  }),
+  totpEnabled: () => ({
+    subject: 'Two-step sign-in was turned on',
+    text: 'Your account now asks for a code from your authenticator app when you sign in, and other devices were signed out. If this was not you, contact support right away.',
+  }),
+  totpDisabled: () => ({
+    subject: 'Two-step sign-in was turned off',
+    text: 'Your account no longer asks for a code from your authenticator app. If this was not you, reset your password and contact support right away.',
+  }),
+  recoveryCodeUsed: ({ remaining }) => ({
+    subject: 'A recovery code was used',
+    text: `A recovery code was just used for your account. You have ${remaining} left. If this was not you, reset your password and contact support right away.`,
+  }),
 };
 
 /**
@@ -137,7 +161,17 @@ export class Mailer {
     kind: MailKind,
     collection: string,
     to: string,
-    { token, provider }: { token?: string; provider?: string } = {},
+    {
+      token,
+      provider,
+      code,
+      remaining,
+    }: {
+      token?: string;
+      provider?: string;
+      code?: string;
+      remaining?: number;
+    } = {},
   ): void {
     const path = PATHS[kind];
     const url =
@@ -151,6 +185,8 @@ export class Mailer {
       ...(url !== undefined && { url }),
       ...(token !== undefined && { token }),
       ...(provider !== undefined && { provider }),
+      ...(code !== undefined && { code }),
+      ...(remaining !== undefined && { remaining }),
     };
     const template =
       this.#options?.templates?.[kind] ?? DEFAULT_TEMPLATES[kind];

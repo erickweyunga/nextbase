@@ -11,6 +11,7 @@ import { unstorableText } from '../storable.ts';
 import { findByEmail } from './identity.ts';
 import { unlinkUnproven } from './linked-accounts.ts';
 import type { Mailer } from './mail.ts';
+import type { Mfa } from './mfa.ts';
 import { verifyPassword } from './password.ts';
 import { type Principal, recordIn } from './principal.ts';
 import {
@@ -35,6 +36,7 @@ export interface FlowContext {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   hooks: Hooks;
+  mfa: Mfa;
 }
 
 const invalidToken = (): ApiError =>
@@ -154,7 +156,10 @@ export async function requestEmailChange(
   });
 }
 
-/** Requires the current password; rotates tokenKey, ending every session. */
+/**
+ * Requires the current password, and with an authenticator app a code from
+ * it or a recovery code in `mfaCode`; rotates tokenKey, ending every session.
+ */
 export async function confirmEmailChange(
   ctx: FlowContext,
   collection: AuthCollection,
@@ -183,6 +188,7 @@ export async function confirmEmailChange(
     });
   }
   await clearAttempts(ctx.db, keys);
+  await ctx.mfa.stepUp(ctx.db, collection, record, input.mfaCode, 'mfaCode');
   await privilegedUpdate(ctx, collection, record, {
     email: claims.newEmail,
     emailVerified: true,

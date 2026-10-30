@@ -477,6 +477,60 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: '0014_mfa',
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // Sign-ins waiting for their second step, by a hash of their id. The
+      // key hash ties one to the record's key, so a new password ends it.
+      await exec(`
+        CREATE TABLE {{${table('_mfas')}}} (
+          id_hash       text PRIMARY KEY,
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          key_hash      text NOT NULL,
+          method        text NOT NULL,
+          attempts      integer NOT NULL DEFAULT 0,
+          code_hash     text NULL,
+          code_channel  text NULL,
+          expires       timestamptz NOT NULL
+        )`);
+      await exec(
+        `CREATE INDEX "_mfas_expires" ON {{${table('_mfas')}}} (expires)`,
+      );
+      await exec(
+        `CREATE INDEX "_mfas_record" ON {{${table('_mfas')}}} (collection_id, record_id)`,
+      );
+      // One authenticator app per record, its secret encrypted. Unconfirmed
+      // until the record enters a code from it.
+      await exec(`
+        CREATE TABLE {{${table('_totp')}}} (
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          secret        text NOT NULL,
+          last_step     bigint NOT NULL DEFAULT 0,
+          confirmed     timestamptz NULL,
+          created       timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (collection_id, record_id)
+        )`);
+      await exec(`
+        CREATE TABLE {{${table('_recovery_codes')}}} (
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          code_hash     text NOT NULL,
+          PRIMARY KEY (collection_id, record_id, code_hash)
+        )`);
+      await exec(
+        `ALTER TABLE {{${table('_sessions')}}} ADD COLUMN methods text[] NOT NULL DEFAULT '{}'`,
+      );
+      await exec(
+        `ALTER TABLE {{${table('_oauth2_states')}}} ADD COLUMN mfa_id text NULL`,
+      );
+      // `@request.auth.mfa` now says whether the session took a second step.
+      await renameClashingUserFields(tx, 'mfa', '');
+    },
+  },
 ];
 
 /**

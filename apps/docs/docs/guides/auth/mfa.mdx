@@ -1,0 +1,203 @@
+---
+title: Multi-factor sign-in
+sidebar_label: Multi-factor
+---
+
+# Multi-factor sign-in
+
+A sign-in can take a second step: after the password, OAuth2 or a phone
+code, the user also enters a code from an authenticator app, a recovery
+code, or a code sent to their email or phone. No session exists until the
+second step is done.
+
+## Turn it on
+
+Each auth collection, `_superusers` included, has an `mfa` setting:
+
+```ts
+await superuser.collections.update("users", {
+  mfa: { enabled: true, rule: null, duration: 300 },
+});
+```
+
+| Setting | Meaning |
+| ------- | ------- |
+| `enabled` | Off by default. While off, nobody is asked for a second step and no authenticator app can be set up. |
+| `rule` | Who must take a second step. `null`: only accounts with an authenticator app. `""`: every account. A filter, such as `role = "admin"`: matching accounts, and those with an app. Like the `authRule`, it is about the record signing in, so `@request.*` values are empty. |
+| `duration` | Seconds a sign-in waits for its second step, 60 to 3600. Defaults to 300. |
+
+Changing the setting does not end sessions that already exist.
+
+An account that must take a second step but has no way to (no app, no
+verified email or phone, no linked provider) cannot sign in: the first step
+answers `403`, and a sign-up `202`.
+
+## The two steps
+
+A first step that needs a second answers `401` with an `mfaId` and the
+`methods` this account can use for the second step:
+
+```json
+{
+  "status": 401,
+  "message": "This sign-in needs a second step.",
+  "data": {},
+  "mfaId": "kQ9...43 characters",
+  "methods": ["totp", "recoveryCode"]
+}
+```
+
+The SDK keeps its auth store on this `401`, and `isMfaRequired()` reads it:
+
+```ts
+import { isMfaRequired } from "@nextbasejs/client";
+
+const users = nb.collection("users");
+try {
+  await users.signInWithPassword(email, password);
+} catch (error) {
+  const mfa = isMfaRequired(error);
+  if (!mfa) throw error;
+  // Ask for a code, then:
+  await users.signInWithTotp(code, { mfaId: mfa.mfaId });
+}
+```
+
+The second step must be another method than the first, and its session
+records both, such as `["password", "totp"]`.
+
+| Method | First step | Second step |
+| ------ | ---------- | ----------- |
+| `password` | `signInWithPassword` | `signInWithPassword(identity, password, { mfaId })` |
+| `oauth2` | `signInWithOAuth2` | `signInWithOAuth2(provider, { mfaId })`, with a provider already linked to the account |
+| `phoneCode` | `signInWithPhoneCode` | `requestPhoneCode("", { mfaId })`, then `signInWithPhoneCode("", code, { mfaId })`. Texted to the account's verified phone, with phone sign-in on. |
+| `emailCode` | | `requestEmailCode({ mfaId })`, then `signInWithEmailCode(code, { mfaId })`. Emailed to the account's verified email. |
+| `totp` | | `signInWithTotp(code, { mfaId })` |
+| `recoveryCode` | | `signInWithRecoveryCode(code, { mfaId })` |
+
+Once an account has an authenticator app, only `totp` and `recoveryCode`
+count as its second step: an email or a text is easier to intercept than the
+app.
+
+An `mfaId` works once, until `duration` runs out, and only for its account.
+A new password or token key, as from a password reset, ends it. Five wrong
+codes end it too, and the first step must be done again. Wrong codes of every
+kind count against the account as well: ten within 15 minutes block its codes
+for the rest of that window, and a right code clears the count. Emails and
+texts are capped as for every other code.
+
+Every second-step route takes `cookie: true`, like the sign-ins, for a cookie
+session.
+
+## After an OAuth2 sign-in
+
+The browser is navigating, so the `mfaId` cannot be returned as JSON. The
+callback keeps it in an `HttpOnly` cookie, `__Host-nextbase_mfa`
+(`nextbase_mfa` over plain HTTP), for `duration` seconds, and redirects to
+your `redirect` page with `?mfa=required&methods=totp,recoveryCode`. Nothing
+secret is in the URL.
+
+On that page, take the second step without an `mfaId`: the server uses the
+cookie, and the session goes in a cookie too.
+
+```ts
+const params = new URLSearchParams(location.search);
+if (params.get("mfa") === "required") {
+  const methods = params.get("methods")?.split(",") ?? [];
+  // For example, with an authenticator app:
+  await nb.collection("users").signInWithTotp(code);
+}
+```
+
+As with the session cookie, these requests must come from your site.
+
+## Authenticator apps
+
+Any TOTP app works: 6 digits every 30 seconds, on SHA-1, as RFC 6238
+describes. A code is accepted for one step either side of now, for clocks that
+drift, and each step once, so a code seen over a shoulder cannot be reused.
+
+Setting one up needs:
+
+- the [`secretKey`](/docs/guides/production#secret-key) option, which encrypts
+  the app's secret in the database;
+- a verified email or phone, so the account can be recovered;
+- the password, unless the session signed in within the last 10 minutes.
+
+```ts
+const users = nb.collection("users");
+const { secret, uri } = await users.startTotp(me.id, { password });
+```
+
+Show `uri`, an `otpauth://totp/...` URI, as a QR code for the app to scan, and
+`secret` for typing in by hand. Draw it in the browser, so the secret never
+leaves it as an image, for example with the `qrcode` package:
+
+```tsx
+import QRCode from "qrcode";
+
+const svg = await QRCode.toString(uri, { type: "svg" });
+// <div dangerouslySetInnerHTML={{ __html: svg }} />
+```
+
+Then confirm with a code from the app, within 15 minutes:
+
+```ts
+const recoveryCodes = await users.confirmTotp(me.id, code);
+```
+
+From now on, sign-ins ask for the app. Confirming gives the account a new
+token key: every other session is signed out, and this one is kept and
+records `totp` as one of its methods. The owner gets an email.
+
+## Recovery codes
+
+Confirming returns 10 recovery codes such as `7Q2M-K8WD-3HJX-TP9C`. They are
+shown only once: ask the user to keep them somewhere safe. Each works once,
+in place of a code from the app; case, spaces and dashes do not matter. Using
+one emails the owner with the number left.
+
+```ts
+const { totp, recoveryCodesLeft } = await users.getMfa(me.id);
+const fresh = await users.regenerateRecoveryCodes(me.id, codeFromApp);
+```
+
+Regenerating replaces every old code.
+
+## Sensitive changes
+
+Once an account has an app, these need a code from it, or a recovery code:
+
+- removing the app: `removeTotp(me.id, code)`; sessions are kept and the owner
+  gets an email;
+- regenerating recovery codes;
+- changing the password with `oldPassword`: send the code as `mfaCode`, as in
+  `update(me.id, { password, passwordConfirm, oldPassword, mfaCode })`;
+- confirming an email change: `confirmEmailChange(token, password, { mfaCode })`.
+
+Only the account itself can manage its app, never a superuser for it, and
+never an [impersonation](/docs/guides/auth/impersonation) session. A
+superuser who lost their app can have it removed from the command line:
+
+```sh
+npx nextbase superuser mfa-reset ops@example.com
+```
+
+## In rules
+
+`@request.auth.mfa` is `true` when the session signed in with two different
+methods:
+
+```ts
+await superuser.collections.update("payouts", {
+  listRule: '@request.auth.id != "" && @request.auth.mfa = true',
+});
+```
+
+Sessions created before multi-factor sign-in existed, and impersonation
+sessions, read `false`. Hooks see the methods as `e.principal.methods`.
+
+## What is not included
+
+There are no trusted or remembered devices: every sign-in that must take a
+second step takes it.

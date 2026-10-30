@@ -427,6 +427,17 @@ class Compiler {
     const { principal, schema } = this.#context;
     const { record, collection } = principal;
     const blank: Constant = { kind: 'constant', value: BLANK, type: undefined };
+    // Whether the session took two different sign-in steps.
+    if (name === 'mfa') {
+      if (modifier !== undefined)
+        throw new FilterError(`Unknown modifier ":${modifier}".`);
+      const methods = new Set(principal.session?.methods ?? []);
+      return {
+        kind: 'constant',
+        value: record !== undefined && methods.size >= 2,
+        type: 'bool',
+      };
+    }
     if (name === 'collectionId' || name === 'collectionName') {
       if (modifier !== undefined)
         throw new FilterError(`Unknown modifier ":${modifier}".`);

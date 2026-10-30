@@ -10,7 +10,10 @@ import type {
   ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
+  MfaStatus,
   RecordModel,
+  RecoveryCodes,
+  TotpSetup,
 } from './shared/api.ts';
 
 export interface RecordOptions extends SendOptions {
@@ -23,6 +26,16 @@ export interface RecordOptions extends SendOptions {
 export interface AuthOptions extends RecordOptions {
   /** Keep the session in an HttpOnly cookie instead of returning a token. */
   cookie?: boolean;
+}
+
+/**
+ * A sign-in step that may be the second: `mfaId` comes from
+ * {@link isMfaRequired}. Without it, the second step after an OAuth2 sign-in
+ * uses the id the server kept in an HttpOnly cookie, and ends with a cookie
+ * session.
+ */
+export interface SecondStepOptions extends AuthOptions {
+  mfaId?: string;
 }
 
 export interface ImpersonateOptions extends AuthOptions {
@@ -49,6 +62,8 @@ export interface OAuth2Options {
   redirect?: string;
   /** App path to return to with `?error=` on failure. Defaults to `redirect`. */
   errorRedirect?: string;
+  /** Takes the second step of this sign-in, with a provider linked to the account. */
+  mfaId?: string;
 }
 
 const MAX_PER_PAGE = 1000;
@@ -225,14 +240,116 @@ export class RecordService<T extends RecordModel = RecordModel> {
   async signInWithPassword(
     identity: string,
     password: string,
-    options: AuthOptions = {},
+    options: SecondStepOptions = {},
   ): Promise<AuthResponse<T>> {
-    const { cookie, ...rest } = options;
+    const { cookie, mfaId, ...rest } = options;
     return this.#signIn('/auth-with-password', rest, {
       identity,
       password,
+      ...(mfaId !== undefined && { mfaId }),
       ...(cookie && { cookie: true }),
     });
+  }
+
+  /** The second step of a sign-in, with a code from the account's authenticator app. */
+  async signInWithTotp(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-totp', code, options);
+  }
+
+  /** The second step of a sign-in, with a recovery code. Each works once. */
+  async signInWithRecoveryCode(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-recovery-code', code, options);
+  }
+
+  /** Emails a code for the second step of a sign-in to the account's verified email. */
+  async requestEmailCode(
+    options: SendOptions & { mfaId?: string } = {},
+  ): Promise<void> {
+    const { mfaId, ...rest } = options;
+    await this.#post(
+      '/request-email-code',
+      mfaId === undefined ? {} : { mfaId },
+      rest,
+    );
+  }
+
+  /** The second step of a sign-in, with a code from {@link requestEmailCode}. */
+  async signInWithEmailCode(
+    code: string,
+    options: SecondStepOptions = {},
+  ): Promise<AuthResponse<T>> {
+    return this.#secondStep('/auth-with-email-code', code, options);
+  }
+
+  /** Whether the signed-in record has an authenticator app, and its recovery codes left. */
+  getMfa(recordId: string, options?: SendOptions): Promise<MfaStatus> {
+    return this.#send(`/records/${encodeURIComponent(recordId)}/mfa`, options);
+  }
+
+  /**
+   * Starts setting up an authenticator app for the signed-in record: show
+   * the `uri` as a QR code, then confirm with a code from the app within 15
+   * minutes. Needs the password, unless the session signed in in the last
+   * 10 minutes.
+   */
+  startTotp(
+    recordId: string,
+    options: SendOptions & { password?: string } = {},
+  ): Promise<TotpSetup> {
+    const { password, ...rest } = options;
+    return this.#client.send(this.#mfaPath(recordId, '/totp'), {
+      ...rest,
+      method: 'POST',
+      body: password === undefined ? {} : { password },
+    });
+  }
+
+  /**
+   * Turns the authenticator app on with a code from it, and returns the
+   * recovery codes to keep, shown only once. Other sessions are signed out.
+   */
+  async confirmTotp(
+    recordId: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<string[]> {
+    const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
+      this.#mfaPath(recordId, '/totp/confirm'),
+      { ...options, method: 'POST', body: { code } },
+    );
+    return recoveryCodes;
+  }
+
+  /** Turns the authenticator app off, with a code from it or a recovery code. */
+  async removeTotp(
+    recordId: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<void> {
+    await this.#client.send(this.#mfaPath(recordId, '/totp'), {
+      ...options,
+      method: 'DELETE',
+      body: { code },
+    });
+  }
+
+  /** Replaces the recovery codes, with a code from the app or a recovery code. */
+  async regenerateRecoveryCodes(
+    recordId: string,
+    code: string,
+    options?: SendOptions,
+  ): Promise<string[]> {
+    const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
+      this.#mfaPath(recordId, '/recovery-codes'),
+      { ...options, method: 'POST', body: { code } },
+    );
+    return recoveryCodes;
   }
 
   /**
@@ -315,6 +432,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
       {
         redirect: options.redirect,
         errorRedirect: options.errorRedirect,
+        mfaId: options.mfaId,
         ...(options.link && { link: true }),
       },
     );
@@ -416,21 +534,34 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post('/request-email-change', { newEmail }, options);
   }
 
-  /** Confirms an email change with its token and the current password. Ends every session. */
+  /**
+   * Confirms an email change with its token and the current password, and
+   * with an authenticator app a code from it or a recovery code. Ends every
+   * session.
+   */
   async confirmEmailChange(
     token: string,
     password: string,
-    options?: SendOptions,
+    options: SendOptions & { mfaCode?: string } = {},
   ): Promise<void> {
-    await this.#post('/confirm-email-change', { token, password }, options);
+    const { mfaCode, ...rest } = options;
+    await this.#post(
+      '/confirm-email-change',
+      { token, password, ...(mfaCode !== undefined && { mfaCode }) },
+      rest,
+    );
   }
 
   /**
    * Texts a sign-in code to `phone`, such as `+255712345678`; a new phone signs up.
    * Never reveals whether an account exists.
    */
-  async requestPhoneCode(phone: string, options?: SendOptions): Promise<void> {
-    await this.#post('/request-phone-code', { phone }, options);
+  async requestPhoneCode(
+    phone: string,
+    options: SendOptions & { mfaId?: string } = {},
+  ): Promise<void> {
+    const { mfaId, ...rest } = options;
+    await this.#post('/request-phone-code', phoneBody(phone, mfaId), rest);
   }
 
   /** Texts a password reset code if `phone` is an account's verified phone. Never reveals which. */
@@ -448,11 +579,11 @@ export class RecordService<T extends RecordModel = RecordModel> {
   async signInWithPhoneCode(
     phone: string,
     code: string,
-    options: AuthOptions = {},
+    options: SecondStepOptions = {},
   ): Promise<AuthResponse<T>> {
-    const { cookie, ...rest } = options;
+    const { cookie, mfaId, ...rest } = options;
     return this.#signIn('/auth-with-phone-code', rest, {
-      phone,
+      ...phoneBody(phone, mfaId),
       code,
       ...(cookie && { cookie: true }),
     });
@@ -516,6 +647,23 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return response;
   }
 
+  #secondStep(
+    path: string,
+    code: string,
+    options: SecondStepOptions,
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, ...rest } = options;
+    return this.#signIn(path, rest, {
+      code,
+      ...(mfaId !== undefined && { mfaId }),
+      ...(cookie && { cookie: true }),
+    });
+  }
+
+  #mfaPath(recordId: string, path: string): string {
+    return `/collections/${encodeURIComponent(this.#collection)}/records/${encodeURIComponent(recordId)}${path}`;
+  }
+
   #save(response: AuthResponse<T>): void {
     this.#client.authStore.save(response.token ?? '', response.record);
   }
@@ -543,4 +691,19 @@ export class RecordService<T extends RecordModel = RecordModel> {
       { ...rest, query: { ...rest.query, expand, fields } },
     );
   }
+}
+
+/**
+ * The body of a phone code request. A second step texts the record's own
+ * phone, so it sends none: pass `""` with an `mfaId`, or after an OAuth2
+ * sign-in, whose id is in a cookie.
+ */
+function phoneBody(
+  phone: string,
+  mfaId: string | undefined,
+): Record<string, unknown> {
+  return {
+    ...(phone !== '' && { phone }),
+    ...(mfaId !== undefined && { mfaId }),
+  };
 }

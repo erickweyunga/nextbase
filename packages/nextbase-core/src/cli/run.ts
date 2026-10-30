@@ -20,6 +20,8 @@ Commands:
   migrate               Create or upgrade NextBase's tables
   superuser --email E   Add a superuser; asks for the password, or reads
                         NEXTBASE_SUPERUSER_PASSWORD
+  superuser mfa-reset E Remove the authenticator app and recovery codes of
+                        the superuser with email E
   typegen [--out F]     Write TypeScript types for every collection
                         (default: nextbase-types.ts)
   help                  Show this message
@@ -44,8 +46,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     io.out(HELP);
     return 0;
   }
+  const mfaReset =
+    command === 'superuser' && rest[0] === 'mfa-reset' && rest.length === 2;
   if (
-    rest.length > 0 ||
+    (rest.length > 0 && !mfaReset) ||
     !['migrate', 'superuser', 'typegen'].includes(command)
   ) {
     io.err(`Unknown command: ${positionals.join(' ')}`);
@@ -67,6 +71,15 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     if (command === 'migrate') {
       await nextbase.migrate();
       io.out("NextBase's tables are up to date.");
+    } else if (mfaReset) {
+      const email = rest[1] as string;
+      if (!(await nextbase.resetSuperuserMfa(email))) {
+        io.err(`No superuser has the email ${email}.`);
+        return 1;
+      }
+      io.out(
+        `Removed the authenticator app and recovery codes of the superuser ${email}.`,
+      );
     } else if (command === 'superuser') {
       return await superuser(nextbase, values.email, io);
     } else {

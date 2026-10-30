@@ -180,7 +180,11 @@ export async function unlinkUnproven(
     .execute();
 }
 
-async function findLinked(
+/**
+ * The record a provider account is linked to, if any. Never links or signs
+ * up, for a sign-in step that only proves an existing link.
+ */
+export async function findLinked(
   q: Builder,
   collection: AuthCollection,
   provider: string,

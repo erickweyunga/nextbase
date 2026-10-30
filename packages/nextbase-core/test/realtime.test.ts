@@ -961,9 +961,12 @@ describe('realtime', () => {
         passwordConfirm: PASSWORD,
       });
       const counted = counting(t.pool);
+      // Without request logs, whose writes would land in a count whenever
+      // they are flushed.
       const instance = new NextBase({
         database: counted.pool,
         realtime: { collections: ['rooms'], listenUrl: t.url },
+        logs: false,
       });
       const open: OpenStream[] = [];
       const trips = async (name: string) => {
@@ -1124,9 +1127,12 @@ describe('realtime', () => {
 
   it('reads each page of events once for every stream', async () => {
     const counted = counting(t.pool);
+    // Without request logs, whose writes would land in a count whenever
+    // they are flushed.
     const instance = new NextBase({
       database: counted.pool,
       realtime: { collections: ['rooms'], listenUrl: t.url },
+      logs: false,
     });
     const before = await listeners(t);
     const many: OpenStream[] = [];

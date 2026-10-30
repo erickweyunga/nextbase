@@ -12,6 +12,7 @@ import {
   Tx,
 } from '@nextbasejs/dbx';
 import { checkBreached } from '../auth/breached.ts';
+import { hasAuthenticator, type Mfa } from '../auth/mfa.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
 import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
@@ -73,6 +74,8 @@ export interface RecordsContext {
   source?: HookSource;
   /** For a write made through `e.nextbase`: the on hooks that led to it. */
   hookChain?: readonly string[];
+  /** Checks the code a password change needs once an authenticator app is set up. */
+  mfa?: Mfa;
 }
 
 /**
@@ -758,6 +761,16 @@ export async function planUpdateRecord(
   const old = ruleChecked
     ? await checkOldPasswordFirst(ctx, collection, id, input)
     : undefined;
+  // The code an authenticator app adds, checked before the transaction too,
+  // once the old password matched there.
+  const steppedUp =
+    old?.matched !== undefined &&
+    (await checkStepUp(
+      ctx,
+      collection,
+      await storedRow(ctx.pool, collection, id),
+      input.mfaCode,
+    ));
   await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
   await storeFiles(ctx, collection, id, newFiles);
@@ -814,6 +827,10 @@ export async function planUpdateRecord(
               prepared.oldPassword,
             );
         if (!matches) throw wrongOldPassword();
+        // With an authenticator app, the password alone is not enough.
+        if (!steppedUp) {
+          await checkStepUp(ctx, collection, existing, input.mfaCode);
+        }
       }
       await keepFiles(tx, ctx, collection, id, prepared, false);
       let stored = existing;
@@ -1164,6 +1181,46 @@ async function checkOldPasswordFirst(
     oldPassword,
   );
   return { matched: matches ? stored : undefined };
+}
+
+/**
+ * A code from the record's authenticator app, or a recovery code, when it
+ * has one. Counted and spent outside the write's transaction, as the old
+ * password is. Without the MFA service, a record with an app is refused.
+ */
+async function checkStepUp(
+  ctx: RecordsContext,
+  collection: Collection,
+  record: Row | undefined,
+  code: unknown,
+): Promise<boolean> {
+  if (collection.type !== 'auth' || !record) return false;
+  if (ctx.mfa) {
+    await ctx.mfa.stepUp(ctx.pool, collection, record, code, 'mfaCode');
+    return true;
+  }
+  if (await hasAuthenticator(ctx.pool, collection.id, record.id as string)) {
+    throw new ApiError(400, writeFailed(false), {
+      mfaCode: {
+        code: 'validation_invalid_code',
+        message: 'A code from the authenticator app is needed.',
+      },
+    });
+  }
+  return true;
+}
+
+async function storedRow(
+  q: Builder,
+  collection: Collection,
+  id: string,
+): Promise<Row | undefined> {
+  const [row] = await q
+    .select()
+    .from(table(collection.name))
+    .where(hash({ id }))
+    .all();
+  return row;
 }
 
 function wrongOldPassword(): ApiError {
@@ -1763,9 +1820,16 @@ async function deleteRows(
   } else {
     await query.execute();
   }
-  // Their sessions end, and their linked provider accounts may sign up again.
+  // Their sessions and sign-in steps end, and their linked provider
+  // accounts may sign up again.
   if (collection.type === 'auth') {
-    for (const name of ['_sessions', '_linked_accounts']) {
+    for (const name of [
+      '_sessions',
+      '_linked_accounts',
+      '_mfas',
+      '_totp',
+      '_recovery_codes',
+    ]) {
       await tx
         .newQuery(
           `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = ANY({:ids}::text[])`,
