@@ -444,6 +444,25 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    name: '0012_rate_limits',
+    async up(tx) {
+      const exec = (sql: string): Promise<unknown> =>
+        tx.newQuery(sql).execute();
+      // Requests per caller and rule in the current window. Unlogged: the
+      // counts are short-lived, and a crash only resets them. Free space in
+      // each page lets updates stay HOT, in place.
+      await exec(`
+        CREATE UNLOGGED TABLE {{${table('_rate_limits')}}} (
+          key        text PRIMARY KEY,
+          hits       integer NOT NULL,
+          window_end timestamptz NOT NULL
+        ) WITH (fillfactor = 70)`);
+      await exec(
+        `CREATE INDEX "_rate_limits_window_end" ON {{${table('_rate_limits')}}} (window_end)`,
+      );
+    },
+  },
 ];
 
 /**

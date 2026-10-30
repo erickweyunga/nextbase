@@ -44,7 +44,9 @@ describe('records hardening', () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    // Each test writes many records a second as one user, past the default
+    // `*:create` limit; rate limits have their own tests.
+    nextbase = new NextBase({ database: t.pool, rateLimits: false });
     await nextbase.createSuperuser('admin@example.com', 'admin password 123');
     const login = async (
       collection: string,

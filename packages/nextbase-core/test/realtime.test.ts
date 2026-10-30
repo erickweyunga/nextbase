@@ -1421,8 +1421,12 @@ describe('realtime', () => {
       const elsewhere = (r: Record<string, unknown>) => r.name === 'elsewhere';
       await received(listening, 1, elsewhere);
       await received(polling, 1, elsewhere);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]?.[0])).toMatch(/cannot listen/);
+      // Only the deaf instance cannot listen. The other warning says guests
+      // are not rate limited, since their IP is unknown.
+      const listen = warn.mock.calls.filter((c) =>
+        /cannot listen/.test(String(c[0])),
+      );
+      expect(listen).toHaveLength(1);
       await polling.close();
       await listening.close();
     } finally {

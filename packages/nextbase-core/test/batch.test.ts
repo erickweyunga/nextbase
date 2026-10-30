@@ -27,7 +27,9 @@ describe('batch API', () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    nextbase = new NextBase({ database: t.pool });
+    // Tests send many batches a second as one user, past the default
+    // `POST /batch` limit; rate limits have their own tests.
+    nextbase = new NextBase({ database: t.pool, rateLimits: false });
     admin = nextbase.client({ superuser: true });
     const users = await admin.collections.create({
       name: 'users',

@@ -45,6 +45,11 @@ import {
 } from './files/storage.ts';
 import { Logger, type LogsOptions } from './logs/logger.ts';
 import { type RequestOutcome, requestEntry } from './logs/request.ts';
+import {
+  type Limited,
+  RateLimits,
+  type RateLimitsOptions,
+} from './rate-limits.ts';
 import { Realtime, type RealtimeOptions } from './realtime/stream.ts';
 import {
   Hooks,
@@ -79,6 +84,9 @@ const MAX_HOOK_DEPTH = 8;
 
 const SUPERUSER: Principal = { superuser: true };
 
+// Routes whose first parameter is a collection.
+const COLLECTION_PATH = /^\/(?:collections|files)\//;
+
 export type {
   ApiErrorBody,
   AuthMethods,
@@ -109,6 +117,7 @@ export type { ClientIpOption } from './client-ip.ts';
 export { ApiError } from './errors.ts';
 export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
 export type { LogsOptions } from './logs/logger.ts';
+export type { RateLimitRule, RateLimitsOptions } from './rate-limits.ts';
 export type { RealtimeOptions } from './realtime/stream.ts';
 export type {
   BeforeCreateEvent,
@@ -200,11 +209,19 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    */
   logs?: false | LogsOptions;
   /**
-   * Where the client's IP comes from, for logs (with `logs.ip`). Defaults to
-   * `"vercel"` on Vercel; elsewhere the IP is unknown unless you name the
-   * header your proxy sets. Never used to decide who is signed in.
+   * Where the client's IP comes from, for logs (with `logs.ip`) and rate
+   * limits. Defaults to `"vercel"` on Vercel; elsewhere the IP is unknown
+   * unless you name the header your proxy sets. Never used to decide who is
+   * signed in.
    */
   clientIp?: ClientIpOption;
+  /**
+   * Limits HTTP requests per caller, counted in the database: signed-in
+   * callers per record, guests per IP from `clientIp`. On by default, with
+   * rules for sign-ins, creates, batches and every other route; `false`
+   * turns it off.
+   */
+  rateLimits?: false | RateLimitsOptions;
 }
 
 /**
@@ -261,6 +278,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #realtime: Realtime | undefined;
   readonly #logger: Logger;
   readonly #clientIp: ClientIp;
+  readonly #rateLimits: RateLimits | undefined;
   /** Work running after responses, such as after hooks and emails. */
   readonly #background = new Set<Promise<unknown>>();
   #db: DB | undefined;
@@ -296,6 +314,13 @@ export class NextBase<C extends Collections = Collections> {
       waitUntil: this.#waitUntil,
     });
     this.#clientIp = clientIpReader(options.clientIp);
+    this.#rateLimits =
+      options.rateLimits === false
+        ? undefined
+        : new RateLimits(options.rateLimits ?? {}, {
+            logger: this.#logger,
+            waitUntil: this.#waitUntil,
+          });
     this.#mailer = new Mailer(
       options.mail,
       appUrl,
@@ -671,6 +696,34 @@ export class NextBase<C extends Collections = Collections> {
     }
   }
 
+  /**
+   * What a request is limited by. Its collection is looked up only when a
+   * rule could need it, in the cached schema if there is one: outdated by
+   * a rename at worst until the next request reads it.
+   */
+  async #limited(
+    db: DB,
+    route: Route,
+    method: string,
+    path: string,
+    params: readonly string[],
+    schema: Schema | undefined,
+  ): Promise<Limited> {
+    const tags = route.tags ?? [];
+    const limited: Limited = {
+      method,
+      route: path,
+      tags,
+      collection: undefined,
+    };
+    if (!this.#rateLimits?.needsCollection(tags)) return limited;
+    const idOrName = params[0];
+    if (idOrName === undefined || !COLLECTION_PATH.test(path)) return limited;
+    const current =
+      schema ?? this.#schema.cached ?? (await this.#schema.get(db));
+    return { ...limited, collection: current.find(idOrName) };
+  }
+
   /** What every route gets from this instance. */
   #services() {
     return {
@@ -721,6 +774,7 @@ export class NextBase<C extends Collections = Collections> {
           effects,
           hookChain: join.chain,
           noteError: () => {},
+          rateLimit: async () => {},
         }),
       );
       join.effects.absorb(effects);
@@ -800,6 +854,30 @@ export class NextBase<C extends Collections = Collections> {
         try {
           await this.migrate();
           db = this.#connection();
+          const params = match.slice(1).map((p) => decodeURIComponent(p));
+          const connection = db;
+          // Rate limits apply to HTTP requests only: in-process requests
+          // come from the app itself.
+          const rateLimit = async (
+            caller: Principal,
+            requests?: readonly Limited[],
+          ): Promise<void> => {
+            if (!http || !this.#rateLimits) return;
+            await this.#rateLimits.check(
+              connection,
+              { principal: caller, ip: this.#clientIp(request) },
+              requests ?? [
+                await this.#limited(
+                  connection,
+                  matched,
+                  verb,
+                  route,
+                  params,
+                  schema,
+                ),
+              ],
+            );
+          };
           let caller = principal;
           if (!caller) {
             // With a token, this also reads the schema, in the same query as
@@ -809,6 +887,13 @@ export class NextBase<C extends Collections = Collections> {
             const resolved = await resolvePrincipal(request, db, this.#schema, {
               extend: http && !stream,
               writeCookie: stream ? undefined : writeCookie,
+            }).catch(async (error: unknown) => {
+              // An invalid token cost a lookup too, so it counts, as a
+              // guest's request.
+              if (error instanceof ApiError && error.status === 401) {
+                await rateLimit({ superuser: false });
+              }
+              throw error;
             });
             schema = resolved.schema;
             caller = resolved.principal;
@@ -816,10 +901,14 @@ export class NextBase<C extends Collections = Collections> {
             if (http) setCookie = resolved.setCookie;
             signedOut = http && !caller.record;
           }
+          // Once the caller is known and before the route's transaction
+          // opens, in its own autocommit statement, so refusals stay
+          // counted whatever the route would have done.
+          const counted = caller;
+          if (!matched.countsItself) await rateLimit(counted);
           // In-process requests come from the app itself, not from someone
           // setting it up.
           if (http) await this.#announceSetup(db);
-          const params = match.slice(1).map((p) => decodeURIComponent(p));
           // Browsers send the cookie on cross-site requests too, so cookie writes
           // must be same-origin.
           if (http && verb !== 'GET' && caller.viaCookie) {
@@ -844,6 +933,7 @@ export class NextBase<C extends Collections = Collections> {
             noteError: (error) => {
               trace.noted = error;
             },
+            rateLimit: (requests) => rateLimit(counted, requests),
           });
           await tx?.commit();
           effects.commit();

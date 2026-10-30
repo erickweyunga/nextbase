@@ -67,8 +67,26 @@ is stable and meant for programs; `message` is for people.
 | `409` | conflict with a concurrent change; retrying works |
 | `413` | request body too large |
 | `415` | request body is not JSON |
-| `429` | too many failed sign-in attempts |
+| `429` | over a rate limit, too many failed sign-in attempts, or too many realtime streams; see below |
 | `500` | unexpected server error, logged on the server |
+
+### Too many requests
+
+Over a [rate limit](/docs/guides/rate-limits), the message is
+`Too many requests.` and the response says when to retry and which rule
+refused it:
+
+```http
+Retry-After: 2
+RateLimit-Policy: "*:auth";q=2;w=3
+RateLimit: "*:auth";r=0;t=2
+```
+
+`Retry-After` and `t` are the seconds until the window ends, and `q` the
+requests the rule allows per window of `w` seconds. A `429` also answers too
+many failed sign-ins to one account, `Too many attempts. Try again later.`
+with `Retry-After` only, and a realtime stream past the 10 one account may
+keep open.
 
 ### Field error codes
 

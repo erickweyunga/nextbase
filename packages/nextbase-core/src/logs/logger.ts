@@ -23,7 +23,8 @@ export type FailureType =
   | 'mail'
   | 'sms'
   | 'realtime'
-  | 'oauth2';
+  | 'oauth2'
+  | 'rateLimits';
 
 /**
  * How often each instance deletes expired entries, in milliseconds. Tests

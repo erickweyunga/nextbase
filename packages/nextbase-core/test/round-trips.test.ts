@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { NextBase } from '../src/index.ts';
+import { rateLimitTimings } from '../src/rate-limits.ts';
 import { call } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
 
@@ -43,7 +44,9 @@ describe('round trips per request', () => {
 
   beforeAll(async () => {
     t = await createTestDatabase();
-    // Log writes are background work, not the request's own round trips.
+    // Log writes and deletes of expired rate limit counts are background
+    // work, not the request's own round trips.
+    rateLimitTimings.pruneEvery = Number.POSITIVE_INFINITY;
     nextbase = new NextBase({ database: t.pool, logs: false });
     await nextbase.createSuperuser('admin@example.com', 'admin password 123');
     const admin = nextbase.client({ superuser: true });
@@ -137,13 +140,14 @@ describe('round trips per request', () => {
     expect(trips()).toBe(3);
   });
 
-  it('takes one more with a session, to check it', async () => {
+  it('takes two more with a session, to check it and count it', async () => {
     const { other, trips } = await another();
     const reply = await call(other, 'GET', '/collections/notes/records', {
       token,
     });
     expect(reply.body.totalItems).toBe(3);
-    expect(trips()).toBe(4);
+    // And one to count the request against its rate limit.
+    expect(trips()).toBe(5);
   });
 
   it('counts a page past the end with one more query', async () => {
@@ -168,14 +172,15 @@ describe('round trips per request', () => {
     expect(trips()).toBe(6);
   });
 
-  it('takes seven to create or update a record and five to delete one', async () => {
+  it('takes eight to create or update a record and six to delete one', async () => {
     const { other, trips } = await another();
     const created = await call(other, 'POST', '/collections/posts/records', {
       token,
       body: { title: 'draft', author: memberId },
     });
     expect(created.status).toBe(200);
-    expect(trips()).toBe(7);
+    // One of them counts the request against its rate limit.
+    expect(trips()).toBe(8);
 
     const path = `/collections/posts/records/${created.body.id}`;
     const updated = await call(other, 'PATCH', path, {
@@ -183,10 +188,10 @@ describe('round trips per request', () => {
       body: { title: 'final' },
     });
     expect(updated.body.title).toBe('final');
-    expect(trips()).toBe(7);
+    expect(trips()).toBe(8);
 
     expect((await call(other, 'DELETE', path, { token })).status).toBe(204);
-    expect(trips()).toBe(5);
+    expect(trips()).toBe(6);
   });
 
   it('deletes a record and what cascades from it in a few queries per level', async () => {

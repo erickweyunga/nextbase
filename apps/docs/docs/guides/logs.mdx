@@ -83,6 +83,7 @@ when it fails, with `data.type` saying what it was:
 | `sms` | Sending a text. |
 | `realtime` | Deleting old realtime events. |
 | `oauth2` | An OAuth2 sign-in that failed unexpectedly, besides its request's entry. |
+| `rateLimits` | Deleting expired [rate limit](/docs/guides/rate-limits) counts. |
 
 `data.error` and `data.stack` say what went wrong. These still go to the
 server console too, as before.
