@@ -1,6 +1,6 @@
-import type { NextBase } from "../src/index.ts";
+import type { NextBase } from '../src/index.ts';
 
-export const origin = "http://localhost:3000";
+export const origin = 'http://localhost:3000';
 
 export interface Reply {
   status: number;
@@ -22,17 +22,17 @@ export async function call(
 ): Promise<Reply> {
   const headers: Record<string, string> = { ...options.headers };
   if (options.body !== undefined)
-    headers["content-type"] ??= "application/json";
+    headers['content-type'] ??= 'application/json';
   if (options.token) headers.authorization = `Bearer ${options.token}`;
   const body =
     options.body === undefined
       ? undefined
-      : typeof options.body === "string"
+      : typeof options.body === 'string'
         ? options.body
         : JSON.stringify(options.body);
   const response = await nextbase.handle(
     new Request(`${origin}/api/nextbase${path}`, { method, headers, body }),
   );
   const text = await response.text();
-  return { status: response.status, body: text === "" ? {} : JSON.parse(text) };
+  return { status: response.status, body: text === '' ? {} : JSON.parse(text) };
 }

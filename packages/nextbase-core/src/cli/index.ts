@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
-import { newPrompter } from "./prompt.ts";
-import { type Io, run } from "./run.ts";
+import { existsSync } from 'node:fs';
+import { newPrompter } from './prompt.ts';
+import { type Io, run } from './run.ts';
 
 // loadEnvFile keeps set variables, so precedence is env, .env.local, .env (as in Next.js).
-for (const file of [".env.local", ".env"]) {
+for (const file of ['.env.local', '.env']) {
   if (existsSync(file)) process.loadEnvFile(file);
 }
 

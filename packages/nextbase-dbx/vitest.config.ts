@@ -1,8 +1,8 @@
-import { defineConfig, type ViteUserConfig } from "vitest/config";
+import { defineConfig, type ViteUserConfig } from 'vitest/config';
 
 const config: ViteUserConfig = defineConfig({
   test: {
-    include: ["test/**/*.test.ts"],
+    include: ['test/**/*.test.ts'],
   },
 });
 

@@ -66,7 +66,7 @@ Every field has `name`, `type`, `required` (must not be empty) and `hidden`
 | `autodate` | ISO 8601 string, set by the server | | `onCreate`, `onUpdate` |
 | `select`   | one value, or an array with `maxSelect` > 1 | `""` or `[]` | `values`, `maxSelect` |
 | `relation` | record id, or an array with `maxSelect` > 1 | `""` or `[]` | `collectionId`, `maxSelect`, `cascadeDelete` |
-| `file`     | stored file name, or an array with `maxSelect` > 1 | `""` or `[]` | `maxSelect`, `maxSize` (bytes, default 5 MiB), `mimeTypes`, `protected`. See [Files](/docs/guides/files) |
+| `file`     | stored file name, or an array with `maxSelect` > 1 | `""` or `[]` | `maxSelect`, `maxSize` (bytes, default 5 MiB), `mimeTypes`, `protected`, `thumbs`. See [Files](/docs/guides/files) |
 | `json`     | any JSON | `null` | `maxSize` (bytes, default 1 MiB) |
 
 Dates are returned in UTC with milliseconds, such as

@@ -1,5 +1,5 @@
 /** Default mount point of the NextBase route handler. */
-export const DEFAULT_BASE_PATH = "/api/nextbase";
+export const DEFAULT_BASE_PATH = '/api/nextbase';
 
 /** One validation failure. `code` is stable; `message` is for humans. */
 export interface FieldError {
@@ -20,7 +20,7 @@ export interface ApiErrorBody {
 }
 
 export interface HealthResponse {
-  status: "ok";
+  status: 'ok';
 }
 
 /** A page of a list. With `skipTotal`, `totalItems` and `totalPages` are -1. */
@@ -56,12 +56,23 @@ export interface SessionModel {
   userAgent: string;
   /** Whether this is the session making the request. */
   current: boolean;
+  /**
+   * The id of the superuser acting as the record, set only on an
+   * impersonation session. Revoke it like any other session.
+   */
+  impersonatedBy?: string;
 }
 
 /** The caller's own session and record. */
 export interface CurrentSession<T extends RecordModel = RecordModel>
   extends SessionModel {
   record: T;
+}
+
+/** An impersonation's response: like a sign-in, with the new session. */
+export interface ImpersonateResponse<T extends RecordModel = RecordModel>
+  extends AuthResponse<T> {
+  session: SessionModel;
 }
 
 export interface SetupStatus {
@@ -93,6 +104,25 @@ export interface AuthProvider {
   name: string;
   /** Button label, such as `Google`. */
   displayName: string;
+}
+
+/** An entry of the server's log. */
+export interface LogModel {
+  id: string;
+  created: string;
+  /** -4 debug, 0 info, 4 warn, 8 error. */
+  level: number;
+  /** Such as `GET /api/nextbase/collections/posts/records`. */
+  message: string;
+  /** `type` says what it is: `request`, or the background work that failed. */
+  data: Record<string, unknown>;
+}
+
+/** The number of log entries in one hour. */
+export interface LogStat {
+  /** The start of the hour, in UTC. */
+  date: string;
+  total: number;
 }
 
 /** A provider account linked to an auth record. */

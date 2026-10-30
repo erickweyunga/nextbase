@@ -1,24 +1,24 @@
-import type { AuthCollection } from "@nextbasejs/client";
-import { and, type DB, type Expression, hash, type Row } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { compileFilter } from "../filter/compiler.ts";
-import { normalizePhone } from "../phone.ts";
-import type { Schema } from "../schema/cache.ts";
-import { unstorableText } from "../storable.ts";
-import { emailIs, phoneIs } from "./identity.ts";
+import type { AuthCollection } from '@nextbasejs/client';
+import { and, type DB, type Expression, hash, type Row } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { compileFilter } from '../filter/compiler.ts';
+import { normalizePhone } from '../phone.ts';
+import type { Schema } from '../schema/cache.ts';
+import { unstorableText } from '../storable.ts';
+import { emailIs, phoneIs } from './identity.ts';
 import {
   hashPassword,
   needsRehash,
   verifyDummyPassword,
   verifyPassword,
-} from "./password.ts";
+} from './password.ts';
 import {
   accountKey,
   clearAttempts,
   countAttempt,
   identityKey,
-} from "./throttle.ts";
+} from './throttle.ts';
 
 // The field caps passwords at 1024 chars; rejecting longer ones bounds hashing cost.
 const MAX_PASSWORD_INPUT = 1024;
@@ -33,22 +33,22 @@ export async function checkAuthRule(
   collection: AuthCollection,
   id: string,
 ): Promise<void> {
-  if (collection.authRule === "") return;
+  if (collection.authRule === '') return;
   const denied = new ApiError(
     403,
-    "This account does not meet the requirements to sign in.",
+    'This account does not meet the requirements to sign in.',
   );
   if (collection.authRule === null) throw denied;
-  const rule = compileFilter(collection.authRule, collection, "t0", {
+  const rule = compileFilter(collection.authRule, collection, 't0', {
     schema,
     principal: { superuser: false },
-    request: { method: "POST", query: {}, headers: {}, body: {} },
-    mode: "rule",
+    request: { method: 'POST', query: {}, headers: {}, body: {} },
+    mode: 'rule',
   });
   const rows = await db
-    .select("t0.id")
+    .select('t0.id')
     .from(`${table(collection.name)} t0`)
-    .where(and(hash({ "t0.id": id }), rule))
+    .where(and(hash({ 't0.id': id }), rule))
     .column();
   if (rows.length === 0) throw denied;
 }
@@ -61,7 +61,7 @@ export async function authWithPassword(
   identity: string,
   password: string,
 ): Promise<Row> {
-  const failed = new ApiError(400, "Failed to authenticate.");
+  const failed = new ApiError(400, 'Failed to authenticate.');
   // No stored identity can contain text Postgres cannot store.
   if (unstorableText(identity) !== undefined) throw failed;
   // Counted per typed identity, which may match no account, and per account.
@@ -103,11 +103,11 @@ async function findByIdentity(
 ): Promise<Row | undefined> {
   for (const name of collection.identityFields) {
     const field = collection.fields.find((f) => f.name === name);
-    if (!field || identity === "") continue;
+    if (!field || identity === '') continue;
     let condition: Expression;
-    if (field.type === "email") {
+    if (field.type === 'email') {
       condition = emailIs(name, identity);
-    } else if (field.type === "phone") {
+    } else if (field.type === 'phone') {
       const phone = normalizePhone(identity);
       if (phone === undefined) continue;
       condition = phoneIs(name, phone);

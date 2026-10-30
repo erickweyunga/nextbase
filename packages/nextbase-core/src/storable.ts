@@ -1,7 +1,7 @@
 // Values JavaScript accepts but Postgres rejects, checked up front to give a 400, not a 500.
 
 export function hasNul(value: string): boolean {
-  return value.includes("\u0000");
+  return value.includes('\u0000');
 }
 
 /**
@@ -10,8 +10,8 @@ export function hasNul(value: string): boolean {
  * stored with U+FFFD in its place, and jsonb rejects it.
  */
 export function unstorableText(value: string): string | undefined {
-  if (hasNul(value)) return "Cannot contain NUL characters.";
-  if (!value.isWellFormed()) return "Cannot contain unpaired surrogates.";
+  if (hasNul(value)) return 'Cannot contain NUL characters.';
+  if (!value.isWellFormed()) return 'Cannot contain unpaired surrogates.';
   return undefined;
 }
 
@@ -37,16 +37,16 @@ const ISO_8601 =
 export function parseDate(text: string): number {
   const m = ISO_8601.exec(text);
   if (!m) return Number.NaN;
-  const [, year, month, day, time = "00:00", zone = "Z"] = m;
+  const [, year, month, day, time = '00:00', zone = 'Z'] = m;
   let offset = zone.toUpperCase();
-  if (offset !== "Z") {
-    const digits = offset.slice(1).replace(":", "");
-    offset = `${offset[0]}${digits.slice(0, 2)}:${digits.slice(2) || "00"}`;
+  if (offset !== 'Z') {
+    const digits = offset.slice(1).replace(':', '');
+    offset = `${offset[0]}${digits.slice(0, 2)}:${digits.slice(2) || '00'}`;
   }
   return Date.parse(`${year}-${month}-${day}T${time}${offset}`);
 }
 
-const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
+const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
 
 // UTC with Postgres's BC notation: node-postgres's local-time form shifts dates
 // whose zone offset had seconds, and Postgres rejects `-004712-...` years.
@@ -56,7 +56,7 @@ export function timestampParam(date: Date): string {
   return (
     `${pad(bc ? 1 - year : year, 4)}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
     `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}+00` +
-    (bc ? " BC" : "")
+    (bc ? ' BC' : '')
   );
 }
 
@@ -76,11 +76,11 @@ export function parseTimestamptz(text: string): Date | undefined {
     h,
     mi,
     s,
-    fraction = "",
+    fraction = '',
     sign,
     oh,
-    om = "0",
-    os = "0",
+    om = '0',
+    os = '0',
     bc,
   ] = m as unknown as string[];
   const date = new Date(0);
@@ -90,12 +90,12 @@ export function parseTimestamptz(text: string): Date | undefined {
     Number(d),
   );
   // One step: an intermediate local time could fall outside JavaScript's range.
-  const k = sign === "+" ? -1 : 1;
+  const k = sign === '+' ? -1 : 1;
   date.setUTCHours(
     Number(h) + k * Number(oh),
     Number(mi) + k * Number(om),
     Number(s) + k * Number(os),
-    Number(fraction.padEnd(3, "0").slice(0, 3)),
+    Number(fraction.padEnd(3, '0').slice(0, 3)),
   );
   return Number.isNaN(date.getTime()) ? undefined : date;
 }

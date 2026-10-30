@@ -29,19 +29,21 @@ export function filter(
 }
 
 function literal(value: FilterValue, name: string): string {
-  if (value === null || value === undefined) return "null";
+  if (value === null || value === undefined) return 'null';
   switch (typeof value) {
-    case "string":
+    case 'string':
       return quote(value);
-    case "boolean":
+    case 'boolean':
       return String(value);
-    case "bigint":
+    case 'bigint':
       return value.toString();
-    case "number":
+    case 'number':
       if (!Number.isFinite(value)) {
         throw new Error(`filter(): {:${name}} is not a finite number.`);
       }
       return decimal(value);
+    default:
+      break;
   }
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
@@ -53,19 +55,19 @@ function literal(value: FilterValue, name: string): string {
 }
 
 function quote(value: string): string {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
 // Filters have no exponent syntax, so expand to plain decimals.
 function decimal(value: number): string {
-  if (Object.is(value, -0)) return "0";
+  if (Object.is(value, -0)) return '0';
   const text = String(value);
   const match = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(text);
   if (!match) return text;
-  const [, sign, lead, rest = "", exponent] = match as unknown as string[];
+  const [, sign, lead, rest = '', exponent] = match as unknown as string[];
   const digits = lead + rest;
   // Position of the decimal point within `digits`.
   const point = 1 + Number(exponent);
-  if (point <= 0) return `${sign}0.${"0".repeat(-point)}${digits}`;
-  return `${sign}${digits.padEnd(point, "0")}`;
+  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+  return `${sign}${digits.padEnd(point, '0')}`;
 }

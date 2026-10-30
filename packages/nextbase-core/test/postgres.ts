@@ -1,11 +1,16 @@
-import { randomUUID } from "node:crypto";
-import { DB } from "@nextbasejs/dbx";
-import pg from "pg";
-import { endPool } from "../src/db/pool.ts";
+import { randomUUID } from 'node:crypto';
+import { DB } from '@nextbasejs/dbx';
+import pg from 'pg';
+import { endPool } from '../src/db/pool.ts';
 
 const url =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
-  "postgres://localhost/nextbase_test";
+  'postgres://localhost/nextbase_test';
+
+/** Connection string of the server test databases are created on. */
+export function testDatabaseUrl(): string {
+  return url;
+}
 
 export interface TestDatabase {
   db: DB;
@@ -15,7 +20,7 @@ export interface TestDatabase {
   close(): Promise<void>;
 }
 
-const PREFIX = "nextbase_test";
+const PREFIX = 'nextbase_test';
 /** Databases older than this are left over from runs that were interrupted. */
 const STALE_MS = 60 * 60 * 1000;
 
@@ -45,7 +50,7 @@ export async function dropStaleTestDatabases(): Promise<void> {
   await admin.connect();
   try {
     const { rows: databases } = await admin.query<{ datname: string }>(
-      "SELECT datname FROM pg_database WHERE datname LIKE $1",
+      'SELECT datname FROM pg_database WHERE datname LIKE $1',
       [`${PREFIX}\\_%`],
     );
     for (const { datname } of databases) {
@@ -102,7 +107,7 @@ export async function createTestDatabase(
     async close() {
       // Roles outlive databases, so the view role is dropped by name.
       const role = await pool
-        .query("SELECT view_role FROM nextbase._meta")
+        .query('SELECT view_role FROM nextbase._meta')
         .then((r) => r.rows[0]?.view_role as string | null | undefined)
         .catch(() => undefined);
       await endPool(pool);

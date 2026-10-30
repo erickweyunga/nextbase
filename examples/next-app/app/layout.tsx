@@ -1,11 +1,11 @@
-import { NextBaseProvider } from "@nextbasejs/react";
-import type { Metadata } from "next";
-import type { ReactNode } from "react";
-import { nb } from "@/lib/nextbase";
-import { UserBadge } from "./user-badge";
+import { NextBaseProvider } from '@nextbasejs/react';
+import type { Metadata } from 'next';
+import type { ReactNode } from 'react';
+import { nb } from '@/lib/nextbase';
+import { UserBadge } from './user-badge';
 
 export const metadata: Metadata = {
-  title: "NextBase example",
+  title: 'NextBase example',
 };
 
 export default async function RootLayout({

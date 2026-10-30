@@ -1,26 +1,26 @@
-import { createHash, randomInt } from "node:crypto";
-import type { AuthCollection } from "@nextbasejs/client";
-import { type Builder, type DB, hash, type Row } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
-import { normalizePhone } from "../phone.ts";
-import { newId } from "../random.ts";
-import type { Hooks } from "../records/hooks.ts";
-import { newRecord, systemContext, updateRecord } from "../records/service.ts";
-import type { Schema } from "../schema/cache.ts";
-import { randomPassword } from "../schema/fields.ts";
-import { phoneIs } from "./identity.ts";
-import type { Mailer } from "./mail.ts";
-import { type Principal, recordIn } from "./principal.ts";
-import type { Sms } from "./sms.ts";
+import { createHash, randomInt } from 'node:crypto';
+import type { AuthCollection } from '@nextbasejs/client';
+import { type Builder, type DB, hash, type Row } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError } from '../errors.ts';
+import { normalizePhone } from '../phone.ts';
+import { newId } from '../random.ts';
+import type { Hooks } from '../records/hooks.ts';
+import { newRecord, systemContext, updateRecord } from '../records/service.ts';
+import type { Schema } from '../schema/cache.ts';
+import { randomPassword } from '../schema/fields.ts';
+import { phoneIs } from './identity.ts';
+import type { Mailer } from './mail.ts';
+import { type Principal, recordIn } from './principal.ts';
+import type { Sms } from './sms.ts';
 import {
   accountKey,
   clearAttempts,
   countAttempt,
   phoneKey,
   smsKey,
-} from "./throttle.ts";
+} from './throttle.ts';
 
 // Sign-in and verification with codes texted to a phone.
 // - Six-digit, single-use codes valid for 10 minutes.
@@ -40,15 +40,15 @@ export interface PhoneContext {
 }
 
 /** A code is accepted only for the purpose it was sent for. */
-type CodePurpose = "signIn" | "passwordReset" | "verifyPhone";
+type CodePurpose = 'signIn' | 'passwordReset' | 'verifyPhone';
 
-const CODE_LIFETIME = "10 minutes";
+const CODE_LIFETIME = '10 minutes';
 const MAX_CODE_ATTEMPTS = 5;
-const SMS_LIMIT = { max: 5, window: "1 hour" };
+const SMS_LIMIT = { max: 5, window: '1 hour' };
 
 const invalidCode = (): ApiError =>
-  new ApiError(400, "The code is invalid or has expired.", {
-    code: { code: "validation_invalid_code", message: "Invalid or expired." },
+  new ApiError(400, 'The code is invalid or has expired.', {
+    code: { code: 'validation_invalid_code', message: 'Invalid or expired.' },
   });
 
 /** Texts only an existing record's phone, or a new one the collection lets sign up. */
@@ -57,7 +57,7 @@ export function requestPhoneCode(
   collection: AuthCollection,
   phone: unknown,
 ): Promise<void> {
-  return sendCode(ctx, collection, phone, "signIn");
+  return sendCode(ctx, collection, phone, 'signIn');
 }
 
 /** Texts only when `phone` is a record's verified phone. */
@@ -66,14 +66,14 @@ export function requestPasswordResetByPhone(
   collection: AuthCollection,
   phone: unknown,
 ): Promise<void> {
-  return sendCode(ctx, collection, phone, "passwordReset");
+  return sendCode(ctx, collection, phone, 'passwordReset');
 }
 
 async function sendCode(
   ctx: PhoneContext,
   collection: AuthCollection,
   phoneInput: unknown,
-  purpose: "signIn" | "passwordReset",
+  purpose: 'signIn' | 'passwordReset',
 ): Promise<void> {
   checkEnabled(collection);
   const phone = checkPhone(phoneInput);
@@ -81,7 +81,7 @@ async function sendCode(
   await countAttempt(ctx.db, [smsKey(collection.id, phone)], SMS_LIMIT);
   const record = await findByPhone(ctx.db, collection, phone);
   const usable =
-    purpose === "signIn"
+    purpose === 'signIn'
       ? record !== undefined || collection.createRule !== null
       : record?.phoneVerified === true;
   if (!usable) return;
@@ -98,7 +98,7 @@ export async function authWithPhoneCode(
 ): Promise<Row> {
   checkEnabled(collection);
   const phone = checkPhone(phoneInput);
-  await consumeCode(ctx.db, collection, phone, "signIn", codeInput);
+  await consumeCode(ctx.db, collection, phone, 'signIn', codeInput);
   const existing = await findByPhone(ctx.db, collection, phone);
   if (existing) {
     if (existing.phoneVerified !== true) {
@@ -123,12 +123,12 @@ export async function authWithPhoneCode(
       pool: ctx.db,
       schema: ctx.schema,
       principal: { superuser: false },
-      request: { method: "POST", query: {}, headers: {}, body: input },
+      request: { method: 'POST', query: {}, headers: {}, body: input },
       // Callers may not set phoneVerified themselves; the code just proved it.
-      vouched: new Set(["phone", "phoneVerified"]),
+      vouched: new Set(['phone', 'phoneVerified']),
       effects: ctx.effects,
       hooks: ctx.hooks,
-      source: "system",
+      source: 'system',
     },
     collection,
     input,
@@ -144,7 +144,7 @@ export async function confirmPasswordResetByPhone(
 ): Promise<void> {
   checkEnabled(collection);
   const phone = checkPhone(input.phone);
-  await consumeCode(ctx.db, collection, phone, "passwordReset", input.code);
+  await consumeCode(ctx.db, collection, phone, 'passwordReset', input.code);
   const record = await findByPhone(ctx.db, collection, phone);
   if (record?.phoneVerified !== true) throw invalidCode();
   // The update tells the owner their password changed, if they have an email.
@@ -171,10 +171,10 @@ export async function requestPhoneVerification(
     ctx.db,
     collection,
     phone,
-    "verifyPhone",
+    'verifyPhone',
     record.id as string,
   );
-  ctx.sms.send("verifyPhone", collection.name, phone, code);
+  ctx.sms.send('verifyPhone', collection.name, phone, code);
 }
 
 /** A new phone is a new way in, so other sessions end and the old phone and email are told. */
@@ -191,7 +191,7 @@ export async function confirmPhoneVerification(
     ctx.db,
     collection,
     phone,
-    "verifyPhone",
+    'verifyPhone',
     input.code,
     record.id as string,
   );
@@ -206,15 +206,15 @@ export async function confirmPhoneVerification(
     );
   } catch (error) {
     if (error instanceof ApiError && error.data.phone) {
-      throw new ApiError(400, "Failed to verify the phone.", error.data);
+      throw new ApiError(400, 'Failed to verify the phone.', error.data);
     }
     throw error;
   }
-  if (previous !== "" && previous !== phone) {
-    ctx.sms.send("phoneChanged", collection.name, previous);
+  if (previous !== '' && previous !== phone) {
+    ctx.sms.send('phoneChanged', collection.name, previous);
   }
   if (previous !== phone && record.email) {
-    ctx.mailer.send("phoneChanged", collection.name, record.email as string);
+    ctx.mailer.send('phoneChanged', collection.name, record.email as string);
   }
 }
 
@@ -226,29 +226,29 @@ async function findByPhone(
   const [record] = await q
     .select()
     .from(table(collection.name))
-    .where(phoneIs("phone", phone))
+    .where(phoneIs('phone', phone))
     .limit(1)
     .all();
   return record;
 }
 
 function checkEnabled(collection: AuthCollection): void {
-  if (!collection.phoneSignIn || collection.id === "_superusers") {
+  if (!collection.phoneSignIn || collection.id === '_superusers') {
     throw new ApiError(
       400,
-      "Phone sign-in is not enabled for this collection.",
+      'Phone sign-in is not enabled for this collection.',
     );
   }
 }
 
 function checkPhone(value: unknown): string {
-  const phone = typeof value === "string" ? normalizePhone(value) : undefined;
+  const phone = typeof value === 'string' ? normalizePhone(value) : undefined;
   if (phone === undefined) {
-    throw new ApiError(400, "Failed to use the phone number.", {
+    throw new ApiError(400, 'Failed to use the phone number.', {
       phone: {
-        code: "validation_invalid_phone",
+        code: 'validation_invalid_phone',
         message:
-          "Must be a valid phone number in international format, such as +255712345678.",
+          'Must be a valid phone number in international format, such as +255712345678.',
       },
     });
   }
@@ -256,7 +256,7 @@ function checkPhone(value: unknown): string {
 }
 
 function signedIn(collection: AuthCollection, principal: Principal): Row {
-  return recordIn(principal, collection, "verify a phone");
+  return recordIn(principal, collection, 'verify a phone');
 }
 
 // Hashed and salted with the purpose, so a database leak shows no live codes.
@@ -266,9 +266,9 @@ function codeHash(
   purpose: CodePurpose,
   code: string,
 ): string {
-  return createHash("sha256")
+  return createHash('sha256')
     .update(`${collection.id}:${phone}:${purpose}:${code}`)
-    .digest("hex");
+    .digest('hex');
 }
 
 /** Replaces any earlier code for the same phone and purpose. */
@@ -277,15 +277,15 @@ async function issueCode(
   collection: AuthCollection,
   phone: string,
   purpose: CodePurpose,
-  recordId = "",
+  recordId = '',
 ): Promise<string> {
-  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   await q
-    .newQuery(`DELETE FROM {{${table("_phone_codes")}}} WHERE expires <= now()`)
+    .newQuery(`DELETE FROM {{${table('_phone_codes')}}} WHERE expires <= now()`)
     .execute();
   await q
     .newQuery(
-      `INSERT INTO {{${table("_phone_codes")}}}
+      `INSERT INTO {{${table('_phone_codes')}}}
          (collection_id, phone, purpose, record_id, code_hash, attempts, expires)
        VALUES ({:collectionId}, {:phone}, {:purpose}, {:recordId}, {:codeHash}, 0,
                now() + interval '${CODE_LIFETIME}')
@@ -314,15 +314,15 @@ async function consumeCode(
   phone: string,
   purpose: CodePurpose,
   codeInput: unknown,
-  recordId = "",
+  recordId = '',
 ): Promise<void> {
   const key = phoneKey(collection.id, phone);
   await countAttempt(db, [key]);
-  const code = typeof codeInput === "string" ? codeInput.trim() : "";
+  const code = typeof codeInput === 'string' ? codeInput.trim() : '';
   if (!/^\d{6}$/.test(code)) throw invalidCode();
   const [stored] = await db
     .newQuery(
-      `DELETE FROM {{${table("_phone_codes")}}}
+      `DELETE FROM {{${table('_phone_codes')}}}
        WHERE collection_id = {:collectionId} AND phone = {:phone} AND purpose = {:purpose}
          AND record_id = {:recordId} AND expires > now()
          AND attempts < ${MAX_CODE_ATTEMPTS} AND code_hash = {:codeHash}
@@ -342,7 +342,7 @@ async function consumeCode(
   }
   await db
     .newQuery(
-      `UPDATE {{${table("_phone_codes")}}} SET attempts = attempts + 1
+      `UPDATE {{${table('_phone_codes')}}} SET attempts = attempts + 1
        WHERE collection_id = {:collectionId} AND phone = {:phone} AND purpose = {:purpose}`,
     )
     .bind({ collectionId: collection.id, phone, purpose })

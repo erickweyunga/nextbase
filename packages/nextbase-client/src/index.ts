@@ -1,45 +1,56 @@
-import { AuthStore } from "./auth-store.ts";
-import { authSync } from "./auth-sync.ts";
-import { Batch } from "./batch.ts";
-import { ClientError } from "./client-error.ts";
-import { CollectionService } from "./collections.ts";
-import { FileService } from "./files.ts";
-import { type FilterValue, filter } from "./filter.ts";
-import { RecordService } from "./records.ts";
+import { AuthStore } from './auth-store.ts';
+import { authSync } from './auth-sync.ts';
+import { Batch } from './batch.ts';
+import { ClientError } from './client-error.ts';
+import { CollectionService } from './collections.ts';
+import { FileService } from './files.ts';
+import { type FilterValue, filter } from './filter.ts';
+import { LogService } from './logs.ts';
+import { RealtimeService } from './realtime.ts';
+import { RecordService } from './records.ts';
 import {
   type ApiErrorBody,
+  type AuthResponse,
   type CurrentSession,
   DEFAULT_BASE_PATH,
   type HealthResponse,
   type RecordModel,
   type SessionModel,
   type SetupStatus,
-} from "./shared/api.ts";
+} from './shared/api.ts';
 
 export {
   type AuthChangeListener,
   type AuthStorage,
   AuthStore,
   type AuthStoreOptions,
-} from "./auth-store.ts";
+} from './auth-store.ts';
 export type {
   Batch,
   BatchCollection,
   BatchResult,
   BatchWriteOptions,
-} from "./batch.ts";
-export { ClientError } from "./client-error.ts";
-export type { CollectionInput, CollectionService } from "./collections.ts";
-export type { FileService, FileUrlOptions } from "./files.ts";
-export { type FilterValue, filter } from "./filter.ts";
+} from './batch.ts';
+export { ClientError } from './client-error.ts';
+export type { CollectionInput, CollectionService } from './collections.ts';
+export type { FileService, FileUrlOptions } from './files.ts';
+export { type FilterValue, filter } from './filter.ts';
+export type { LogListOptions, LogService, LogStatsOptions } from './logs.ts';
+export type {
+  RealtimeAction,
+  RealtimeEvent,
+  RealtimeService,
+  SubscribeOptions,
+} from './realtime.ts';
 export type {
   AuthOptions,
   FullListOptions,
+  ImpersonateOptions,
   ListOptions,
   OAuth2Options,
   RecordOptions,
   RecordService,
-} from "./records.ts";
+} from './records.ts';
 export type {
   ApiErrorBody,
   AuthMethods,
@@ -49,13 +60,16 @@ export type {
   ErrorData,
   FieldError,
   HealthResponse,
+  ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
+  LogModel,
+  LogStat,
   RecordModel,
   SessionModel,
   SetupStatus,
-} from "./shared/api.ts";
-export { DEFAULT_BASE_PATH } from "./shared/api.ts";
+} from './shared/api.ts';
+export { DEFAULT_BASE_PATH } from './shared/api.ts';
 export type {
   AuthCollection,
   AutodateField,
@@ -80,7 +94,7 @@ export type {
   TokenType,
   UrlField,
   ViewCollection,
-} from "./shared/schema.ts";
+} from './shared/schema.ts';
 
 export interface ClientOptions {
   /** URL of the NextBase route handler. Defaults to `/api/nextbase`. */
@@ -95,7 +109,7 @@ type QueryValue = string | number | boolean | null | undefined;
 
 /** Per-request options, including fetch's own such as `signal` or `cache`. */
 export interface SendOptions
-  extends Omit<RequestInit, "body" | "method" | "headers"> {
+  extends Omit<RequestInit, 'body' | 'method' | 'headers'> {
   method?: string;
   /** Query parameters; `null` and `undefined` values are left out. */
   query?: Record<string, QueryValue>;
@@ -116,17 +130,28 @@ export class NextBaseClient<
   readonly collections: CollectionService;
   /** File URLs and tokens for protected files. */
   readonly files: FileService;
+  /** The server's request and error log. Superusers only. */
+  readonly logs: LogService;
+  /**
+   * Realtime subscriptions, all over one streamed request. Subscribe with
+   * `collection(name).subscribe()`.
+   */
+  readonly realtime: RealtimeService;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
 
   constructor(options: ClientOptions = {}) {
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_PATH).replace(/\/+$/, "");
+    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_PATH).replace(/\/+$/, '');
     // Called unbound: browsers throw "Illegal invocation" otherwise.
     const fetch = options.fetch ?? globalThis.fetch;
     this.#fetch = (input, init) => fetch(input, init);
     this.authStore = options.authStore ?? new AuthStore();
     this.collections = new CollectionService(this);
     this.files = new FileService(this);
+    this.logs = new LogService(this);
+    this.realtime = new RealtimeService(this, (init) =>
+      this.#fetch(this.#url('/realtime'), init),
+    );
   }
 
   /** Records of one collection, by name or id. */
@@ -138,6 +163,18 @@ export class NextBaseClient<
   ): RecordService<T>;
   collection(idOrName: string): RecordService<RecordModel> {
     return new RecordService(this, idOrName);
+  }
+
+  /**
+   * A client of the same server, signed in through `authStore` instead,
+   * such as one acting as another account.
+   */
+  withAuthStore(authStore: AuthStore): NextBaseClient<Schema> {
+    return new NextBaseClient<Schema>({
+      baseUrl: this.#baseUrl,
+      fetch: this.#fetch,
+      authStore,
+    });
   }
 
   /** Starts a batch of record writes applied all or nothing. */
@@ -154,12 +191,12 @@ export class NextBaseClient<
   }
 
   health(options?: SendOptions): Promise<HealthResponse> {
-    return this.send("/health", options);
+    return this.send('/health', options);
   }
 
   /** Whether the first superuser still has to be created. */
   setupStatus(options?: SendOptions): Promise<SetupStatus> {
-    return this.send("/setup", options);
+    return this.send('/setup', options);
   }
 
   /** Creates the first superuser with the setup token from the server log. Does not sign in. */
@@ -167,7 +204,7 @@ export class NextBaseClient<
     params: { token: string; email: string; password: string },
     options?: SendOptions,
   ): Promise<RecordModel> {
-    return this.send("/setup", { ...options, method: "POST", body: params });
+    return this.send('/setup', { ...options, method: 'POST', body: params });
   }
 
   /**
@@ -180,7 +217,7 @@ export class NextBaseClient<
   ): Promise<CurrentSession<T> | null> {
     const unchanged = authSync(this.authStore).snapshot();
     const session = await this.send<CurrentSession<T> | null>(
-      "/session",
+      '/session',
       options,
     );
     if (!unchanged()) return session;
@@ -192,32 +229,41 @@ export class NextBaseClient<
   /**
    * Ends the session on the server, removes its cookie, and clears the auth
    * store, unless a sign-in started meanwhile has saved a new session.
+   * Ending a cookie impersonation signs the superuser back in, and the store
+   * then holds their record.
    */
   async signOut(options?: SendOptions): Promise<void> {
     const apply = authSync(this.authStore).intent();
+    let restored: AuthResponse | undefined;
     try {
-      await this.send("/session", { ...options, method: "DELETE" });
+      restored = await this.send<AuthResponse | undefined>('/session', {
+        ...options,
+        method: 'DELETE',
+      });
     } finally {
-      apply(() => this.authStore.clear());
+      apply(() => {
+        if (restored) this.authStore.save('', restored.record);
+        else this.authStore.clear();
+      });
     }
   }
 
   /** The signed-in record's live sessions, newest first. */
   async listSessions(options?: SendOptions): Promise<SessionModel[]> {
-    return (await this.send<{ items: SessionModel[] }>("/sessions", options))
+    return (await this.send<{ items: SessionModel[] }>('/sessions', options))
       .items;
   }
 
   /** Ends every session of the signed-in record except this one. */
   async revokeOtherSessions(options?: SendOptions): Promise<void> {
-    await this.send("/sessions", { ...options, method: "DELETE" });
+    await this.send('/sessions', { ...options, method: 'DELETE' });
   }
 
   /** Ends one of the signed-in record's sessions. */
   async revokeSession(id: string, options?: SendOptions): Promise<void> {
     await this.send(`/sessions/${encodeURIComponent(id)}`, {
       ...options,
-      method: "DELETE",
+      method: 'DELETE',
     });
   }
 
@@ -231,12 +277,12 @@ export class NextBaseClient<
     const unchanged = authSync(this.authStore).snapshot();
     const headers: Record<string, string> = {};
     if (token) headers.authorization = `Bearer ${token}`;
-    let payload: RequestInit["body"];
+    let payload: RequestInit['body'];
     if (body !== undefined) {
       if (isBodyInit(body)) {
         payload = body;
       } else {
-        headers["content-type"] = "application/json";
+        headers['content-type'] = 'application/json';
         payload = JSON.stringify(body);
       }
     }
@@ -259,7 +305,7 @@ export class NextBaseClient<
     let parsed: unknown;
     try {
       const text = await response.text();
-      parsed = text === "" ? undefined : JSON.parse(text);
+      parsed = text === '' ? undefined : JSON.parse(text);
     } catch (cause) {
       // Aborted while the body arrived: no response, as above.
       if (init.signal?.aborted) {
@@ -272,7 +318,7 @@ export class NextBaseClient<
         {
           status: response.ok ? 0 : response.status,
           message: response.ok
-            ? "The server sent an invalid response."
+            ? 'The server sent an invalid response.'
             : `The request failed with status ${response.status}.`,
           data: {},
         },
@@ -285,16 +331,16 @@ export class NextBaseClient<
     // changed while the request was in flight.
     if (
       unchanged() &&
-      token === "" &&
+      token === '' &&
       record !== null &&
-      response.headers.get("nextbase-session") === "none"
+      response.headers.get('nextbase-session') === 'none'
     ) {
       this.authStore.clear();
     }
     if (response.ok) return parsed as T;
     if (
       response.status === 401 &&
-      (token !== "" || record !== null) &&
+      (token !== '' || record !== null) &&
       unchanged()
     ) {
       this.authStore.clear();
@@ -320,14 +366,14 @@ export class NextBaseClient<
     for (const [key, value] of Object.entries(query)) {
       if (value !== null && value !== undefined) params.set(key, String(value));
     }
-    const search = params.size > 0 ? `?${params}` : "";
+    const search = params.size > 0 ? `?${params}` : '';
     return `${this.#baseUrl}${path}${search}`;
   }
 }
 
-function isBodyInit(value: unknown): value is NonNullable<RequestInit["body"]> {
+function isBodyInit(value: unknown): value is NonNullable<RequestInit['body']> {
   return (
-    typeof value === "string" ||
+    typeof value === 'string' ||
     value instanceof FormData ||
     value instanceof URLSearchParams ||
     value instanceof Blob ||
@@ -340,13 +386,13 @@ function isBodyInit(value: unknown): value is NonNullable<RequestInit["body"]> {
 function isErrorBody(value: unknown): value is ApiErrorBody {
   return (
     value !== null &&
-    typeof value === "object" &&
-    typeof (value as ApiErrorBody).status === "number" &&
-    typeof (value as ApiErrorBody).message === "string" &&
-    typeof (value as ApiErrorBody).data === "object"
+    typeof value === 'object' &&
+    typeof (value as ApiErrorBody).status === 'number' &&
+    typeof (value as ApiErrorBody).message === 'string' &&
+    typeof (value as ApiErrorBody).data === 'object'
   );
 }
 
 function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "The request failed.";
+  return cause instanceof Error ? cause.message : 'The request failed.';
 }

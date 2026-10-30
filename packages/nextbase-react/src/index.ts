@@ -3,7 +3,7 @@ import {
   type CurrentSession,
   NextBaseClient,
   type RecordModel,
-} from "@nextbasejs/client";
+} from '@nextbasejs/client';
 import {
   createContext,
   createElement,
@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-} from "react";
+} from 'react';
 
 interface Shared {
   client: NextBaseClient;
@@ -34,7 +34,7 @@ export interface NextBaseProviderProps {
    */
   session?: CurrentSession | null;
   /** Route handler URL. Defaults to `/api/nextbase`. */
-  baseUrl?: ClientOptions["baseUrl"];
+  baseUrl?: ClientOptions['baseUrl'];
   children?: ReactNode;
 }
 
@@ -85,13 +85,13 @@ export function NextBaseProvider({
 function seed(client: NextBaseClient, session: CurrentSession | null): void {
   const store = client.authStore;
   if (session) store.save(store.token, session.record);
-  else if (store.token === "" && store.record !== null) store.clear();
+  else if (store.token === '' && store.record !== null) store.clear();
 }
 
 function useShared(): Shared {
   const shared = useContext(NextBaseContext);
   if (!shared) {
-    throw new Error("Wrap the component tree in <NextBaseProvider>.");
+    throw new Error('Wrap the component tree in <NextBaseProvider>.');
   }
   return shared;
 }

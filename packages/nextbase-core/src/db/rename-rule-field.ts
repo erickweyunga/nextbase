@@ -1,4 +1,4 @@
-import type { Collection } from "@nextbasejs/client";
+import type { Collection } from '@nextbasejs/client';
 
 // For migrations: renames a field of some auth collections inside rules.
 // String literals are untouched, and a segment is renamed only where it
@@ -18,14 +18,14 @@ export function renameRuleField(
   to: string,
   owns: (collection: Collection) => boolean,
 ): string {
-  let out = "";
+  let out = '';
   let i = 0;
   while (i < rule.length) {
     const char = rule[i] as string;
     if (char === "'" || char === '"') {
       let j = i + 1;
       while (j < rule.length && rule[j] !== char) {
-        if (rule[j] === "\\") j++;
+        if (rule[j] === '\\') j++;
         j++;
       }
       out += rule.slice(i, j + 1);
@@ -67,8 +67,8 @@ function renameIdentifier(
   to: string,
   owns: (collection: Collection) => boolean,
 ): string {
-  const segments = text.split(".");
-  const names = segments.map((s) => s.split(":")[0] as string);
+  const segments = text.split('.');
+  const names = segments.map((s) => s.split(':')[0] as string);
   const renamed = new Set<number>();
   const isField = (c: Collection | undefined, name: string): boolean =>
     c !== undefined && name === from && owns(c);
@@ -83,7 +83,7 @@ function renameIdentifier(
         return;
       }
       const field = here.fields.find((f) => f.name === name);
-      if (field?.type === "relation") {
+      if (field?.type === 'relation') {
         here = collections.find((c) => c.id === field.collectionId);
         continue;
       }
@@ -92,19 +92,19 @@ function renameIdentifier(
     }
   };
 
-  if (names[0] === "@request") {
+  if (names[0] === '@request') {
     // The field is renamed in every auth collection that has it, so
     // `@request.auth.<field>` is it.
-    if (names[1] === "auth" && names[2] === from) renamed.add(2);
-    if (names[1] === "body" && isField(collection, names[2] as string)) {
+    if (names[1] === 'auth' && names[2] === from) renamed.add(2);
+    if (names[1] === 'body' && isField(collection, names[2] as string)) {
       renamed.add(2);
     }
-  } else if (names[0] === "@collection") {
+  } else if (names[0] === '@collection') {
     walk(
       collections.find((c) => c.name === names[1]),
       2,
     );
-  } else if (!names[0]?.startsWith("@")) {
+  } else if (!names[0]?.startsWith('@')) {
     walk(collection, 0);
   }
   if (renamed.size === 0) return text;
@@ -112,5 +112,5 @@ function renameIdentifier(
     .map((segment, i) =>
       renamed.has(i) ? `${to}${segment.slice(from.length)}` : segment,
     )
-    .join(".");
+    .join('.');
 }

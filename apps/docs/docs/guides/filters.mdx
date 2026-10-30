@@ -126,6 +126,7 @@ Rules can also read the request:
 | `@request.query.<name>` | a query parameter |
 | `@request.headers.<name>` | a request header, lowercase |
 | `@request.method` | `GET`, `POST`, `PATCH` or `DELETE` |
+| `@request.impersonatedBy` | the id of the superuser [impersonating](/docs/guides/auth/impersonation) the caller, or `""` |
 | `@collection.<name>.<field>` | records of any collection |
 
 `@request.auth.<field>` must be a field of some auth collection, or

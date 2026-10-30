@@ -1,20 +1,20 @@
-import { detectXml } from "@file-type/xml";
-import type { Collection, FileField } from "@nextbasejs/client";
-import type { Builder } from "@nextbasejs/dbx";
-import { FileTypeParser, supportedMimeTypes } from "file-type";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError, writeFailed } from "../errors.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import { isMultiple } from "../schema/fields.ts";
-import type { Presentation, Storage } from "./storage.ts";
+import { detectXml } from '@file-type/xml';
+import type { Collection, FileField } from '@nextbasejs/client';
+import type { Builder } from '@nextbasejs/dbx';
+import { FileTypeParser, supportedMimeTypes } from 'file-type';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError, writeFailed } from '../errors.ts';
+import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
+import { isMultiple } from '../schema/fields.ts';
+import type { Presentation, Storage } from './storage.ts';
 
 // A file field holds generated file names; the files live in storage at
 // `<collection id>/<record id>/<name>`. Files arrive with the record as form
 // data, or as `upload:<id>` tokens of direct uploads to the bucket, which
 // keep large files out of size-capped serverless requests.
 
-export const UPLOAD_PREFIX = "upload:";
+export const UPLOAD_PREFIX = 'upload:';
 
 export function fileKey(
   collectionId: string,
@@ -40,17 +40,17 @@ export function isStoredName(name: string): boolean {
  * path separators or a misleading extension, so they are never used as is.
  */
 function storedName(original: string, ext: string | undefined): string {
-  const base = original.replace(/^.*[\\/]/, "");
-  const dot = base.lastIndexOf(".");
+  const base = original.replace(/^.*[\\/]/, '');
+  const dot = base.lastIndexOf('.');
   const stem = (dot > 0 ? base.slice(0, dot) : base)
     .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^[_-]+|[_-]+$/g, "")
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
     .slice(0, 100);
   const suffix =
-    ext ?? (dot > 0 ? base.slice(dot + 1).toLowerCase() : "").slice(0, 10);
-  const extension = /^[a-z0-9]{1,10}$/.test(suffix) ? `.${suffix}` : "";
-  return `${stem || "file"}_${randomString(10, LOWER_ALPHANUMERIC)}${extension}`;
+    ext ?? (dot > 0 ? base.slice(dot + 1).toLowerCase() : '').slice(0, 10);
+  const extension = /^[a-z0-9]{1,10}$/.test(suffix) ? `.${suffix}` : '';
+  return `${stem || 'file'}_${randomString(10, LOWER_ALPHANUMERIC)}${extension}`;
 }
 
 // The XML detector's default sample; more than file-type's 4100 bytes.
@@ -61,8 +61,8 @@ const detector = new FileTypeParser({ customDetectors: [detectXml] });
 function isDetectable(type: string): boolean {
   return (
     supportedMimeTypes.has(type as never) ||
-    type.endsWith("/xml") ||
-    type.endsWith("+xml")
+    type.endsWith('/xml') ||
+    type.endsWith('+xml')
   );
 }
 
@@ -77,40 +77,40 @@ async function detectType(
 ): Promise<{ type: string; ext?: string }> {
   const detected = await detector.fromBuffer(head);
   if (detected) return { type: detected.mime, ext: detected.ext };
-  const label = declared.split(";")[0]?.trim().toLowerCase() ?? "";
+  const label = declared.split(';')[0]?.trim().toLowerCase() ?? '';
   if (/^[\w.+-]+\/[\w.+-]+$/.test(label) && !isDetectable(label)) {
     return { type: label };
   }
-  return { type: "application/octet-stream" };
+  return { type: 'application/octet-stream' };
 }
 
 // Shown inline; anything else, including HTML and SVG, is a download.
 const INLINE: Readonly<Record<string, string>> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  avif: "image/avif",
-  bmp: "image/bmp",
-  pdf: "application/pdf",
-  mp4: "video/mp4",
-  webm: "video/webm",
-  mov: "video/quicktime",
-  mp3: "audio/mpeg",
-  m4a: "audio/mp4",
-  ogg: "audio/ogg",
-  wav: "audio/wav",
-  txt: "text/plain; charset=utf-8",
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  pdf: 'application/pdf',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+  txt: 'text/plain; charset=utf-8',
 };
 
 export function presentation(name: string, download: boolean): Presentation {
-  const ext = name.slice(name.lastIndexOf(".") + 1);
-  const inline = name.includes(".") ? INLINE[ext] : undefined;
+  const ext = name.slice(name.lastIndexOf('.') + 1);
+  const inline = name.includes('.') ? INLINE[ext] : undefined;
   if (inline && !download)
-    return { contentType: inline, disposition: "inline" };
+    return { contentType: inline, disposition: 'inline' };
   return {
-    contentType: inline ?? "application/octet-stream",
+    contentType: inline ?? 'application/octet-stream',
     // Stored names are plain ASCII, so they need no escaping.
     disposition: `attachment; filename="${name}"`,
   };
@@ -155,7 +155,7 @@ export async function readNewFiles(
 ): Promise<NewFiles> {
   const read: NewFiles = { files: new Map(), problems: new Map() };
   for (const field of collection.fields) {
-    if (field.type !== "file") continue;
+    if (field.type !== 'file') continue;
     const fail = (problem: FileProblem): void => {
       const problems = read.problems.get(field.name) ?? [];
       problems.push(problem);
@@ -169,14 +169,14 @@ export async function readNewFiles(
       let file: NewFile | undefined;
       if (item instanceof Blob) {
         file = await fromBlob(field, item, fail);
-      } else if (typeof item === "string" && item.startsWith(UPLOAD_PREFIX)) {
+      } else if (typeof item === 'string' && item.startsWith(UPLOAD_PREFIX)) {
         file = await fromUpload(q, storage, collection, field, item, fail);
       }
       if (!file) continue;
       if (field.mimeTypes.length > 0 && !field.mimeTypes.includes(file.type)) {
         fail({
-          code: "validation_invalid_mime_type",
-          message: `Must be one of: ${field.mimeTypes.join(", ")}.`,
+          code: 'validation_invalid_mime_type',
+          message: `Must be one of: ${field.mimeTypes.join(', ')}.`,
         });
       }
       read.files.set(item, file);
@@ -200,7 +200,7 @@ export async function storeNewFiles(
   for (const file of files.values()) {
     const key = fileKey(collection.id, recordId, file.name);
     effects.newFiles.push(key);
-    if ("bytes" in file.source) {
+    if ('bytes' in file.source) {
       await storage.put(key, file.source.bytes, file.type);
     } else {
       await storage.copy(uploadKey(file.source.upload), key);
@@ -255,22 +255,22 @@ export function prepareFileField(
   const kept: string[] = [];
   const added: NewFile[] = [];
   const take = (item: unknown, keeping: boolean): void => {
-    if (item === null || item === "") return;
+    if (item === null || item === '') return;
     if (
       item instanceof Blob ||
-      (typeof item === "string" && item.startsWith(UPLOAD_PREFIX))
+      (typeof item === 'string' && item.startsWith(UPLOAD_PREFIX))
     ) {
       // A file that could not be read is already among the problems.
       const file = read.files.get(item);
       if (file) added.push(file);
-    } else if (keeping && typeof item === "string" && current.includes(item)) {
+    } else if (keeping && typeof item === 'string' && current.includes(item)) {
       kept.push(item);
     } else {
       fail({
-        code: "validation_invalid_value",
+        code: 'validation_invalid_value',
         message: keeping
-          ? "Must be a file, an upload token, or a name of a file the record has."
-          : "Must be a file or an upload token.",
+          ? 'Must be a file, an upload token, or a name of a file the record has.'
+          : 'Must be a file or an upload token.',
       });
     }
   };
@@ -280,7 +280,7 @@ export function prepareFileField(
   } else {
     kept.push(...current);
   }
-  const removing = new Set(toList(remove).filter((n) => typeof n === "string"));
+  const removing = new Set(toList(remove).filter((n) => typeof n === 'string'));
   const remaining = kept.filter((n) => !removing.has(n));
   // New files of a replacing value come after the names it keeps.
   const replacing = added.length;
@@ -297,7 +297,7 @@ export function prepareFileField(
   ];
   if (value.length > field.maxSelect) {
     fail({
-      code: "validation_too_many",
+      code: 'validation_too_many',
       message: `Select at most ${field.maxSelect}.`,
     });
   }
@@ -312,7 +312,7 @@ export function prepareFileField(
 
 export function fileNames(field: FileField, value: unknown): string[] {
   if (isMultiple(field)) return Array.isArray(value) ? value : [];
-  return typeof value === "string" && value !== "" ? [value] : [];
+  return typeof value === 'string' && value !== '' ? [value] : [];
 }
 
 /**
@@ -329,10 +329,10 @@ export async function claimFiles(
   creating: boolean,
 ): Promise<void> {
   for (const file of added) {
-    if ("bytes" in file.source) continue;
+    if ('bytes' in file.source) continue;
     const claimed = await q
       .newQuery(
-        `DELETE FROM {{${table("_uploads")}}} WHERE id = {:id} RETURNING id`,
+        `DELETE FROM {{${table('_uploads')}}} WHERE id = {:id} RETURNING id`,
       )
       .bind({ id: file.source.upload })
       .column();
@@ -340,8 +340,8 @@ export async function claimFiles(
     if (claimed.length === 0) {
       throw new ApiError(400, writeFailed(creating), {
         [file.field]: {
-          code: "validation_invalid_upload",
-          message: "The upload is unknown, unfinished or has expired.",
+          code: 'validation_invalid_upload',
+          message: 'The upload is unknown, unfinished or has expired.',
         },
       });
     }
@@ -368,7 +368,7 @@ async function fromBlob(
     bytes.subarray(0, DETECTION_BYTES),
     blob.type,
   );
-  const original = blob instanceof File ? blob.name : "file";
+  const original = blob instanceof File ? blob.name : 'file';
   return {
     field: field.name,
     name: storedName(original, ext),
@@ -389,7 +389,7 @@ async function fromUpload(
   const id = token.slice(UPLOAD_PREFIX.length);
   const [upload] = await q
     .newQuery(
-      `SELECT filename, size, content_type AS "contentType" FROM {{${table("_uploads")}}}
+      `SELECT filename, size, content_type AS "contentType" FROM {{${table('_uploads')}}}
        WHERE id = {:id} AND collection_id = {:collectionId} AND field_id = {:fieldId}
          AND expires > now()`,
     )
@@ -397,8 +397,8 @@ async function fromUpload(
     .all<{ filename: string; size: string | number; contentType: string }>();
   const unknown = (): undefined => {
     fail({
-      code: "validation_invalid_upload",
-      message: "The upload is unknown, unfinished or has expired.",
+      code: 'validation_invalid_upload',
+      message: 'The upload is unknown, unfinished or has expired.',
     });
     return undefined;
   };
@@ -421,7 +421,7 @@ async function fromUpload(
 
 function tooLarge(field: FileField, fail: (problem: FileProblem) => void) {
   fail({
-    code: "validation_file_too_large",
+    code: 'validation_file_too_large',
     message: `Must be at most ${field.maxSize} bytes.`,
   });
 }

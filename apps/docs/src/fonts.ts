@@ -1,2 +1,2 @@
-import "@fontsource-variable/google-sans";
-import "@fontsource-variable/google-sans-code";
+import '@fontsource-variable/google-sans';
+import '@fontsource-variable/google-sans-code';

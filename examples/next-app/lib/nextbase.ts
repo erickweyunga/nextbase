@@ -1,11 +1,11 @@
 // Fails the build if a client component imports this module.
-import "server-only";
+import 'server-only';
 import {
   NextBase,
   type OAuth2Options,
   type SmsOptions,
-} from "@nextbasejs/core";
-import { serverClient } from "@nextbasejs/next";
+} from '@nextbasejs/core';
+import { serverClient } from '@nextbasejs/next';
 
 /** OAuth2 providers whose credentials are set (see .env.example). */
 function providers(env: NodeJS.ProcessEnv): OAuth2Options {
@@ -27,7 +27,7 @@ function providers(env: NodeJS.ProcessEnv): OAuth2Options {
       issuer: env.OIDC_ISSUER,
       clientId: env.OIDC_CLIENT_ID,
       clientSecret: env.OIDC_CLIENT_SECRET,
-      displayName: env.OIDC_NAME ?? "OpenID Connect",
+      displayName: env.OIDC_NAME ?? 'OpenID Connect',
     };
   }
   return oauth2;
@@ -38,11 +38,11 @@ function sms(env: NodeJS.ProcessEnv): SmsOptions | undefined {
   const url = env.SMS_WEBHOOK_URL;
   if (!url) return undefined;
   return {
-    ...(env.SMS_COUNTRIES && { countries: env.SMS_COUNTRIES.split(",") }),
+    ...(env.SMS_COUNTRIES && { countries: env.SMS_COUNTRIES.split(',') }),
     async send(message) {
       const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify(message),
       });
       if (!response.ok) {

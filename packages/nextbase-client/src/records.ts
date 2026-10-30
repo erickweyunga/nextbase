@@ -1,14 +1,17 @@
-import { authSync } from "./auth-sync.ts";
-import { ClientError } from "./client-error.ts";
-import { hasFiles, toFormData } from "./files.ts";
-import type { NextBaseClient, SendOptions } from "./index.ts";
+import { AuthStore } from './auth-store.ts';
+import { authSync } from './auth-sync.ts';
+import { ClientError } from './client-error.ts';
+import { hasFiles, toFormData } from './files.ts';
+import type { NextBaseClient, SendOptions } from './index.ts';
+import type { RealtimeEvent, SubscribeOptions } from './realtime.ts';
 import type {
   AuthMethods,
   AuthResponse,
+  ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
   RecordModel,
-} from "./shared/api.ts";
+} from './shared/api.ts';
 
 export interface RecordOptions extends SendOptions {
   /** Relations to load, e.g. `author,comments_via_post.author`. */
@@ -20,6 +23,11 @@ export interface RecordOptions extends SendOptions {
 export interface AuthOptions extends RecordOptions {
   /** Keep the session in an HttpOnly cookie instead of returning a token. */
   cookie?: boolean;
+}
+
+export interface ImpersonateOptions extends AuthOptions {
+  /** Seconds, from 60 to 3600. Defaults to 3600. The session is never extended. */
+  duration?: number;
 }
 
 export interface ListOptions extends RecordOptions {
@@ -61,7 +69,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: ListOptions = {},
   ): Promise<ListResult<T>> {
     const { filter, sort, skipTotal, ...rest } = options;
-    return this.#send("/records", {
+    return this.#send('/records', {
       ...rest,
       query: { ...rest.query, page, perPage, filter, sort, skipTotal },
     });
@@ -100,11 +108,31 @@ export class RecordService<T extends RecordModel = RecordModel> {
     if (!item) {
       throw new ClientError({
         status: 404,
-        message: "No record matches the filter.",
+        message: 'No record matches the filter.',
         data: {},
       });
     }
     return item;
+  }
+
+  /**
+   * Calls `callback` for each record created, updated or deleted that the
+   * caller may see: `"*"` for the collection, under its list rule and
+   * `filter`, or a record id, under its view rule. The collection must be
+   * listed in the server's `realtime` option. Returns the unsubscribe
+   * function.
+   */
+  subscribe(
+    topic: string,
+    callback: (event: RealtimeEvent<T>) => void,
+    options?: SubscribeOptions,
+  ): () => void {
+    return this.#client.realtime.subscribe(
+      this.#collection,
+      topic,
+      callback,
+      options,
+    );
   }
 
   getOne(id: string, options?: RecordOptions): Promise<T> {
@@ -116,9 +144,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
     body: Record<string, unknown>,
     options?: RecordOptions,
   ): Promise<T | null> {
-    const record = await this.#send<T | undefined>("/records", {
+    const record = await this.#send<T | undefined>('/records', {
       ...options,
-      method: "POST",
+      method: 'POST',
       body: await this.#body(body, options),
     });
     return record ?? null;
@@ -137,7 +165,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const signedIn = store.record;
     const record = await this.#send<T | undefined>(
       `/records/${encodeURIComponent(id)}`,
-      { ...options, method: "PATCH", body: await this.#body(body, options) },
+      { ...options, method: 'PATCH', body: await this.#body(body, options) },
     );
     if (
       record &&
@@ -160,7 +188,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   async delete(id: string, options?: SendOptions): Promise<void> {
     await this.#send(`/records/${encodeURIComponent(id)}`, {
       ...options,
-      method: "DELETE",
+      method: 'DELETE',
     });
     // Checked once deleted: another account may have signed in meanwhile.
     const store = this.#client.authStore;
@@ -177,9 +205,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<AuthResponse<T> | null> {
     const { cookie, ...rest } = options;
     const apply = authSync(this.#client.authStore).intent();
-    const response = await this.#send<AuthResponse<T> | undefined>("/sign-up", {
+    const response = await this.#send<AuthResponse<T> | undefined>('/sign-up', {
       ...rest,
-      method: "POST",
+      method: 'POST',
       body: await this.#body(
         { ...body, ...(cookie && { cookie: true }) },
         rest,
@@ -200,7 +228,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: AuthOptions = {},
   ): Promise<AuthResponse<T>> {
     const { cookie, ...rest } = options;
-    return this.#signIn("/auth-with-password", rest, {
+    return this.#signIn('/auth-with-password', rest, {
       identity,
       password,
       ...(cookie && { cookie: true }),
@@ -213,12 +241,62 @@ export class RecordService<T extends RecordModel = RecordModel> {
    */
   async refreshSession(options?: RecordOptions): Promise<AuthResponse<T>> {
     const unchanged = authSync(this.#client.authStore).snapshot();
-    const response = await this.#send<AuthResponse<T>>("/auth-refresh", {
+    const response = await this.#send<AuthResponse<T>>('/auth-refresh', {
       ...options,
-      method: "POST",
+      method: 'POST',
     });
     if (unchanged()) this.#save(response);
     return response;
+  }
+
+  /**
+   * As a superuser, starts a session that acts as the record, to see the app
+   * as its owner does. By default the result has a new client signed in as
+   * the record, with its own in-memory auth store: this client stays signed
+   * in as the superuser. With `cookie: true`, this browser's cookie session
+   * becomes the record's instead, and `signOut()` gives the superuser theirs
+   * back; the auth store is then saved as for a cookie sign-in. Cookie mode
+   * needs the superuser to be signed in with the cookie.
+   */
+  async impersonate(
+    id: string,
+    options: ImpersonateOptions & { cookie: true },
+  ): Promise<ImpersonateResponse<T>>;
+  async impersonate(
+    id: string,
+    options?: ImpersonateOptions & { cookie?: false },
+  ): Promise<ImpersonateResponse<T> & { client: NextBaseClient }>;
+  /** `client` is set when `cookie` is not true. */
+  async impersonate(
+    id: string,
+    options?: ImpersonateOptions,
+  ): Promise<ImpersonateResponse<T> & { client?: NextBaseClient }>;
+  async impersonate(
+    id: string,
+    options: ImpersonateOptions = {},
+  ): Promise<ImpersonateResponse<T> & { client?: NextBaseClient }> {
+    const { cookie, duration, ...rest } = options;
+    const apply = cookie
+      ? authSync(this.#client.authStore).intent()
+      : undefined;
+    const response = await this.#send<ImpersonateResponse<T>>(
+      `/impersonate/${encodeURIComponent(id)}`,
+      {
+        ...rest,
+        method: 'POST',
+        body: {
+          ...(duration !== undefined && { duration }),
+          ...(cookie && { cookie: true }),
+        },
+      },
+    );
+    if (apply) {
+      apply(() => this.#save(response));
+      return response;
+    }
+    const store = new AuthStore({ storage: null });
+    store.save(response.token ?? '', response.record);
+    return { ...response, client: this.#client.withAuthStore(store) };
   }
 
   /**
@@ -244,9 +322,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
 
   /** Signs in with an OAuth2 provider by navigating to {@link oauth2Url}. Browser only. */
   signInWithOAuth2(provider: string, options: OAuth2Options = {}): void {
-    if (typeof location === "undefined") {
+    if (typeof location === 'undefined') {
       throw new Error(
-        "signInWithOAuth2 works in the browser; use oauth2Url elsewhere.",
+        'signInWithOAuth2 works in the browser; use oauth2Url elsewhere.',
       );
     }
     location.assign(this.oauth2Url(provider, options));
@@ -254,9 +332,9 @@ export class RecordService<T extends RecordModel = RecordModel> {
 
   /** Links an OAuth2 provider to the signed-in account by navigating to it. Browser only. */
   linkOAuth2(provider: string, options: OAuth2Options = {}): void {
-    if (typeof location === "undefined") {
+    if (typeof location === 'undefined') {
       throw new Error(
-        "linkOAuth2 works in the browser; use oauth2Url with link: true elsewhere.",
+        'linkOAuth2 works in the browser; use oauth2Url with link: true elsewhere.',
       );
     }
     location.assign(this.oauth2Url(provider, { ...options, link: true }));
@@ -283,13 +361,13 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<void> {
     await this.#send(
       `/records/${encodeURIComponent(recordId)}/linked-accounts/${encodeURIComponent(provider)}`,
-      { ...options, method: "DELETE" },
+      { ...options, method: 'DELETE' },
     );
   }
 
   /** The sign-in methods of this auth collection, for a login page. */
   listAuthMethods(options?: SendOptions): Promise<AuthMethods> {
-    return this.#send("/auth-methods", options);
+    return this.#send('/auth-methods', options);
   }
 
   /** Emails a verification link if `email` is an unverified account. Never reveals which. */
@@ -297,7 +375,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     email: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-email-verification", { email }, options);
+    await this.#post('/request-email-verification', { email }, options);
   }
 
   /** Verifies an account with a verification link's token. */
@@ -305,7 +383,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     token: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/confirm-email-verification", { token }, options);
+    await this.#post('/confirm-email-verification', { token }, options);
   }
 
   /** Emails a password reset link if `email` is an account. Never reveals which. */
@@ -313,7 +391,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     email: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-password-reset", { email }, options);
+    await this.#post('/request-password-reset', { email }, options);
   }
 
   /** Sets a new password with a reset link's token. Ends every session of the account. */
@@ -324,7 +402,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options?: SendOptions,
   ): Promise<void> {
     await this.#post(
-      "/confirm-password-reset",
+      '/confirm-password-reset',
       { token, password, passwordConfirm },
       options,
     );
@@ -335,7 +413,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     newEmail: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-email-change", { newEmail }, options);
+    await this.#post('/request-email-change', { newEmail }, options);
   }
 
   /** Confirms an email change with its token and the current password. Ends every session. */
@@ -344,7 +422,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     password: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/confirm-email-change", { token, password }, options);
+    await this.#post('/confirm-email-change', { token, password }, options);
   }
 
   /**
@@ -352,7 +430,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * Never reveals whether an account exists.
    */
   async requestPhoneCode(phone: string, options?: SendOptions): Promise<void> {
-    await this.#post("/request-phone-code", { phone }, options);
+    await this.#post('/request-phone-code', { phone }, options);
   }
 
   /** Texts a password reset code if `phone` is an account's verified phone. Never reveals which. */
@@ -360,7 +438,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     phone: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-password-reset-by-phone", { phone }, options);
+    await this.#post('/request-password-reset-by-phone', { phone }, options);
   }
 
   /**
@@ -373,7 +451,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options: AuthOptions = {},
   ): Promise<AuthResponse<T>> {
     const { cookie, ...rest } = options;
-    return this.#signIn("/auth-with-phone-code", rest, {
+    return this.#signIn('/auth-with-phone-code', rest, {
       phone,
       code,
       ...(cookie && { cookie: true }),
@@ -389,7 +467,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options?: SendOptions,
   ): Promise<void> {
     await this.#post(
-      "/confirm-password-reset-by-phone",
+      '/confirm-password-reset-by-phone',
       { phone, code, password, passwordConfirm },
       options,
     );
@@ -400,7 +478,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     phone: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/request-phone-verification", { phone }, options);
+    await this.#post('/request-phone-verification', { phone }, options);
   }
 
   /** Verifies `phone` for the signed-in account. Changing it signs out other devices. */
@@ -409,7 +487,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     code: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#post("/confirm-phone-verification", { phone, code }, options);
+    await this.#post('/confirm-phone-verification', { phone, code }, options);
   }
 
   async #post(
@@ -419,7 +497,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<void> {
     await this.#client.send(
       `/collections/${encodeURIComponent(this.#collection)}${path}`,
-      { ...options, method: "POST", body },
+      { ...options, method: 'POST', body },
     );
   }
 
@@ -431,7 +509,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     const apply = authSync(this.#client.authStore).intent();
     const response = await this.#send<AuthResponse<T>>(path, {
       ...options,
-      method: "POST",
+      method: 'POST',
       body,
     });
     apply(() => this.#save(response));
@@ -439,7 +517,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   #save(response: AuthResponse<T>): void {
-    this.#client.authStore.save(response.token ?? "", response.record);
+    this.#client.authStore.save(response.token ?? '', response.record);
   }
 
   #matches(record: RecordModel): boolean {

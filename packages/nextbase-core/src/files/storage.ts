@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream } from 'node:fs';
 import {
   copyFile,
   mkdir,
@@ -8,9 +8,9 @@ import {
   rmdir,
   stat,
   writeFile,
-} from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
-import { Readable } from "node:stream";
+} from 'node:fs/promises';
+import { dirname, join, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
 import {
   CopyObjectCommand,
   DeleteObjectsCommand,
@@ -19,10 +19,10 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { ApiError } from "../errors.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { ApiError } from '../errors.ts';
+import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
 
 export interface StorageOptions {
   /** Defaults to `.nextbase/storage`. Serverless hosts lose local files: use `s3` there. */
@@ -52,7 +52,7 @@ export interface Presentation {
 
 /** Files by key. Keys are built from ids and generated names, never taken from requests. */
 export interface Storage {
-  readonly kind: "local" | "s3";
+  readonly kind: 'local' | 's3';
   put(key: string, data: Uint8Array, contentType: string): Promise<void>;
   /** The whole file, or `range` (inclusive); undefined when missing. */
   read(
@@ -84,12 +84,12 @@ export function newStorage(options: StorageOptions = {}): Storage {
   if (options.s3) return new S3Storage(options.s3);
   // Only known at runtime, so Next.js must not trace the files under it into
   // the build, which would include the whole project.
-  const dir = options.dir ?? join(".nextbase", "storage");
+  const dir = options.dir ?? join('.nextbase', 'storage');
   return new LocalStorage(resolve(/* turbopackIgnore: true */ dir));
 }
 
 class LocalStorage implements Storage {
-  readonly kind = "local";
+  readonly kind = 'local';
   readonly #root: string;
 
   constructor(root: string) {
@@ -110,7 +110,7 @@ class LocalStorage implements Storage {
     if (process.env.VERCEL) {
       throw new ApiError(
         400,
-        "Uploads on Vercel need a bucket: pass the storage.s3 option to new NextBase().",
+        'Uploads on Vercel need a bucket: pass the storage.s3 option to new NextBase().',
       );
     }
     const path = this.#path(key);
@@ -134,7 +134,7 @@ class LocalStorage implements Storage {
   async readStart(key: string, length: number) {
     let file: Awaited<ReturnType<typeof open>>;
     try {
-      file = await open(this.#path(key), "r");
+      file = await open(this.#path(key), 'r');
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
@@ -176,23 +176,24 @@ class LocalStorage implements Storage {
   }
 
   async deletePrefix(prefix: string): Promise<void> {
-    await rm(this.#path(prefix.replace(/\/+$/, "")), {
-      recursive: true,
-      force: true,
-    });
+    const path = this.#path(prefix.replace(/\/+$/, ''));
+    await rm(path, { recursive: true, force: true });
+    // Removes the record's directory once empty, as `delete` does.
+    if (dirname(path) !== this.#root)
+      await rmdir(dirname(path)).catch(() => {});
   }
 }
 
 class S3Storage implements Storage {
-  readonly kind = "s3";
+  readonly kind = 's3';
   readonly #client: S3Client;
   readonly #bucket: string;
 
   constructor(options: S3StorageOptions) {
-    if (!options.bucket) throw new TypeError("storage.s3 needs a bucket.");
+    if (!options.bucket) throw new TypeError('storage.s3 needs a bucket.');
     this.#bucket = options.bucket;
     this.#client = new S3Client({
-      region: options.region ?? "auto",
+      region: options.region ?? 'auto',
       ...(options.endpoint && { endpoint: options.endpoint }),
       ...(options.forcePathStyle && { forcePathStyle: true }),
       ...(options.accessKeyId &&
@@ -269,7 +270,7 @@ class S3Storage implements Storage {
       new CopyObjectCommand({
         Bucket: this.#bucket,
         Key: to,
-        CopySource: `${this.#bucket}/${from.split("/").map(encodeURIComponent).join("/")}`,
+        CopySource: `${this.#bucket}/${from.split('/').map(encodeURIComponent).join('/')}`,
       }),
     );
   }
@@ -318,7 +319,7 @@ class S3Storage implements Storage {
       }),
       {
         expiresIn: seconds,
-        signableHeaders: new Set(["content-type", "content-length"]),
+        signableHeaders: new Set(['content-type', 'content-length']),
       },
     );
   }
@@ -342,7 +343,7 @@ class S3Storage implements Storage {
 }
 
 function isMissing(error: unknown): boolean {
-  return (error as { code?: unknown }).code === "ENOENT";
+  return (error as { code?: unknown }).code === 'ENOENT';
 }
 
 function isNotFound(error: unknown): boolean {
@@ -351,8 +352,8 @@ function isNotFound(error: unknown): boolean {
     $metadata?: { httpStatusCode?: number };
   };
   return (
-    name === "NoSuchKey" ||
-    name === "NotFound" ||
+    name === 'NoSuchKey' ||
+    name === 'NotFound' ||
     $metadata?.httpStatusCode === 404
   );
 }

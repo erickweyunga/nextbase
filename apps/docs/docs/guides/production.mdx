@@ -43,7 +43,8 @@ export const nextbase = new NextBase({
 
 - **Connection poolers:** NextBase works behind PgBouncer (including its
   transaction mode) and the poolers of Neon, Supabase and RDS Proxy. Use the
-  pooled connection string on serverless platforms.
+  pooled connection string on serverless platforms. [Realtime](#realtime)
+  also needs a direct connection to listen on.
 - **The pool:** with a connection string, NextBase keeps one `pg` pool per
   string, with up to 10 connections. Idle connections close after 5 seconds,
   so a suspended serverless instance lets them go, and on Vercel they are
@@ -95,11 +96,70 @@ When an upgrade adds a system field to auth collections, such as `phone`,
 renamed to `user_<name>` first, together with its column and the rules that
 use it, and the server log says so. Its data is kept.
 
+## Realtime
+
+[Realtime](/docs/guides/realtime) listens for new events with Postgres
+`LISTEN`, which transaction poolers do not support. With a pooled connection
+string, such as Neon's `-pooler` host or Supabase's port 6543, set
+`listenUrl` to the direct one. Each instance with open streams holds one
+such connection, besides its pool.
+
+```ts title="lib/nextbase.ts"
+import { NextBase } from "@nextbasejs/core";
+
+export const nextbase = new NextBase({
+  realtime: {
+    collections: ["messages"],
+    listenUrl: process.env.DATABASE_URL_UNPOOLED,
+  },
+});
+```
+
+A realtime stream is a response that stays open. Serverless hosts cap how
+long one may run: on Vercel, 300 seconds by default, and up to 800 on Pro.
+NextBase ends each stream after `streamSeconds`, 240 by default, and the
+client reconnects at once without missing events. Keep `streamSeconds` below
+the route's `maxDuration`, for example to use longer streams:
+
+```ts title="app/api/nextbase/[...path]/route.ts"
+import { newNextHandler } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export const maxDuration = 800;
+export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
+```
+
+with `streamSeconds: 780` in the `realtime` option. An open stream keeps its
+function running, and on usage-billed hosts it is billed while open.
+
+Each instance serves at most 1000 streams. Transactions that write to
+realtime collections commit one at a time, which caps write throughput to
+those collections at very high rates; see
+[Limits](/docs/guides/realtime#limits).
+
+## Logs
+
+NextBase keeps a [log](/docs/guides/logs) of HTTP requests and background
+failures in `nextbase._logs`, for 7 days by default. Each instance writes its
+entries in the background, a burst at a time, and deletes expired ones about
+every 10 minutes. On a busy app, keep `maxDays` short or raise `minLevel` to
+`4` to keep only warnings and errors, so the table stays small. Outside
+serverless hosts, call `await nextbase.flush()` before ending a pool you
+passed in or before the process exits, so entries still waiting are not
+lost.
+
+To record client IPs with `logs: { ip: true }`, and to rate limit guests,
+NextBase must know which header to trust. On Vercel it reads Vercel's own headers. Behind your own
+proxy or load balancer, set `clientIp: { header: "x-forwarded-for" }`, with
+`trustedHops` for each further proxy of yours. Without a header you control,
+any client could claim any IP, so NextBase records none.
+
 ## Many instances
 
 Serverless platforms run many copies of your app. A collection or rule change
 made through one copy applies to every copy from its next request, and two
-changes made at the same time never interfere.
+changes made at the same time never interfere. Realtime events reach the
+streams of every copy: each write notifies all of them through Postgres.
 
 ## First superuser
 
@@ -112,9 +172,14 @@ deploy, or ahead of time with `nextbase.createSuperuser(email, password)`.
 
 - Serve the app over HTTPS. In production the session cookie is
   `__Host-nextbase_session`, which browsers only accept as `Secure`.
-- Add IP rate limiting at your platform or proxy. NextBase limits failed
-  sign-ins per account (10 every 15 minutes), but cannot see trusted client IPs
-  itself.
+- Check that guests are [rate limited](/docs/guides/rate-limits). NextBase
+  limits every caller by default, but counts guests by IP, which it only
+  knows on Vercel or with `clientIp` set to the header your proxy sets.
+  Failed sign-ins are also limited per account (10 every 15 minutes). Each
+  limited request adds one round trip to the database, which shows more on
+  serverless hosts far from it. On a cold instance, the first create, or the
+  first request a rule naming a collection could match, can add a schema
+  read.
 - Review every collection's rules. New collections default to superuser-only.
 - Keep superuser clients (`nextbase.client({ superuser: true })`) in trusted
   server code.

@@ -56,6 +56,14 @@
     "range-parser": "catalog:",
     "pg": "catalog:"
   },
+  "peerDependencies": {
+    "sharp": "^0.34.0 || ^0.35.0"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
     "@types/range-parser": "catalog:",
@@ -64,6 +72,7 @@
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "publint": "catalog:",
+    "sharp": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

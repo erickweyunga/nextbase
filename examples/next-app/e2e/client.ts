@@ -14,9 +14,9 @@ export interface ListReply<T> {
 
 export class Api {
   readonly base: string;
-  token = "";
+  token = '';
 
-  constructor(base: string, token = "") {
+  constructor(base: string, token = '') {
     this.base = base;
     this.token = token;
   }
@@ -32,21 +32,21 @@ export class Api {
   ): Promise<Reply<T>> {
     const headers: Record<string, string> = {};
     if (this.token) headers.authorization = `Bearer ${this.token}`;
-    if (body !== undefined) headers["content-type"] = "application/json";
+    if (body !== undefined) headers['content-type'] = 'application/json';
     const response = await fetch(`${this.base}${path}`, {
       method,
       headers,
       body:
         body === undefined
           ? undefined
-          : typeof body === "string"
+          : typeof body === 'string'
             ? body
             : JSON.stringify(body),
     });
     const text = await response.text();
     return {
       status: response.status,
-      body: text === "" ? ({} as Reply<T>["body"]) : JSON.parse(text),
+      body: text === '' ? ({} as Reply<T>['body']) : JSON.parse(text),
     };
   }
 
@@ -57,7 +57,7 @@ export class Api {
     const query = new URLSearchParams(
       Object.entries(params).map(([k, v]) => [k, String(v)]),
     );
-    return this.send("GET", `/collections/${collection}/records?${query}`);
+    return this.send('GET', `/collections/${collection}/records?${query}`);
   }
 
   view<T = Record<string, unknown>>(
@@ -66,7 +66,7 @@ export class Api {
     params: Record<string, string> = {},
   ): Promise<Reply<T>> {
     return this.send(
-      "GET",
+      'GET',
       `/collections/${collection}/records/${id}?${new URLSearchParams(params)}`,
     );
   }
@@ -75,7 +75,7 @@ export class Api {
     collection: string,
     body: Record<string, unknown>,
   ): Promise<Reply<T>> {
-    return this.send("POST", `/collections/${collection}/records`, body);
+    return this.send('POST', `/collections/${collection}/records`, body);
   }
 
   update<T = Record<string, unknown>>(
@@ -83,11 +83,11 @@ export class Api {
     id: string,
     body: Record<string, unknown>,
   ): Promise<Reply<T>> {
-    return this.send("PATCH", `/collections/${collection}/records/${id}`, body);
+    return this.send('PATCH', `/collections/${collection}/records/${id}`, body);
   }
 
   remove(collection: string, id: string): Promise<Reply> {
-    return this.send("DELETE", `/collections/${collection}/records/${id}`);
+    return this.send('DELETE', `/collections/${collection}/records/${id}`);
   }
 
   async login(
@@ -96,7 +96,7 @@ export class Api {
     password: string,
   ): Promise<Api> {
     const reply = await this.send<{ token: string }>(
-      "POST",
+      'POST',
       `/collections/${collection}/auth-with-password`,
       {
         identity,
@@ -113,7 +113,7 @@ export class Api {
   /** Signs up through a public create rule and logs in. */
   async signup(email: string, name: string): Promise<{ api: Api; id: string }> {
     const password = `pw-${name}-123-4567`;
-    const reply = await this.as("").create("users", {
+    const reply = await this.as('').create('users', {
       email,
       name,
       password,
@@ -124,7 +124,7 @@ export class Api {
         `signup failed: ${reply.status} ${JSON.stringify(reply.body)}`,
       );
     return {
-      api: await this.login("users", email, password),
+      api: await this.login('users', email, password),
       id: reply.body.id as string,
     };
   }

@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { ClientError } from "@nextbasejs/client";
-import { useNextBase } from "@nextbasejs/react";
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { ClientError } from '@nextbasejs/client';
+import { useNextBase } from '@nextbasejs/react';
+import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
 
 export function UnlinkButton({
   collection,
@@ -25,7 +25,7 @@ export function UnlinkButton({
         setError(null);
         router.refresh();
       } catch (cause) {
-        setError(cause instanceof ClientError ? cause.message : "Failed.");
+        setError(cause instanceof ClientError ? cause.message : 'Failed.');
       }
     });
   return (

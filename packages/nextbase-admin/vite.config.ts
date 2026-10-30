@@ -1,5 +1,5 @@
-import { defineConfig } from "vite";
-import { viteSingleFile } from "vite-plugin-singlefile";
+import { defineConfig } from 'vite';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
 // Everything is inlined into dist/index.html so the server can embed the
 // admin UI as a single string and serve it from its own route.

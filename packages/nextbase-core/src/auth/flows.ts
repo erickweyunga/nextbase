@@ -1,26 +1,26 @@
-import type { AuthCollection, TokenType } from "@nextbasejs/client";
-import { type DB, hash, type Row } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
-import type { Hooks } from "../records/hooks.ts";
-import { planUpdateRecord, systemContext } from "../records/service.ts";
-import { EMAIL_PATTERN } from "../records/values.ts";
-import type { Schema } from "../schema/cache.ts";
-import { unstorableText } from "../storable.ts";
-import { findByEmail } from "./identity.ts";
-import { unlinkUnproven } from "./linked-accounts.ts";
-import type { Mailer } from "./mail.ts";
-import { verifyPassword } from "./password.ts";
-import { type Principal, recordIn } from "./principal.ts";
+import type { AuthCollection, TokenType } from '@nextbasejs/client';
+import { type DB, hash, type Row } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError } from '../errors.ts';
+import type { Hooks } from '../records/hooks.ts';
+import { planUpdateRecord, systemContext } from '../records/service.ts';
+import { EMAIL_PATTERN } from '../records/values.ts';
+import type { Schema } from '../schema/cache.ts';
+import { unstorableText } from '../storable.ts';
+import { findByEmail } from './identity.ts';
+import { unlinkUnproven } from './linked-accounts.ts';
+import type { Mailer } from './mail.ts';
+import { verifyPassword } from './password.ts';
+import { type Principal, recordIn } from './principal.ts';
 import {
   accountKey,
   clearAttempts,
   countAttempt,
   identityKey,
   mailKey,
-} from "./throttle.ts";
-import { peekToken, signToken, verifyToken } from "./tokens.ts";
+} from './throttle.ts';
+import { peekToken, signToken, verifyToken } from './tokens.ts';
 
 // Email verification, password reset and email change.
 // - Answers and timing are the same whether or not the account exists.
@@ -38,10 +38,10 @@ export interface FlowContext {
 }
 
 const invalidToken = (): ApiError =>
-  new ApiError(400, "The link is invalid or has expired.", {
+  new ApiError(400, 'The link is invalid or has expired.', {
     token: {
-      code: "validation_invalid_token",
-      message: "Invalid or expired.",
+      code: 'validation_invalid_token',
+      message: 'Invalid or expired.',
     },
   });
 
@@ -55,8 +55,8 @@ export async function requestEmailVerification(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
   if (!record || record.emailVerified === true) return;
-  ctx.mailer.send("verification", collection.name, record.email as string, {
-    token: await token(collection, record, "verification", {
+  ctx.mailer.send('verification', collection.name, record.email as string, {
+    token: await token(collection, record, 'verification', {
       email: record.email,
     }),
   });
@@ -71,7 +71,7 @@ export async function confirmEmailVerification(
     ctx.db,
     collection,
     token,
-    "verification",
+    'verification',
   );
   // A token for an address the record no longer has proves nothing.
   if (claims.email !== record.email) throw invalidToken();
@@ -89,8 +89,8 @@ export async function requestPasswordReset(
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   const record = await findByEmail(ctx.db, collection, address);
   if (!record) return;
-  ctx.mailer.send("passwordReset", collection.name, record.email as string, {
-    token: await token(collection, record, "passwordReset", {
+  ctx.mailer.send('passwordReset', collection.name, record.email as string, {
+    token: await token(collection, record, 'passwordReset', {
       email: record.email,
     }),
   });
@@ -109,7 +109,7 @@ export async function confirmPasswordReset(
     ctx.db,
     collection,
     input.token,
-    "passwordReset",
+    'passwordReset',
   );
   if (claims.email !== record.email) throw invalidToken();
   await privilegedUpdate(ctx, collection, record, {
@@ -120,7 +120,7 @@ export async function confirmPasswordReset(
   await clearAttempts(ctx.db, [
     accountKey(collection.id, record.id as string),
     ...collection.identityFields.flatMap((name) =>
-      typeof record[name] === "string" && record[name] !== ""
+      typeof record[name] === 'string' && record[name] !== ''
         ? [identityKey(collection.id, record[name] as string)]
         : [],
     ),
@@ -133,21 +133,21 @@ export async function requestEmailChange(
   principal: Principal,
   newEmail: unknown,
 ): Promise<void> {
-  const record = recordIn(principal, collection, "change its email");
-  const address = checkEmail(newEmail, "newEmail");
+  const record = recordIn(principal, collection, 'change its email');
+  const address = checkEmail(newEmail, 'newEmail');
   if (address.toLowerCase() === String(record.email).toLowerCase()) {
-    throw new ApiError(400, "Failed to request the email change.", {
+    throw new ApiError(400, 'Failed to request the email change.', {
       newEmail: {
-        code: "validation_same_email",
-        message: "Is the current email.",
+        code: 'validation_same_email',
+        message: 'Is the current email.',
       },
     });
   }
   ctx.mailer.check();
   await countAttempt(ctx.db, [mailKey(collection.id, address)]);
   // Uniqueness is checked on confirm, so this request does not reveal it.
-  ctx.mailer.send("emailChange", collection.name, address, {
-    token: await token(collection, record, "emailChange", {
+  ctx.mailer.send('emailChange', collection.name, address, {
+    token: await token(collection, record, 'emailChange', {
       email: record.email,
       newEmail: address,
     }),
@@ -164,21 +164,21 @@ export async function confirmEmailChange(
     ctx.db,
     collection,
     input.token,
-    "emailChange",
+    'emailChange',
   );
-  if (claims.email !== record.email || typeof claims.newEmail !== "string") {
+  if (claims.email !== record.email || typeof claims.newEmail !== 'string') {
     throw invalidToken();
   }
   const keys = [accountKey(collection.id, record.id as string)];
   await countAttempt(ctx.db, keys);
   const ok =
-    typeof input.password === "string" &&
+    typeof input.password === 'string' &&
     (await verifyPassword(input.password, record.password as string));
   if (!ok) {
-    throw new ApiError(400, "Failed to confirm the email change.", {
+    throw new ApiError(400, 'Failed to confirm the email change.', {
       password: {
-        code: "validation_invalid_password",
-        message: "Does not match the current password.",
+        code: 'validation_invalid_password',
+        message: 'Does not match the current password.',
       },
     });
   }
@@ -187,20 +187,20 @@ export async function confirmEmailChange(
     email: claims.newEmail,
     emailVerified: true,
   });
-  ctx.mailer.send("emailChanged", collection.name, record.email as string);
+  ctx.mailer.send('emailChanged', collection.name, record.email as string);
 }
 
-function checkEmail(value: unknown, field = "email"): string {
+function checkEmail(value: unknown, field = 'email'): string {
   if (
-    typeof value !== "string" ||
+    typeof value !== 'string' ||
     value.length > 254 ||
     unstorableText(value) !== undefined ||
     !EMAIL_PATTERN.test(value)
   ) {
-    throw new ApiError(400, "Failed to send the email.", {
+    throw new ApiError(400, 'Failed to send the email.', {
       [field]: {
-        code: "validation_invalid_email",
-        message: "Must be a valid email address.",
+        code: 'validation_invalid_email',
+        message: 'Must be a valid email address.',
       },
     });
   }
@@ -228,7 +228,7 @@ async function verified(
   value: unknown,
   type: TokenType,
 ): Promise<{ record: Row; claims: Record<string, unknown> }> {
-  const tokenText = typeof value === "string" ? value : "";
+  const tokenText = typeof value === 'string' ? value : '';
   const peeked = peekToken(tokenText);
   if (!peeked || peeked.collectionId !== collection.id) throw invalidToken();
   const [record] = await db

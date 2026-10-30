@@ -1,20 +1,20 @@
-import type { Collection, Field, ViewCollection } from "@nextbasejs/client";
-import type { Builder, Tx } from "@nextbasejs/dbx";
-import { SCHEMA, table } from "../db/system.ts";
-import { ApiError } from "../errors.ts";
-import { LOWER_ALPHANUMERIC, randomString } from "../random.ts";
-import { fieldNameProblem } from "./fields.ts";
+import type { Collection, Field, ViewCollection } from '@nextbasejs/client';
+import type { Builder, Tx } from '@nextbasejs/dbx';
+import { SCHEMA, table } from '../db/system.ts';
+import { ApiError } from '../errors.ts';
+import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
+import { fieldNameProblem } from './fields.ts';
 
 // View collections run as a dedicated least-privilege role: SELECT on collection
 // tables minus auth secrets, nothing else. So Postgres itself keeps views from
 // secrets and system tables. The role owns the views, and every view read runs
 // as it (SET LOCAL ROLE), because functions in a view run as whoever queries it.
 
-const SECRET_COLUMNS: ReadonlySet<string> = new Set(["password", "tokenKey"]);
+const SECRET_COLUMNS: ReadonlySet<string> = new Set(['password', 'tokenKey']);
 
 export async function readViewRole(q: Builder): Promise<string | null> {
   const [role] = await q
-    .newQuery(`SELECT view_role FROM {{${table("_meta")}}}`)
+    .newQuery(`SELECT view_role FROM {{${table('_meta')}}}`)
     .column<string | null>();
   return role ?? null;
 }
@@ -39,7 +39,7 @@ export async function ensureViewRole(tx: Tx): Promise<string> {
     );
   }
   await tx
-    .newQuery(`UPDATE {{${table("_meta")}}} SET view_role = {:role}`)
+    .newQuery(`UPDATE {{${table('_meta')}}} SET view_role = {:role}`)
     .bind({ role })
     .execute();
   return role;
@@ -54,10 +54,10 @@ export async function grantViewRole(
   const exec = (sql: string): Promise<unknown> => tx.newQuery(sql).execute();
   await exec(`GRANT USAGE ON SCHEMA {{${SCHEMA}}} TO ${quoted}`);
   for (const collection of collections) {
-    if (collection.type === "view") continue;
+    if (collection.type === 'view') continue;
     const t = `{{${table(collection.name)}}}`;
     await exec(`REVOKE ALL ON TABLE ${t} FROM ${quoted}`);
-    if (collection.type === "base") {
+    if (collection.type === 'base') {
       await exec(`GRANT SELECT ON TABLE ${t} TO ${quoted}`);
       continue;
     }
@@ -69,7 +69,7 @@ export async function grantViewRole(
       `REVOKE SELECT ("password", "tokenKey") ON TABLE ${t} FROM ${quoted}`,
     );
     await exec(
-      `GRANT SELECT (${columns.join(", ")}) ON TABLE ${t} TO ${quoted}`,
+      `GRANT SELECT (${columns.join(', ')}) ON TABLE ${t} TO ${quoted}`,
     );
   }
 }
@@ -94,10 +94,10 @@ async function asViewRole<T>(
     .execute();
   const result = await run();
   // Transaction-scoped, like the SET LOCAL ROLE it undoes.
-  await tx.newQuery("SET LOCAL ROLE NONE").execute();
+  await tx.newQuery('SET LOCAL ROLE NONE').execute();
   await tx
     .newQuery("SELECT set_config('search_path', {:path}, true)")
-    .bind({ path: path ?? "" })
+    .bind({ path: path ?? '' })
     .execute();
   await tx
     .newQuery(`REVOKE CREATE ON SCHEMA {{${SCHEMA}}} FROM ${quoted}`)
@@ -117,10 +117,10 @@ export function readAsViewRole<T>(
   restore = false,
 ): Promise<T> {
   if (role === null)
-    throw new Error("A view collection exists without a view role.");
+    throw new Error('A view collection exists without a view role.');
   return db.transaction(async (tx) => {
     const [previous] = restore
-      ? await tx.newQuery("SELECT current_user").column<string>()
+      ? await tx.newQuery('SELECT current_user').column<string>()
       : [];
     await tx
       .newQuery(`SET LOCAL ROLE ${tx.quoteSimpleColumnName(role)}`)
@@ -149,7 +149,7 @@ export async function createView(
   }: { previous?: readonly Field[]; replace?: boolean } = {},
 ): Promise<Field[]> {
   // On its own lines, so a trailing -- comment cannot swallow what follows.
-  const source = `\n${view.viewQuery.replace(/;\s*$/, "")}\n`;
+  const source = `\n${view.viewQuery.replace(/;\s*$/, '')}\n`;
   return asViewRole(tx, role, async () => {
     // First as written, under a scratch name, to learn its columns.
     const scratch = table(`_view_${view.id}`);
@@ -167,9 +167,9 @@ export async function createView(
       .all<{ name: string; type: string; category: string }>();
     await tx.newQuery(`DROP VIEW {{${scratch}}}`).execute();
     const typed = columns.map((column) => typeColumn(column));
-    if (!typed.some((c) => c.name === "id")) {
+    if (!typed.some((c) => c.name === 'id')) {
       throw invalidQuery(
-        "The query needs an id column, unique per row, e.g. SELECT p.id, ...",
+        'The query needs an id column, unique per row, e.g. SELECT p.id, ...',
       );
     }
 
@@ -179,7 +179,7 @@ export async function createView(
         (c) =>
           `${c.cast(`"q".${tx.quoteSimpleColumnName(c.name)}`)} AS ${tx.quoteSimpleColumnName(c.name)}`,
       )
-      .join(", ");
+      .join(', ');
     const target = `{{${table(view.name)}}}`;
     const definition = `AS SELECT ${select} FROM (${source}) AS "q"`;
     if (!replace) {
@@ -194,7 +194,7 @@ export async function createView(
         );
       } catch (error) {
         // Columns removed, renamed or retyped: only a new view will do.
-        if ((error as { code?: unknown }).code !== "42P16") {
+        if ((error as { code?: unknown }).code !== '42P16') {
           throw invalidQuery((error as Error).message);
         }
         await tx.newQuery(`DROP VIEW ${target}`).execute();
@@ -243,8 +243,8 @@ async function query(tx: Tx, sql: string): Promise<void> {
 }
 
 function invalidQuery(message: string): ApiError {
-  return new ApiError(400, "Failed to validate the collection.", {
-    viewQuery: { code: "validation_invalid_query", message },
+  return new ApiError(400, 'Failed to validate the collection.', {
+    viewQuery: { code: 'validation_invalid_query', message },
   });
 }
 
@@ -268,61 +268,61 @@ function typeColumn(column: {
     );
   }
   const base = { name, system: false, required: false, hidden: false };
-  if (category === "S" || type === "uuid" || type === "name") {
+  if (category === 'S' || type === 'uuid' || type === 'name') {
     return {
       name,
       cast: (sql) => `${sql}::text`,
       field: (id) => ({
         ...base,
         id,
-        type: "text",
+        type: 'text',
         min: 0,
         max: 0,
-        pattern: "",
+        pattern: '',
         primaryKey: false,
       }),
     };
   }
-  if (name === "id") {
+  if (name === 'id') {
     throw invalidQuery(
       `The id column must be text, not ${type}; cast it, e.g. id::text.`,
     );
   }
-  if (category === "N" && type !== "oid") {
+  if (category === 'N' && type !== 'oid') {
     return {
       name,
       cast: (sql) => `${sql}::double precision`,
       field: (id) => ({
         ...base,
         id,
-        type: "number",
+        type: 'number',
         min: null,
         max: null,
         onlyInt: false,
       }),
     };
   }
-  if (category === "B") {
+  if (category === 'B') {
     return {
       name,
       cast: (sql) => sql,
-      field: (id) => ({ ...base, id, type: "bool" }),
+      field: (id) => ({ ...base, id, type: 'bool' }),
     };
   }
-  if (type === "timestamptz" || type === "timestamp" || type === "date") {
+  if (type === 'timestamptz' || type === 'timestamp' || type === 'date') {
     return {
       name,
       // A date or timestamp without a zone is read as UTC, as NextBase stores dates.
       cast: (sql) =>
-        type === "timestamptz" ? sql : `(${sql}::timestamp AT TIME ZONE 'UTC')`,
-      field: (id) => ({ ...base, id, type: "date", min: "", max: "" }),
+        type === 'timestamptz' ? sql : `(${sql}::timestamp AT TIME ZONE 'UTC')`,
+      field: (id) => ({ ...base, id, type: 'date', min: '', max: '' }),
     };
   }
-  if (type === "jsonb" || type === "json") {
+  if (type === 'jsonb' || type === 'json') {
     return {
       name,
       cast: (sql) => `${sql}::jsonb`,
-      field: (id) => ({ ...base, id, type: "json", maxSize: 0 }),
+      field: (id) => ({ ...base, id, type: 'json', maxSize: 0 }),
     };
   }
   throw invalidQuery(

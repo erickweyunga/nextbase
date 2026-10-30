@@ -1,6 +1,6 @@
-import Link from "@docusaurus/Link";
-import type { ReactNode } from "react";
-import styles from "./styles.module.css";
+import Link from '@docusaurus/Link';
+import type { ReactNode } from 'react';
+import styles from './styles.module.css';
 
 const ICONS = {
   database: (
@@ -66,7 +66,7 @@ export interface CardItem {
   href?: string;
 }
 
-export default function CardGrid({ items }: { items: CardItem[] }): ReactNode {
+export function CardGrid({ items }: { items: CardItem[] }): ReactNode {
   return (
     <div className={styles.grid}>
       {items.map((item) => {

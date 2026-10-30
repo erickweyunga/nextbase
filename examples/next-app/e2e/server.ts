@@ -1,21 +1,21 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import pg from "pg";
+import { type ChildProcess, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import pg from 'pg';
 
 const adminUrl =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
-  "postgres://localhost/nextbase_test";
+  'postgres://localhost/nextbase_test';
 
 // Run Next.js's CLI directly: package-manager wrappers do not reliably pass
 // signals on, which would leave servers running after the tests.
-const nextCli = createRequire(import.meta.url).resolve("next/dist/bin/next");
+const nextCli = createRequire(import.meta.url).resolve('next/dist/bin/next');
 
-export const DATABASE_PREFIX = "nextbase_e2e";
+export const DATABASE_PREFIX = 'nextbase_e2e';
 
 export interface Server {
   /** The app's origin, e.g. http://localhost:4123. */
@@ -30,11 +30,11 @@ export interface Server {
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = createServer();
-    probe.once("error", reject);
+    probe.once('error', reject);
     probe.listen(0, () => {
       const address = probe.address();
       probe.close(() =>
-        resolve(typeof address === "object" && address ? address.port : 0),
+        resolve(typeof address === 'object' && address ? address.port : 0),
       );
     });
   });
@@ -59,30 +59,30 @@ export async function startServer({
   const database = new URL(adminUrl);
   database.pathname = `/${name}`;
 
-  const storageDir = await mkdtemp(join(tmpdir(), "nextbase-e2e-storage-"));
+  const storageDir = await mkdtemp(join(tmpdir(), 'nextbase-e2e-storage-'));
   const port = await freePort();
   const origin = `http://localhost:${port}`;
-  let output = "";
+  let output = '';
   const child: ChildProcess = spawn(
     process.execPath,
-    [nextCli, "start", "-p", String(port)],
+    [nextCli, 'start', '-p', String(port)],
     {
-      cwd: new URL("..", import.meta.url).pathname,
+      cwd: new URL('..', import.meta.url).pathname,
       // Its own process group, so stopping it also stops any workers it starts.
       detached: true,
       env: {
         ...process.env,
         DATABASE_URL: database.toString(),
-        NODE_ENV: "production",
+        NODE_ENV: 'production',
         // Uploads of this run, kept apart from development files.
         STORAGE_DIR: storageDir,
         ...env(origin),
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
-  child.stdout?.on("data", (chunk) => (output += chunk));
-  child.stderr?.on("data", (chunk) => (output += chunk));
+  child.stdout?.on('data', (chunk) => (output += chunk));
+  child.stderr?.on('data', (chunk) => (output += chunk));
 
   const api = `${origin}/api/nextbase`;
   for (let attempt = 0; ; attempt++) {
@@ -116,7 +116,7 @@ export async function startServer({
 /** Stops the server's process group: gracefully, or forcibly after 5 seconds. */
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const exited = new Promise((resolve) => child.once('exit', resolve));
   const signal = (name: NodeJS.Signals) => {
     try {
       process.kill(-(child.pid as number), name);
@@ -124,8 +124,8 @@ async function stop(child: ChildProcess): Promise<void> {
       // Already gone.
     }
   };
-  signal("SIGTERM");
-  const timer = setTimeout(() => signal("SIGKILL"), 5000);
+  signal('SIGTERM');
+  const timer = setTimeout(() => signal('SIGKILL'), 5000);
   await exited;
   clearTimeout(timer);
 }

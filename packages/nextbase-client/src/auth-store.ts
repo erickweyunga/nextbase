@@ -1,4 +1,4 @@
-import type { RecordModel } from "./shared/api.ts";
+import type { RecordModel } from './shared/api.ts';
 
 /** Storage for an auth store, shaped like `localStorage`. */
 export interface AuthStorage {
@@ -31,23 +31,23 @@ type StorageListener = (event: {
 interface BrowserGlobals {
   document?: unknown;
   localStorage?: AuthStorage;
-  addEventListener?(type: "storage", listener: StorageListener): void;
-  removeEventListener?(type: "storage", listener: StorageListener): void;
+  addEventListener?(type: 'storage', listener: StorageListener): void;
+  removeEventListener?(type: 'storage', listener: StorageListener): void;
 }
 
 const browser = globalThis as BrowserGlobals;
 
 // Removes a store's storage listener once the store is garbage collected.
 const listening = new FinalizationRegistry<StorageListener>((listener) => {
-  browser.removeEventListener?.("storage", listener);
+  browser.removeEventListener?.('storage', listener);
 });
 
-const DEFAULT_KEY = "nextbase_auth";
-const SUPERUSERS = "_superusers";
+const DEFAULT_KEY = 'nextbase_auth';
+const SUPERUSERS = '_superusers';
 
 /** The signed-in record and its token, kept in sync with storage and other tabs. */
 export class AuthStore {
-  #token = "";
+  #token = '';
   #record: RecordModel | null = null;
   readonly #storage: AuthStorage | null;
   readonly #key: string;
@@ -67,7 +67,7 @@ export class AuthStore {
         const current = store.deref();
         if (current) current.#changedElsewhere(event.newValue);
       };
-      browser.addEventListener?.("storage", listener);
+      browser.addEventListener?.('storage', listener);
       listening.register(this, listener);
     }
   }
@@ -85,7 +85,7 @@ export class AuthStore {
    * record). Only the server knows; a 401 clears the store.
    */
   get isValid(): boolean {
-    return this.#token !== "" || this.#record !== null;
+    return this.#token !== '' || this.#record !== null;
   }
 
   get isSuperuser(): boolean {
@@ -104,7 +104,7 @@ export class AuthStore {
   }
 
   clear(): void {
-    this.#token = "";
+    this.#token = '';
     this.#record = null;
     try {
       this.#storage?.removeItem(this.#key);
@@ -138,19 +138,19 @@ export class AuthStore {
   }
 
   #load(raw: string | null): void {
-    let token = "";
+    let token = '';
     let record: RecordModel | null = null;
     try {
       const parsed: unknown = raw === null ? null : JSON.parse(raw);
       if (
         parsed !== null &&
-        typeof parsed === "object" &&
-        typeof (parsed as { token?: unknown }).token === "string"
+        typeof parsed === 'object' &&
+        typeof (parsed as { token?: unknown }).token === 'string'
       ) {
         token = (parsed as { token: string }).token;
         const stored = (parsed as { record?: unknown }).record;
         record =
-          stored !== null && typeof stored === "object"
+          stored !== null && typeof stored === 'object'
             ? (stored as RecordModel)
             : null;
       }

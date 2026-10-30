@@ -1,4 +1,4 @@
-import type { Collection, Field, ListResult } from "@nextbasejs/client";
+import type { Collection, Field, ListResult } from '@nextbasejs/client';
 import {
   and,
   type Builder,
@@ -10,15 +10,15 @@ import {
   type Query,
   type Row,
   Tx,
-} from "@nextbasejs/dbx";
-import { checkBreached } from "../auth/breached.ts";
-import { hashPassword, verifyPassword } from "../auth/password.ts";
-import type { Principal } from "../auth/principal.ts";
-import { rekeySessions } from "../auth/sessions.ts";
-import { accountKey, clearAttempts, countAttempt } from "../auth/throttle.ts";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError, indexRowTooLarge, writeFailed } from "../errors.ts";
+} from '@nextbasejs/dbx';
+import { checkBreached } from '../auth/breached.ts';
+import { hashPassword, verifyPassword } from '../auth/password.ts';
+import { forbidImpersonated, type Principal } from '../auth/principal.ts';
+import { rekeySessions } from '../auth/sessions.ts';
+import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError, indexRowTooLarge, writeFailed } from '../errors.ts';
 import {
   claimFiles,
   type FileChanges,
@@ -27,18 +27,18 @@ import {
   type NewFiles,
   readNewFiles,
   storeNewFiles,
-} from "../files/files.ts";
-import type { Storage } from "../files/storage.ts";
-import { compileFilter, type RequestInfo } from "../filter/compiler.ts";
-import { FilterError } from "../filter/parser.ts";
-import { isId, newId } from "../random.ts";
-import type { Schema } from "../schema/cache.ts";
-import { isMultiple, passwordField } from "../schema/fields.ts";
-import { isRecord } from "../schema/input.ts";
-import { readAsViewRole } from "../schema/views.ts";
-import { timestampParam, unstorableText } from "../storable.ts";
-import type { HookScope, HookSource, Hooks } from "./hooks.ts";
-import { serializeRecord } from "./serialize.ts";
+} from '../files/files.ts';
+import type { Storage } from '../files/storage.ts';
+import { compileFilter, type RequestInfo } from '../filter/compiler.ts';
+import { FilterError } from '../filter/parser.ts';
+import { isId, newId } from '../random.ts';
+import type { Schema } from '../schema/cache.ts';
+import { isMultiple, passwordField } from '../schema/fields.ts';
+import { isRecord } from '../schema/input.ts';
+import { readAsViewRole } from '../schema/views.ts';
+import { timestampParam, unstorableText } from '../storable.ts';
+import type { HookScope, HookSource, Hooks } from './hooks.ts';
+import { serializeRecord } from './serialize.ts';
 import {
   checkRelations,
   draftWrite,
@@ -46,7 +46,7 @@ import {
   newPassword,
   type PreparedWrite,
   prepareWrite,
-} from "./values.ts";
+} from './values.ts';
 
 export interface RecordsContext {
   db: DB | Tx;
@@ -93,26 +93,26 @@ export function systemContext(
   principal: Principal = { superuser: true },
 ): RecordsContext {
   const pool = ctx.pool ?? ctx.db;
-  if (pool instanceof Tx) throw new Error("A system write needs the pool.");
+  if (pool instanceof Tx) throw new Error('A system write needs the pool.');
   return {
     db: ctx.db,
     pool,
     schema: ctx.schema,
     principal: { ...principal, superuser: true },
-    request: { method: "PATCH", query: {}, headers: {}, body },
+    request: { method: 'PATCH', query: {}, headers: {}, body },
     ...(ctx.rejectBreachedPasswords !== undefined && {
       rejectBreachedPasswords: ctx.rejectBreachedPasswords,
     }),
     ...(ctx.effects && { effects: ctx.effects }),
     ...(ctx.hooks && { hooks: ctx.hooks }),
-    source: "system",
+    source: 'system',
   };
 }
 
 /** The write a hook runs for, as `ctx` makes it. */
 function hookScope(
   ctx: RecordsContext,
-  source: HookSource = ctx.source ?? "request",
+  source: HookSource = ctx.source ?? 'request',
 ): HookScope {
   return {
     schema: ctx.schema,
@@ -139,7 +139,7 @@ async function storedRecord(
 ): Promise<Row> {
   let condition: Expression | undefined;
   if (rule && !ctx.principal.superuser) {
-    const compiled = compile(ctx, collection, rule, "rule");
+    const compiled = compile(ctx, collection, rule, 'rule');
     // A batch's earlier writes may change what the rule sees; the
     // transaction checks it then.
     if (seesEveryWrite(ctx, collection, compiled)) condition = compiled;
@@ -154,13 +154,13 @@ async function storedRecord(
 }
 
 /** Rules compile against this alias for the collection's rows. */
-const ALIAS = "t0";
+const ALIAS = 't0';
 const MAX_PER_PAGE = 1000;
 const DEFAULT_PER_PAGE = 30;
 const MAX_EXPAND_DEPTH = 6;
-const SUPERUSERS = "_superusers";
+const SUPERUSERS = '_superusers';
 const MAX_BACK_RELATIONS = 1000;
-const TOTAL = "_total";
+const TOTAL = '_total';
 // Postgres takes at most 65535 parameters per statement.
 const MAX_PARAMETERS = 65_000;
 
@@ -183,26 +183,26 @@ async function list(
   collection: Collection,
   query: URLSearchParams,
 ): Promise<ListResult<Output>> {
-  const page = integerParam(query, "page", 1, 1, 1_000_000);
+  const page = integerParam(query, 'page', 1, 1, 1_000_000);
   const perPage = integerParam(
     query,
-    "perPage",
+    'perPage',
     DEFAULT_PER_PAGE,
     1,
     MAX_PER_PAGE,
   );
   const where = and(
     ruleCondition(ctx, collection, collection.listRule),
-    compile(ctx, collection, query.get("filter") ?? "", "filter"),
+    compile(ctx, collection, query.get('filter') ?? '', 'filter'),
   );
   const from = `${table(collection.name)} ${ALIAS}`;
-  const counted = !isTrue(query.get("skipTotal"));
-  const count = ctx.db.select("COUNT(*)").from(from).where(where).build();
+  const counted = !isTrue(query.get('skipTotal'));
+  const count = ctx.db.select('COUNT(*)').from(from).where(where).build();
   const select = ctx.db
     .select(`${ALIAS}.*`)
     .from(from)
     .where(where)
-    .orderBy(...sortColumns(ctx, collection, query.get("sort") ?? ""))
+    .orderBy(...sortColumns(ctx, collection, query.get('sort') ?? ''))
     .limit(perPage)
     .offset((page - 1) * perPage);
   // The total is read in the same query as the page, as an extra column.
@@ -256,7 +256,7 @@ async function view(
     query,
     ruleCondition(ctx, collection, collection.viewRule),
   );
-  if (!record) throw new ApiError(404, "Record not found.");
+  if (!record) throw new ApiError(404, 'Record not found.');
   return record;
 }
 
@@ -272,6 +272,47 @@ export async function outputRecord(
 ): Promise<Output> {
   const [record] = await output(ctx.db, ctx, collection, [row], query);
   return record as Output;
+}
+
+/** Like `outputRecord`, for several rows. */
+export function outputRecords(
+  ctx: RecordsContext,
+  collection: Collection,
+  rows: Row[],
+  query: URLSearchParams,
+): Promise<Output[]> {
+  return output(ctx.db, ctx, collection, rows, query);
+}
+
+/**
+ * The condition the records a realtime subscriber gets must meet: the list
+ * rule and the `filter` of `query`, as a list request checks them, or the
+ * view rule and the id, for one record. Throws as such a request would: 403
+ * for a null rule, 400 for a bad filter, `expand` or `fields`, 404 for an id
+ * no record can have.
+ */
+export function subscriptionCondition(
+  ctx: RecordsContext,
+  collection: Collection,
+  id: string | undefined,
+  query: URLSearchParams,
+): Expression | undefined {
+  if (id !== undefined) checkId(collection, id);
+  const rule = ruleCondition(
+    ctx,
+    collection,
+    id === undefined ? collection.listRule : collection.viewRule,
+  );
+  const filter = compile(ctx, collection, query.get('filter') ?? '', 'filter');
+  const expand = query.get('expand');
+  if (expand) pathTree(expand, MAX_EXPAND_DEPTH, 'expand');
+  const fields = query.get('fields');
+  if (fields) pathTree(fields, Number.POSITIVE_INFINITY, 'fields');
+  return and(
+    id === undefined ? undefined : hash({ [`${ALIAS}.id`]: id }),
+    rule,
+    filter,
+  );
 }
 
 /** Returns the record, or undefined when the caller may not view it. */
@@ -308,16 +349,16 @@ export async function planNewRecord(
 ): Promise<PlannedCreate> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
-  if (ctx.hooks?.hasBefore(collection, "create")) {
+  if (ctx.hooks?.hasBefore(collection, 'create')) {
     input = { ...input };
-    await ctx.hooks.before(hookScope(ctx), collection, "create", {
+    await ctx.hooks.before(hookScope(ctx), collection, 'create', {
       input,
       request: ctx.request,
     });
   }
   // Chosen now, so new files can be stored under the record beforehand.
   const write =
-    input.id === undefined || input.id === ""
+    input.id === undefined || input.id === ''
       ? { ...input, id: newId() }
       : input;
   const newFiles = await readFiles(ctx, collection, write);
@@ -342,7 +383,7 @@ async function checkCreateRuleFirst(
   newFiles: NewFiles | undefined,
 ): Promise<void> {
   const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
-  if (!slow || ctx.principal.superuser || collection.createRule === "") return;
+  if (!slow || ctx.principal.superuser || collection.createRule === '') return;
   const draft = draftWrite(input, writeOptions(ctx, collection, newFiles));
   if (!draft.issues.empty) return;
   const rule = createRule(ctx, collection, draft.prepared.body);
@@ -362,8 +403,8 @@ function createRule(
   return compile(
     { ...ctx, request: { ...ctx.request, body } },
     collection,
-    collection.createRule ?? "",
-    "rule",
+    collection.createRule ?? '',
+    'rule',
   );
 }
 
@@ -449,16 +490,17 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
  * only its own collection, and the batch's earlier writes are done before it
  * starts, so only such a rule could see records the run inserts. False too
  * when the collection has on or after hooks: each create's hooks then run
- * before the next create, and see its record as stored, as in turn.
+ * before the next create, and see its record as stored, as in turn. Realtime
+ * events alone do not split runs: they are logged together.
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
-  if (ctx.hooks?.observes(collection, "create")) return false;
+  if (ctx.hooks?.hasOnOrAfter(collection, 'create')) return false;
   if (ctx.principal.superuser) return true;
   const own = `{{${table(collection.name)}}}`;
   return [collection.createRule, collection.viewRule].every((rule) => {
     if (!rule) return true;
     try {
-      const sql = compile(ctx, collection, rule, "rule")?.build(ctx.pool, {});
+      const sql = compile(ctx, collection, rule, 'rule')?.build(ctx.pool, {});
       return !sql?.includes(own);
     } catch {
       // The write fails on its rule either way; alone, it fails as it would
@@ -474,9 +516,9 @@ function referencesAny(
 ): boolean {
   return Object.entries(input).some(
     ([key, value]) =>
-      key !== "id" &&
+      key !== 'id' &&
       (Array.isArray(value) ? value : [value]).some(
-        (v) => typeof v === "string" && ids.has(v),
+        (v) => typeof v === 'string' && ids.has(v),
       ),
   );
 }
@@ -506,9 +548,9 @@ export async function applyCreates(
   // inserted, so a caller it refuses learns nothing about other records,
   // either from a missing related record or from a constraint error.
   const refused = new Set<number>();
-  if (!ctx.principal.superuser && collection.createRule !== "") {
+  if (!ctx.principal.superuser && collection.createRule !== '') {
     // Compiled once when no row's own body can change it.
-    const reads = (collection.createRule ?? "").includes("@request.body");
+    const reads = (collection.createRule ?? '').includes('@request.body');
     const shared = reads ? undefined : createRule(ctx, collection, {});
     const checked = drafts.flatMap(({ prepared }, i) => {
       const rule = reads ? createRule(ctx, collection, prepared.body) : shared;
@@ -552,21 +594,33 @@ export async function applyCreates(
       throw new CreateFailed(i, error);
     }
   }
-  const returning = ctx.hooks?.observes(collection, "create") ?? false;
+  const returning = ctx.hooks?.observes(collection, 'create') ?? false;
   const inserted =
     allowed.length > 0
       ? await insertRows(tx, collection, allowed, returning)
       : [];
   if (failed !== undefined)
     throw new CreateFailed(failed, failures.get(failed));
-  if (returning) {
+  const hooks = ctx.hooks;
+  if (returning && hooks) {
     const scope = hookScope(ctx);
-    for (const [i, row] of inserted.entries()) {
-      try {
-        await ctx.hooks?.wrote(tx, scope, collection, "create", row);
-      } catch (error) {
-        throw new CreateFailed(i, error);
+    if (hooks.hasOnOrAfter(collection, 'create')) {
+      for (const [i, row] of inserted.entries()) {
+        try {
+          await hooks.wrote(tx, scope, collection, 'create', row);
+        } catch (error) {
+          throw new CreateFailed(i, error);
+        }
       }
+    } else {
+      // Realtime events alone, for every record at once.
+      await hooks.wroteAll(
+        tx,
+        scope,
+        collection,
+        'create',
+        inserted.map((record) => ({ record })),
+      );
     }
   }
   return afterWrites(
@@ -630,7 +684,7 @@ async function insertRows(
     });
   } catch (error) {
     const { code } = error as { code?: unknown };
-    if (code !== "23505" && code !== "54000") throw error;
+    if (code !== '23505' && code !== '54000') throw error;
     stored.length = 0;
     for (const [i, row] of rows.entries()) {
       stored.push(...(await insertOne(row, i)));
@@ -667,23 +721,27 @@ export async function planUpdateRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.updateRule);
-  const notFound = new ApiError(404, "Record not found.");
-  if (ctx.hooks?.hasBefore(collection, "update")) {
+  const notFound = new ApiError(404, 'Record not found.');
+  if (ctx.hooks?.hasBefore(collection, 'update')) {
     // A rule that reads the body waits for the body the hook leaves.
-    const rule = collection.updateRule ?? "";
+    const rule = collection.updateRule ?? '';
     const record = await storedRecord(
       ctx,
       collection,
       id,
-      rule.includes("@request.body") ? undefined : rule,
+      rule.includes('@request.body') ? undefined : rule,
       notFound,
     );
     input = { ...input };
-    await ctx.hooks.before(hookScope(ctx), collection, "update", {
+    await ctx.hooks.before(hookScope(ctx), collection, 'update', {
       input,
       record,
       request: ctx.request,
     });
+  }
+  // Before the slow work a new password takes, which would be refused.
+  if (input.password !== undefined) {
+    forbidSignInChanges(ctx, collection, { password: input.password }, {});
   }
   const newFiles = await readFiles(ctx, collection, input);
   const slow = input.password !== undefined || (newFiles?.files.size ?? 0) > 0;
@@ -703,7 +761,7 @@ export async function planUpdateRecord(
   await checkNewPassword(ctx, collection, input);
   const passwordHash = await hashNewPassword(collection, input);
   await storeFiles(ctx, collection, id, newFiles);
-  const observed = ctx.hooks?.observes(collection, "update") ?? false;
+  const observed = ctx.hooks?.observes(collection, 'update') ?? false;
   return async (tx) => {
     const { existing, stored } = await writing(collection, async () => {
       // NO KEY: ids never change, so records that reference this one can
@@ -732,17 +790,18 @@ export async function planUpdateRecord(
       }
       // Rule first: a rejected caller gets 404, never validation errors that
       // would confirm the record exists.
-      if (!ctx.principal.superuser && collection.updateRule !== "") {
+      if (!ctx.principal.superuser && collection.updateRule !== '') {
         const body = prepared?.body ?? {};
         const rule = compile(
           { ...ctx, request: { ...ctx.request, body } },
           collection,
-          collection.updateRule ?? "",
-          "rule",
+          collection.updateRule ?? '',
+          'rule',
         );
         if (!(await matchesStoredRow(tx, collection, id, rule))) throw notFound;
       }
       if (invalid !== undefined || !prepared) throw invalid;
+      forbidSignInChanges(ctx, collection, prepared.values, existing);
       if (prepared.oldPassword !== undefined) {
         const matches = old
           ? // Checked before the transaction: confirm it is still the same.
@@ -782,14 +841,14 @@ export async function planUpdateRecord(
         existing.email
       ) {
         ctx.effects?.mail.push({
-          kind: "passwordChanged",
+          kind: 'passwordChanged',
           collection: collection.name,
           to: existing.email as string,
         });
       }
       // A new tokenKey ends the record's other sessions; the caller's stays.
       const { tokenKey } = prepared.values;
-      if (collection.type === "auth" && typeof tokenKey === "string") {
+      if (collection.type === 'auth' && typeof tokenKey === 'string') {
         const { principal } = ctx;
         const own =
           principal.collection?.id === collection.id &&
@@ -810,7 +869,7 @@ export async function planUpdateRecord(
         tx,
         hookScope(ctx),
         collection,
-        "update",
+        'update',
         stored,
         existing,
       );
@@ -831,14 +890,14 @@ export async function planDeleteRecord(
   checkWritable(collection);
   checkId(collection, id);
   denyNullRule(ctx, collection.deleteRule);
-  const notFound = new ApiError(404, "Record not found.");
-  if (ctx.hooks?.hasBefore(collection, "delete")) {
-    await ctx.hooks.before(hookScope(ctx), collection, "delete", {
+  const notFound = new ApiError(404, 'Record not found.');
+  if (ctx.hooks?.hasBefore(collection, 'delete')) {
+    await ctx.hooks.before(hookScope(ctx), collection, 'delete', {
       record: await storedRecord(
         ctx,
         collection,
         id,
-        collection.deleteRule ?? "",
+        collection.deleteRule ?? '',
         notFound,
       ),
       request: ctx.request,
@@ -852,15 +911,20 @@ export async function planDeleteRecord(
     }
     const written = await deleteWithReferences(tx, ctx, collection, [id]);
     // Once every record is written, so hooks never see a delete half done.
-    for (const { collection, action, record, original, source } of written) {
-      await ctx.hooks?.wrote(
+    // Consecutive records of one collection, action and source go together.
+    for (let i = 0; i < written.length; ) {
+      const first = written[i] as Written;
+      let end = i + 1;
+      while (end < written.length && sameWrite(written[end] as Written, first))
+        end++;
+      await ctx.hooks?.wroteAll(
         tx,
-        hookScope(ctx, source),
-        collection,
-        action,
-        record,
-        original,
+        hookScope(ctx, first.source),
+        first.collection,
+        first.action,
+        written.slice(i, end),
       );
+      i = end;
     }
   };
 }
@@ -912,7 +976,7 @@ async function storeFiles(
 /** Where a write that changes files records them, to delete them on failure. */
 function effectsOf(ctx: RecordsContext): Effects {
   if (!ctx.effects) {
-    throw new Error("Writes that change files need storage and effects.");
+    throw new Error('Writes that change files need storage and effects.');
   }
   return ctx.effects;
 }
@@ -923,19 +987,19 @@ async function checkNewPassword(
   collection: Collection,
   input: Record<string, unknown>,
 ): Promise<void> {
-  if (!ctx.rejectBreachedPasswords || collection.type !== "auth") return;
+  if (!ctx.rejectBreachedPasswords || collection.type !== 'auth') return;
   const field = passwordField(collection);
   const password = field && input[field.name];
-  if (typeof password === "string") await checkBreached(password);
+  if (typeof password === 'string') await checkBreached(password);
 }
 
 // A view's ids come from its query and can be any text.
 function checkId(collection: Collection, id: string): void {
   const valid =
-    collection.type === "view"
-      ? id !== "" && id.length <= 255 && unstorableText(id) === undefined
+    collection.type === 'view'
+      ? id !== '' && id.length <= 255 && unstorableText(id) === undefined
       : isId(id);
-  if (!valid) throw new ApiError(404, "Record not found.");
+  if (!valid) throw new ApiError(404, 'Record not found.');
 }
 
 // View queries run as the view role, whose privileges limit what they can read.
@@ -946,7 +1010,7 @@ function reading<T>(
   collection: Collection,
   read: (ctx: RecordsContext) => Promise<T>,
 ): Promise<T> {
-  if (collection.type !== "view") return read(ctx);
+  if (collection.type !== 'view') return read(ctx);
   return readAsViewRole(
     ctx.db,
     ctx.schema.viewRole,
@@ -988,15 +1052,15 @@ async function checkUpdateRuleFirst(
   notFound: ApiError,
 ): Promise<boolean> {
   if (ctx.principal.superuser) return true;
-  const rule = collection.updateRule ?? "";
-  if (rule === "") return true;
+  const rule = collection.updateRule ?? '';
+  if (rule === '') return true;
   let body: Record<string, unknown> = {};
-  if (rule.includes("@request.body")) {
+  if (rule.includes('@request.body')) {
     // The body depends on the stored record and on related records, either
     // of which earlier writes of the batch may have changed.
     if ((ctx.written?.size ?? 0) > 0) return false;
     const [existing] = await ctx.pool
-      .select("*")
+      .select('*')
       .from(table(collection.name))
       .where(hash({ id }))
       .all();
@@ -1016,7 +1080,7 @@ async function checkUpdateRuleFirst(
     { ...ctx, request: { ...ctx.request, body } },
     collection,
     rule,
-    "rule",
+    'rule',
   );
   if (!seesEveryWrite(ctx, collection, condition)) return false;
   if (!(await matchesStoredRow(ctx.pool, collection, id, condition))) {
@@ -1039,7 +1103,7 @@ function seesEveryWrite(
   if (!written || written.size === 0) return true;
   if (written.has(collection.name)) return false;
   // Every collection a compiled rule reads appears in it as its table.
-  const sql = condition?.build(ctx.pool, {}) ?? "";
+  const sql = condition?.build(ctx.pool, {}) ?? '';
   return [...written].every((name) => !sql.includes(`{{${table(name)}}}`));
 }
 
@@ -1062,12 +1126,12 @@ async function checkOldPasswordFirst(
   const { oldPassword } = input;
   const field = passwordField(collection);
   if (
-    typeof oldPassword !== "string" ||
+    typeof oldPassword !== 'string' ||
     !field ||
     // An invalid new password fails the update before the old one is checked.
     newPassword(field, input) === undefined ||
     ctx.principal.superuser ||
-    collection.type !== "auth" ||
+    collection.type !== 'auth' ||
     // The stored password may have changed earlier in the batch.
     ctx.written?.has(collection.name)
   ) {
@@ -1078,7 +1142,7 @@ async function checkOldPasswordFirst(
   const manage =
     collection.manageRule === null
       ? undefined
-      : compile(ctx, collection, collection.manageRule, "rule");
+      : compile(ctx, collection, collection.manageRule, 'rule');
   if (
     collection.manageRule !== null &&
     (!seesEveryWrite(ctx, collection, manage) ||
@@ -1087,7 +1151,7 @@ async function checkOldPasswordFirst(
     return undefined;
   }
   const [stored] = await ctx.pool
-    .select("password")
+    .select('password')
     .from(table(collection.name))
     .where(hash({ id }))
     .column<string>();
@@ -1105,8 +1169,8 @@ async function checkOldPasswordFirst(
 function wrongOldPassword(): ApiError {
   return new ApiError(400, writeFailed(false), {
     oldPassword: {
-      code: "validation_invalid_old_password",
-      message: "Does not match the current password.",
+      code: 'validation_invalid_old_password',
+      message: 'Does not match the current password.',
     },
   });
 }
@@ -1122,8 +1186,8 @@ async function hashNewPassword(
 }
 
 function checkWritable(collection: Collection): void {
-  if (collection.type === "view") {
-    throw new ApiError(400, "View collections are read-only.");
+  if (collection.type === 'view') {
+    throw new ApiError(400, 'View collections are read-only.');
   }
 }
 
@@ -1133,7 +1197,7 @@ async function keepOneSuperuser(tx: Builder, id: string): Promise<void> {
     .newQuery(`SELECT id FROM {{${table(SUPERUSERS)}}} ORDER BY id FOR UPDATE`)
     .column<string>();
   if (ids.length === 1 && ids[0] === id) {
-    throw new ApiError(400, "The last superuser cannot be deleted.");
+    throw new ApiError(400, 'The last superuser cannot be deleted.');
   }
 }
 
@@ -1141,7 +1205,7 @@ async function keepOneSuperuser(tx: Builder, id: string): Promise<void> {
 
 function denyNullRule(ctx: RecordsContext, rule: Rule): void {
   if (rule === null && !ctx.principal.superuser) {
-    throw new ApiError(403, "Only superusers can perform this action.");
+    throw new ApiError(403, 'Only superusers can perform this action.');
   }
 }
 
@@ -1153,14 +1217,14 @@ function ruleCondition(
 ): Expression | undefined {
   denyNullRule(ctx, rule);
   if (ctx.principal.superuser) return undefined;
-  return compile(ctx, collection, rule ?? "", "rule");
+  return compile(ctx, collection, rule ?? '', 'rule');
 }
 
 function compile(
   ctx: RecordsContext,
   collection: Collection,
   source: string,
-  mode: "filter" | "rule",
+  mode: 'filter' | 'rule',
 ): Expression | undefined {
   try {
     return compileFilter(source, collection, ALIAS, { ...ctx, mode });
@@ -1168,10 +1232,42 @@ function compile(
     if (!(error instanceof FilterError)) throw error;
     throw new ApiError(
       400,
-      mode === "filter"
+      mode === 'filter'
         ? `Invalid filter: ${error.message}`
         : `The request does not fit the collection's rule: ${error.message}`,
     );
+  }
+}
+
+/**
+ * An impersonation session may change no account's way in: its password,
+ * token key, email, phone, whether they are verified, or identity fields.
+ * The superuser could keep using it after the session ends.
+ */
+function forbidSignInChanges(
+  ctx: RecordsContext,
+  collection: Collection,
+  values: Record<string, unknown>,
+  existing: Row,
+): void {
+  if (ctx.principal.impersonatedBy === undefined) return;
+  if (collection.type !== 'auth') return;
+  const guarded = new Set([
+    'tokenKey',
+    'email',
+    'emailVerified',
+    'phone',
+    'phoneVerified',
+    ...collection.identityFields,
+  ]);
+  const password = passwordField(collection)?.name;
+  if (password !== undefined) guarded.add(password);
+  for (const [name, value] of Object.entries(values)) {
+    // Setting a password changes it, even to the same one: it is rehashed.
+    const changed = name === password || value !== existing[name];
+    if (changed && guarded.has(name)) {
+      forbidImpersonated(ctx.principal, 'change sign-in details');
+    }
   }
 }
 
@@ -1183,13 +1279,13 @@ async function canManage(
   id: string,
 ): Promise<boolean> {
   if (ctx.principal.superuser) return true;
-  if (collection.type !== "auth" || collection.manageRule === null)
+  if (collection.type !== 'auth' || collection.manageRule === null)
     return false;
   return matchesStoredRow(
     q,
     collection,
     id,
-    compile(ctx, collection, collection.manageRule, "rule"),
+    compile(ctx, collection, collection.manageRule, 'rule'),
   );
 }
 
@@ -1224,33 +1320,99 @@ async function refusedNewRows(
   rows: readonly { row: Record<string, unknown>; rule: Expression }[],
 ): Promise<number[]> {
   const params: Params = {};
-  const tuples = rows.map(({ row }, i) => {
+  const source = rowsTable(
+    q,
+    collection,
+    rows.map(({ row }) => row),
+    params,
+  );
+  const [first] = rows;
+  const condition =
+    first && rows.every(({ rule }) => rule === first.rule)
+      ? first.rule.build(q, params)
+      : `CASE "_i" ${rows.map(({ rule }, i) => `WHEN ${i} THEN ${rule.build(q, params)}`).join(' ')} END`;
+  return q
+    .newQuery(
+      `${source} SELECT "_i" FROM "${ALIAS}" WHERE NOT COALESCE(${condition}, false) ORDER BY "_i"`,
+    )
+    .bind(params)
+    .column<number>();
+}
+
+/**
+ * Evaluates `conditions` on rows that are not read from the collection's
+ * table, such as the records of realtime events, as `refusedNewRows` does:
+ * for each row, whether each condition matches it. An undefined condition
+ * matches every row. Takes one query per few thousand rows, and none when
+ * no condition needs one.
+ */
+export async function matchingRows(
+  q: Builder,
+  collection: Collection,
+  rows: readonly Row[],
+  conditions: readonly (Expression | undefined)[],
+): Promise<boolean[][]> {
+  const matches = rows.map(() => conditions.map(() => true));
+  // Leaves room under the limit for the conditions' own parameters.
+  const perChunk = Math.max(
+    1,
+    Math.floor((MAX_PARAMETERS - 15_000) / collection.fields.length),
+  );
+  for (let start = 0; start < rows.length; start += perChunk) {
+    const params: Params = {};
+    const source = rowsTable(
+      q,
+      collection,
+      rows.slice(start, start + perChunk),
+      params,
+    );
+    const columns = conditions.flatMap((condition, k) => {
+      const sql = condition?.build(q, params) ?? '';
+      return sql === '' ? [] : [`COALESCE(${sql}, false) AS "nb_m${k}"`];
+    });
+    if (columns.length === 0) break;
+    const found = await q
+      .newQuery(`${source} SELECT "_i", ${columns.join(', ')} FROM "${ALIAS}"`)
+      .bind(params)
+      .all();
+    for (const row of found) {
+      const i = start + Number(row._i);
+      for (const k of conditions.keys()) {
+        const match = row[`nb_m${k}`];
+        if (match !== undefined) (matches[i] as boolean[])[k] = match === true;
+      }
+    }
+  }
+  return matches;
+}
+
+/**
+ * The rows as a table named ALIAS, for rules to read: a WITH clause whose
+ * table has a column per field, and `_i`, each row's position.
+ */
+function rowsTable(
+  q: Builder,
+  collection: Collection,
+  rows: readonly Record<string, unknown>[],
+  params: Params,
+): string {
+  const tuples = rows.map((row, i) => {
     const values = collection.fields.map((field, j) => {
       // Rules cannot read secrets, so they are never sent.
-      const secret = field.type === "password" || field.name === "tokenKey";
+      const secret = field.type === 'password' || field.name === 'tokenKey';
       params[`nb_v${i}_${j}`] = secret
         ? null
         : columnValue(field, row[field.name]);
       return `{:nb_v${i}_${j}}::${columnCast(field)}`;
     });
-    return `(${i}, ${values.join(", ")})`;
+    return `(${i}, ${values.join(', ')})`;
   });
   // Field names start with a letter, so `_i` cannot clash with one.
   const columns = [
     `"_i"`,
     ...collection.fields.map((field) => q.quoteSimpleColumnName(field.name)),
   ];
-  const [first] = rows;
-  const condition =
-    first && rows.every(({ rule }) => rule === first.rule)
-      ? first.rule.build(q, params)
-      : `CASE "_i" ${rows.map(({ rule }, i) => `WHEN ${i} THEN ${rule.build(q, params)}`).join(" ")} END`;
-  return q
-    .newQuery(
-      `WITH "${ALIAS}"(${columns.join(", ")}) AS (VALUES ${tuples.join(", ")}) SELECT "_i" FROM "${ALIAS}" WHERE NOT COALESCE(${condition}, false) ORDER BY "_i"`,
-    )
-    .bind(params)
-    .column<number>();
+  return `WITH "${ALIAS}"(${columns.join(', ')}) AS (VALUES ${tuples.join(', ')})`;
 }
 
 /**
@@ -1275,7 +1437,7 @@ async function backRelated(
       `SELECT "nb_related".* FROM unnest({:nb_ids}::text[]) AS "nb_parent"("id")
        CROSS JOIN LATERAL (
          SELECT "${ALIAS}".* FROM {{${table(target.name)}}} "${ALIAS}"
-         WHERE ${points}${rule ? ` AND (${rule})` : ""}
+         WHERE ${points}${rule ? ` AND (${rule})` : ''}
          ORDER BY "${ALIAS}"."id" LIMIT ${MAX_BACK_RELATIONS}
        ) AS "nb_related"`,
     )
@@ -1356,8 +1518,8 @@ async function viewable(
 // block the delete: the result depends neither on cycles nor on the order
 // fields are declared in. Works on every record of one level at once, so a
 // delete takes a few queries per level and collection, not per record.
-// Returns the records it wrote whose collections have on or after hooks, in
-// the order it wrote them, and each record once.
+// Returns the records it wrote whose collections have on or after hooks or
+// send realtime events, in the order it wrote them, and each record once.
 async function deleteWithReferences(
   tx: Builder,
   ctx: RecordsContext,
@@ -1385,7 +1547,7 @@ async function deleteWithReferences(
       // What is left of the field once the deleted ids are taken out.
       const cleared = multiple
         ? `ARRAY(SELECT v FROM unnest(${col}) AS v WHERE v <> ALL({:ids}::text[]))`
-        : "NULL";
+        : 'NULL';
       const gone = [...(deleting.get(source.id)?.ids ?? [])];
       // A record deleted after one it points at would leave a dangling
       // reference until it goes, which its foreign key refuses. Only single
@@ -1406,14 +1568,15 @@ async function deleteWithReferences(
       // Each cascade already put all the records it reaches in `deleting`.
       if (field.cascadeDelete) continue;
       const stays = `${refers} AND id <> ALL({:gone}::text[])`;
-      // Hooks get each record as it was and as it is left, so then the rows
-      // are read whole and the update returns them.
-      const observed = hooks?.observes(source, "update") ?? false;
+      // Hooks get each record as it was and as it is left, and realtime
+      // events as it is left, so then the rows are read whole and the
+      // update returns them.
+      const observed = hooks?.observes(source, 'update') ?? false;
       // Locked in id order, so concurrent deletes lock rows in the same order.
       // Field names start with a letter, so `_kept` cannot clash with one.
       const remaining = await tx
         .newQuery(
-          `SELECT ${observed ? "*" : "id"}, ${multiple ? `cardinality(${cleared})` : "0"} AS "_kept" FROM ${t} WHERE ${stays} ORDER BY id FOR UPDATE`,
+          `SELECT ${observed ? '*' : 'id'}, ${multiple ? `cardinality(${cleared})` : '0'} AS "_kept" FROM ${t} WHERE ${stays} ORDER BY id FOR UPDATE`,
         )
         .bind({ ...params, gone })
         .all<Row & { id: string; _kept: number }>();
@@ -1426,7 +1589,7 @@ async function deleteWithReferences(
       }
       const update = tx
         .newQuery(
-          `UPDATE ${t} SET ${col} = ${cleared} WHERE id = ANY({:remaining}::text[])${observed ? " RETURNING *" : ""}`,
+          `UPDATE ${t} SET ${col} = ${cleared} WHERE id = ANY({:remaining}::text[])${observed ? ' RETURNING *' : ''}`,
         )
         .bind({ ...params, remaining: remaining.map((row) => row.id) });
       if (!observed) {
@@ -1440,10 +1603,10 @@ async function deleteWithReferences(
         const { _kept, ...before } = originals.get(record.id as string) as Row;
         updated.set(key, {
           collection: source,
-          action: "update",
+          action: 'update',
           record,
           original: original ?? before,
-          source: "cascade",
+          source: 'cascade',
         });
       }
     }
@@ -1455,29 +1618,37 @@ async function deleteWithReferences(
       target,
       [...targetIds],
       obsoleteFiles,
-      hooks?.observes(target, "delete") ?? false,
+      hooks?.observes(target, 'delete') ?? false,
     );
     for (const record of rows) {
       const requested =
         target.id === collection.id && ids.includes(record.id as string);
       deleted.push({
         collection: target,
-        action: "delete",
+        action: 'delete',
         record,
-        source: requested ? (ctx.source ?? "request") : "cascade",
+        source: requested ? (ctx.source ?? 'request') : 'cascade',
       });
     }
   }
   return [...updated.values(), ...deleted];
 }
 
-/** A record a write changed, for its hooks. */
+/** A record a write changed, for its hooks and realtime events. */
 interface Written {
   collection: Collection;
-  action: "create" | "update" | "delete";
+  action: 'create' | 'update' | 'delete';
   record: Row;
   original?: Row;
   source: HookSource;
+}
+
+function sameWrite(a: Written, b: Written): boolean {
+  return (
+    a.collection.id === b.collection.id &&
+    a.action === b.action &&
+    a.source === b.source
+  );
 }
 
 interface Deleting {
@@ -1537,10 +1708,10 @@ async function cascade(
 function* relationsTo(
   schema: Schema,
   target: Collection,
-): Generator<{ source: Collection; field: Field & { type: "relation" } }> {
+): Generator<{ source: Collection; field: Field & { type: 'relation' } }> {
   for (const source of schema.collections) {
     for (const field of source.fields) {
-      if (field.type === "relation" && field.collectionId === target.id)
+      if (field.type === 'relation' && field.collectionId === target.id)
         yield { source, field };
     }
   }
@@ -1557,7 +1728,7 @@ async function deleteRows(
   returning: boolean,
 ): Promise<Row[]> {
   const params = { ids };
-  const fileFields = collection.fields.filter((f) => f.type === "file");
+  const fileFields = collection.fields.filter((f) => f.type === 'file');
   const noteFiles = (rows: readonly Row[]): void => {
     for (const row of rows) {
       for (const field of fileFields) {
@@ -1570,15 +1741,15 @@ async function deleteRows(
   if (fileFields.length > 0 && !returning) {
     noteFiles(
       await tx
-        .select("id", ...fileFields.map((f) => f.name))
+        .select('id', ...fileFields.map((f) => f.name))
         .from(table(collection.name))
-        .where(exp("id = ANY({:ids}::text[])", params))
+        .where(exp('id = ANY({:ids}::text[])', params))
         .all(),
     );
   }
   const query = tx
     .newQuery(
-      `DELETE FROM {{${table(collection.name)}}} WHERE id = ANY({:ids}::text[])${returning ? " RETURNING *" : ""}`,
+      `DELETE FROM {{${table(collection.name)}}} WHERE id = ANY({:ids}::text[])${returning ? ' RETURNING *' : ''}`,
     )
     .bind(params);
   let deleted: Row[] = [];
@@ -1593,8 +1764,8 @@ async function deleteRows(
     await query.execute();
   }
   // Their sessions end, and their linked provider accounts may sign up again.
-  if (collection.type === "auth") {
-    for (const name of ["_sessions", "_linked_accounts"]) {
+  if (collection.type === 'auth') {
+    for (const name of ['_sessions', '_linked_accounts']) {
       await tx
         .newQuery(
           `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId} AND record_id = ANY({:ids}::text[])`,
@@ -1619,19 +1790,19 @@ async function output(
     row,
     out: serializeRecord(collection, row, ctx.principal),
   }));
-  const expand = query.get("expand");
+  const expand = query.get('expand');
   if (expand)
     await expandItems(
       q,
       ctx,
       collection,
       items,
-      pathTree(expand, MAX_EXPAND_DEPTH, "expand"),
+      pathTree(expand, MAX_EXPAND_DEPTH, 'expand'),
       1,
     );
-  const fields = query.get("fields");
+  const fields = query.get('fields');
   if (!fields) return items.map((i) => i.out);
-  const tree = pathTree(fields, Number.POSITIVE_INFINITY, "fields");
+  const tree = pathTree(fields, Number.POSITIVE_INFINITY, 'fields');
   return items.map((i) => pick(i.out, tree) as Output);
 }
 
@@ -1639,8 +1810,8 @@ type PathTree = Map<string, PathTree>;
 
 function pathTree(list: string, maxDepth: number, param: string): PathTree {
   const root: PathTree = new Map();
-  for (const path of list.split(",")) {
-    const names = path.trim().split(".").filter(Boolean);
+  for (const path of list.split(',')) {
+    const names = path.trim().split('.').filter(Boolean);
     if (names.length > maxDepth)
       throw new ApiError(
         400,
@@ -1672,14 +1843,14 @@ async function expandItems(
     // A relation field of this collection, or a back-relation such as
     // `comments_via_post`: the comments whose `post` points at these records.
     const forward = collection.fields.find(
-      (f) => f.name === name && f.type === "relation",
+      (f) => f.name === name && f.type === 'relation',
     );
     const back = forward
       ? undefined
       : ctx.schema.backRelation(collection, name);
     const field = forward ?? back?.field;
     if (
-      field?.type !== "relation" ||
+      field?.type !== 'relation' ||
       (field.hidden && !ctx.principal.superuser)
     )
       continue;
@@ -1769,16 +1940,16 @@ function groupByParent(
 
 function references(value: unknown): string[] {
   if (Array.isArray(value)) return value as string[];
-  return typeof value === "string" && value !== "" ? [value] : [];
+  return typeof value === 'string' && value !== '' ? [value] : [];
 }
 
 /** `*` keeps every key at its level. */
 function pick(value: unknown, tree: PathTree): unknown {
   if (Array.isArray(value)) return value.map((v) => pick(v, tree));
   if (!isRecord(value) || tree.size === 0) return value;
-  const out: Output = tree.has("*") ? { ...value } : {};
+  const out: Output = tree.has('*') ? { ...value } : {};
   for (const [key, subtree] of tree) {
-    if (key !== "*" && Object.hasOwn(value, key))
+    if (key !== '*' && Object.hasOwn(value, key))
       out[key] = pick(value[key], subtree);
   }
   return out;
@@ -1793,39 +1964,39 @@ function sortColumns(
 ): string[] {
   const columns: string[] = [];
   for (const part of sort
-    .split(",")
+    .split(',')
     .map((s) => s.trim())
     .filter(Boolean)) {
-    const descending = part.startsWith("-");
-    const name = part.replace(/^[-+]/, "");
+    const descending = part.startsWith('-');
+    const name = part.replace(/^[-+]/, '');
     const field = collection.fields.find((f) => f.name === name);
     if (
       !field ||
       isMultiple(field) ||
-      field.type === "json" ||
-      field.type === "password" ||
-      field.name === "tokenKey" ||
+      field.type === 'json' ||
+      field.type === 'password' ||
+      field.name === 'tokenKey' ||
       (field.hidden && !ctx.principal.superuser) ||
       // Sorting by an email or phone the caller may not see would reveal its order.
-      (collection.type === "auth" &&
+      (collection.type === 'auth' &&
         field.system &&
-        (field.name === "email" || field.name === "phone") &&
+        (field.name === 'email' || field.name === 'phone') &&
         !ctx.principal.superuser)
     ) {
       throw new ApiError(400, `Cannot sort by "${name}".`);
     }
-    columns.push(`${ALIAS}.${name} ${descending ? "DESC" : "ASC"}`);
+    columns.push(`${ALIAS}.${name} ${descending ? 'DESC' : 'ASC'}`);
   }
   if (
     columns.length === 0 &&
-    collection.fields.some((f) => f.name === "created" && f.type === "autodate")
+    collection.fields.some((f) => f.name === 'created' && f.type === 'autodate')
   ) {
     columns.push(`${ALIAS}.created DESC`);
   }
   // Unique tiebreaker for stable pages, in the last column's direction so one
   // (column, id) index serves the whole sort.
   columns.push(
-    `${ALIAS}.id ${columns.at(-1)?.endsWith(" DESC") ? "DESC" : "ASC"}`,
+    `${ALIAS}.id ${columns.at(-1)?.endsWith(' DESC') ? 'DESC' : 'ASC'}`,
   );
   return columns;
 }
@@ -1838,7 +2009,7 @@ function integerParam(
   max: number,
 ): number {
   const raw = query.get(name);
-  if (raw === null || raw === "") return fallback;
+  if (raw === null || raw === '') return fallback;
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < min || value > max) {
     throw new ApiError(
@@ -1850,30 +2021,30 @@ function integerParam(
 }
 
 function isTrue(value: string | null): boolean {
-  return value === "1" || value === "true";
+  return value === '1' || value === 'true';
 }
 
 function columnCast(field: Field): string {
-  if (isMultiple(field)) return "text[]";
+  if (isMultiple(field)) return 'text[]';
   switch (field.type) {
-    case "number":
-      return "double precision";
-    case "bool":
-      return "boolean";
-    case "date":
-    case "autodate":
-      return "timestamptz";
-    case "json":
-      return "jsonb";
+    case 'number':
+      return 'double precision';
+    case 'bool':
+      return 'boolean';
+    case 'date':
+    case 'autodate':
+      return 'timestamptz';
+    case 'json':
+      return 'jsonb';
     default:
-      return "text";
+      return 'text';
   }
 }
 
 // JSON is serialized here: node-postgres would turn arrays into Postgres arrays.
 function columnValue(field: Field, value: unknown): unknown {
   if (value instanceof Date) return timestampParam(value);
-  if (field.type === "json")
+  if (field.type === 'json')
     return value === null || value === undefined ? null : JSON.stringify(value);
   return value;
 }
@@ -1921,12 +2092,12 @@ async function writing<T>(
       code?: unknown;
       constraint?: unknown;
     };
-    if (code === "23505") {
+    if (code === '23505') {
       throw indexError(
         collection,
         constraint,
-        "A record with these values already exists.",
-        { code: "validation_not_unique", message: "Must be unique." },
+        'A record with these values already exists.',
+        { code: 'validation_not_unique', message: 'Must be unique.' },
       );
     }
     // An index entry must fit in a page.
@@ -1935,9 +2106,9 @@ async function writing<T>(
       throw indexError(
         collection,
         tooLarge.index,
-        "A value is too long to index.",
+        'A value is too long to index.',
         {
-          code: "validation_length_out_of_range",
+          code: 'validation_length_out_of_range',
           message: "Too long for the field's index.",
         },
       );
@@ -1953,9 +2124,9 @@ function indexError(
   problem: { code: string; message: string },
 ): ApiError {
   let names: string[];
-  if (indexName === `_${collection.id}_pkey`) names = ["id"];
-  else if (indexName === `_${collection.id}_email`) names = ["email"];
-  else if (indexName === `_${collection.id}_phone`) names = ["phone"];
+  if (indexName === `_${collection.id}_pkey`) names = ['id'];
+  else if (indexName === `_${collection.id}_email`) names = ['email'];
+  else if (indexName === `_${collection.id}_phone`) names = ['phone'];
   else {
     const index = collection.indexes.find((i) => i.name === indexName);
     // System indexes are named `_{collection id}_{field id}`, and a suffix.
@@ -1964,7 +2135,7 @@ function indexError(
       : collection.fields
           .filter(
             (f) =>
-              typeof indexName === "string" &&
+              typeof indexName === 'string' &&
               indexName.startsWith(`_${collection.id}_${f.id}`),
           )
           .map((f) => f.id);

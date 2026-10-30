@@ -1,9 +1,9 @@
-import pg from "pg";
-import { DATABASE_PREFIX } from "./server.ts";
+import pg from 'pg';
+import { DATABASE_PREFIX } from './server.ts';
 
 const adminUrl =
   process.env.NEXTBASE_TEST_DATABASE_URL ??
-  "postgres://localhost/nextbase_test";
+  'postgres://localhost/nextbase_test';
 /** Databases older than this are left over from runs that were interrupted. */
 const STALE_MS = 60 * 60 * 1000;
 
@@ -12,12 +12,12 @@ const STALE_MS = 60 * 60 * 1000;
  * behind, which never reached their cleanup. Only ones older than an hour,
  * so suites running at the same time against the same server keep theirs.
  */
-export default async function setup(): Promise<void> {
+export async function setup(): Promise<void> {
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   try {
     const { rows } = await admin.query<{ datname: string }>(
-      "SELECT datname FROM pg_database WHERE datname LIKE $1",
+      'SELECT datname FROM pg_database WHERE datname LIKE $1',
       [`${DATABASE_PREFIX}\\_%`],
     );
     for (const { datname } of rows) {

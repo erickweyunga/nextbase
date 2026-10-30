@@ -2,8 +2,14 @@ import type {
   AuthCollection,
   AuthMethods,
   Collection,
-} from "@nextbasejs/client";
-import { type DB, hash, type Tx, type TxOptions } from "@nextbasejs/dbx";
+} from '@nextbasejs/client';
+import {
+  type DB,
+  hash,
+  type Row,
+  type Tx,
+  type TxOptions,
+} from '@nextbasejs/dbx';
 import {
   confirmEmailChange,
   confirmEmailVerification,
@@ -12,20 +18,20 @@ import {
   requestEmailChange,
   requestEmailVerification,
   requestPasswordReset,
-} from "../auth/flows.ts";
+} from '../auth/flows.ts';
 import {
   accountFor,
   listLinkedAccounts,
   unlinkAccount,
-} from "../auth/linked-accounts.ts";
-import { authWithPassword, checkAuthRule } from "../auth/login.ts";
-import type { Mailer } from "../auth/mail.ts";
+} from '../auth/linked-accounts.ts';
+import { authWithPassword, checkAuthRule } from '../auth/login.ts';
+import type { Mailer } from '../auth/mail.ts';
 import {
   checkRedirect,
   type OAuth2,
   OAuth2Error,
   setStateCookie,
-} from "../auth/oauth2.ts";
+} from '../auth/oauth2.ts';
 import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
@@ -34,12 +40,13 @@ import {
   requestPasswordResetByPhone,
   requestPhoneCode,
   requestPhoneVerification,
-} from "../auth/phone.ts";
+} from '../auth/phone.ts';
 import {
+  forbidImpersonated,
   type Principal,
   recordIn,
   requireSuperuser,
-} from "../auth/principal.ts";
+} from '../auth/principal.ts';
 import {
   bearerToken,
   checkSameOrigin,
@@ -47,30 +54,44 @@ import {
   deleteOtherSessions,
   deleteSession,
   extendSession,
+  IMPERSONATION_DURATION,
+  impersonatorCookie,
   listSessions,
   type OriginPolicy,
   type Session,
   sessionCookie,
+  sessionIn,
   sessionModel,
+  setImpersonatorCookie,
   setSessionCookie,
-} from "../auth/sessions.ts";
-import type { Sms } from "../auth/sms.ts";
-import { completeSetup, hasSuperuser } from "../auth/superusers.ts";
-import { table } from "../db/system.ts";
-import type { Effects } from "../effects.ts";
-import { ApiError } from "../errors.ts";
+} from '../auth/sessions.ts';
+import type { Sms } from '../auth/sms.ts';
+import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
+import { table } from '../db/system.ts';
+import type { Effects } from '../effects.ts';
+import { ApiError } from '../errors.ts';
 import {
   createUpload,
   fileResponse,
   fileToken,
   findFile,
   principalOfFileToken,
-} from "../files/serve.ts";
-import type { Storage } from "../files/storage.ts";
-import { readJsonObject, readRecordBody } from "../http.ts";
-import { newId } from "../random.ts";
-import type { Hooks } from "../records/hooks.ts";
-import { serializeRecord } from "../records/serialize.ts";
+} from '../files/serve.ts';
+import type { Storage } from '../files/storage.ts';
+import type { Thumbs } from '../files/thumbs.ts';
+import { readJsonObject, readRecordBody } from '../http.ts';
+import type { Logger } from '../logs/logger.ts';
+import {
+  deleteLogs,
+  logModel,
+  logStats,
+  logsCollection,
+} from '../logs/store.ts';
+import { newId } from '../random.ts';
+import type { Limited, RouteTag } from '../rate-limits.ts';
+import type { Realtime } from '../realtime/stream.ts';
+import type { Hooks } from '../records/hooks.ts';
+import { serializeRecord } from '../records/serialize.ts';
 import {
   type Apply,
   applyCreate,
@@ -85,13 +106,13 @@ import {
   planUpdateRecord,
   type RecordsContext,
   viewRecord,
-} from "../records/service.ts";
-import { SCHEMA_VERSION_SQL, type Schema } from "../schema/cache.ts";
+} from '../records/service.ts';
+import { SCHEMA_VERSION_SQL, type Schema } from '../schema/cache.ts';
 import {
   deleteCollection,
   newCollection,
   updateCollection,
-} from "../schema/sync.ts";
+} from '../schema/sync.ts';
 
 interface Context {
   request: Request;
@@ -115,9 +136,25 @@ interface Context {
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
+  thumbs: Thumbs;
   hooks: Hooks;
+  /** Undefined when realtime is not enabled. */
+  realtime: Realtime | undefined;
   /** For a request sent through `e.nextbase`: the on hooks that led to it. */
   hookChain: readonly string[];
+  logger: Logger;
+  /**
+   * Records an error on the request's log entry when the response does not
+   * have an error status, such as a failed OAuth2 sign-in's redirect.
+   */
+  noteError(error: string): void;
+  /**
+   * Counts requests against rate limits for the caller: this request when
+   * none are given, as for a route marked `countsItself`, or the writes of
+   * a batch. Throws the 429 of the first that is over. Does nothing for
+   * in-process requests or when rate limits are off.
+   */
+  rateLimit(requests?: readonly Limited[]): Promise<void>;
 }
 
 export interface Route {
@@ -136,11 +173,27 @@ export interface Route {
    * transaction of an on hook, for the hook's `e.nextbase`.
    */
   joinsTransaction?: true;
+  /**
+   * The response is a stream that stays open, so the request does not renew
+   * the session: the renewed cookie could only be sent once it ends.
+   */
+  stream?: true;
+  /**
+   * What the route does, for rate limit labels such as `*:auth`. On routes
+   * under `/collections/{collection}/` and `/files/{collection}/`, labels
+   * naming that collection apply too.
+   */
+  tags?: readonly RouteTag[];
+  /**
+   * The handler counts the request itself, through `rateLimit()`, so it
+   * can answer a refusal its own way.
+   */
+  countsItself?: true;
   handler(context: Context): Promise<Response>;
 }
 
-const segment = "([^/]+)";
-const SUPERUSERS = "_superusers";
+const segment = '([^/]+)';
+const SUPERUSERS = '_superusers';
 
 const records = new RegExp(`^/collections/${segment}/records$`);
 const record = new RegExp(`^/collections/${segment}/records/${segment}$`);
@@ -150,8 +203,9 @@ const linkedAccounts = new RegExp(
 
 export const ROUTES: readonly Route[] = [
   {
-    method: "GET",
+    method: 'GET',
     pattern: records,
+    tags: ['list'],
     transaction: true,
     joinsTransaction: true,
     async handler(context) {
@@ -169,14 +223,15 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: records,
+    tags: ['create'],
     joinsTransaction: true,
     async handler(context) {
       const body = await readRecordBody(context.request);
       return replyOf(
         await writeRecord(context, {
-          method: "POST",
+          method: 'POST',
           collection: context.params[0] as string,
           body,
           query: parse(context).url.searchParams,
@@ -185,8 +240,9 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: record,
+    tags: ['view'],
     transaction: true,
     joinsTransaction: true,
     async handler(context) {
@@ -206,15 +262,16 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "PATCH",
+    method: 'PATCH',
     pattern: record,
+    tags: ['update'],
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       const body = await readRecordBody(context.request);
       return replyOf(
         await writeRecord(context, {
-          method: "PATCH",
+          method: 'PATCH',
           collection,
           id,
           body,
@@ -224,14 +281,15 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: record,
+    tags: ['delete'],
     joinsTransaction: true,
     async handler(context) {
       const [collection, id] = context.params as [string, string];
       return replyOf(
         await writeRecord(context, {
-          method: "DELETE",
+          method: 'DELETE',
           collection,
           id,
           body: {},
@@ -241,11 +299,21 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/batch$/,
+    tags: ['batch'],
     joinsTransaction: true,
     async handler(context) {
       const writes = parseBatch(await readJsonObject(context.request));
+      // Each write counts as it would sent on its own, before any runs.
+      await context.rateLimit(
+        writes.map((write) => ({
+          method: write.method,
+          route: write.path,
+          tags: [WRITE_TAGS[write.method]],
+          collection: context.schema.find(write.collection),
+        })),
+      );
       // Writes are planned before the transaction starts, then all run in it:
       // all or nothing. Planning stops at the first write that fails. The
       // writes before it still run, so the batch reports the first failing
@@ -266,7 +334,7 @@ export const ROUTES: readonly Route[] = [
         }
         // A delete can cascade into any collection that points at it.
         const names =
-          write.method === "DELETE"
+          write.method === 'DELETE'
             ? context.schema.collections.map((c) => c.name)
             : [context.schema.get(write.collection).name];
         for (const name of names) written.add(name);
@@ -277,14 +345,14 @@ export const ROUTES: readonly Route[] = [
         while (replies.length < planned.length) {
           const i = replies.length;
           const write = planned[i] as PlannedWrite;
-          if ("apply" in write) {
+          if ('apply' in write) {
             replies.push(await inBatch(i, () => write.apply(tx)));
             continue;
           }
           // Consecutive creates are done together, a run at a time.
           const creates: PlannedCreate[] = [];
           for (const next of planned.slice(i)) {
-            if (!("create" in next)) break;
+            if (!('create' in next)) break;
             creates.push(next.create);
           }
           for (const run of createRuns(creates)) {
@@ -305,14 +373,25 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'POST',
+    pattern: /^\/realtime$/,
+    tags: ['realtime'],
+    stream: true,
+    async handler(context) {
+      if (!context.realtime)
+        throw new ApiError(404, 'Realtime is not enabled.');
+      return context.realtime.open(context);
+    },
+  },
+  {
+    method: 'GET',
     pattern: /^\/setup$/,
     async handler({ db }) {
       return Response.json({ required: !(await hasSuperuser(db)) });
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/setup$/,
     async handler({ request, db, schema, principal }) {
       const record = await completeSetup(
@@ -321,7 +400,7 @@ export const ROUTES: readonly Route[] = [
         await readJsonObject(request),
       );
       return Response.json(
-        serializeRecord(schema.get("_superusers"), record, {
+        serializeRecord(schema.get('_superusers'), record, {
           ...principal,
           superuser: true,
         }),
@@ -329,7 +408,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/collections$/,
     async handler({ schema, principal }) {
       requireSuperuser(principal);
@@ -344,7 +423,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/collections$/,
     async handler({ request, db, principal }) {
       requireSuperuser(principal);
@@ -353,7 +432,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/collections/${segment}$`),
     async handler({ params, schema, principal }) {
       requireSuperuser(principal);
@@ -361,7 +440,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "PATCH",
+    method: 'PATCH',
     pattern: new RegExp(`^/collections/${segment}$`),
     async handler({ request, params, db, principal, effects }) {
       requireSuperuser(principal);
@@ -379,16 +458,17 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ params, db, schema, principal, storage }) {
+    async handler({ params, db, schema, principal, storage, logger }) {
       requireSuperuser(principal);
       const { id } = schema.get(params[0] as string);
       await schemaChange(() => deleteCollection(db, params[0] as string));
       // A failure only leaves unused files behind.
       await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
-        console.error(
-          "[nextbase] deleting a collection's files failed:",
+        logger.failure(
+          'storage',
+          "deleting a collection's files failed",
           error,
         );
       });
@@ -396,38 +476,44 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/upload-url$`),
-    async handler({ request, params, db, schema, principal, storage }) {
+    tags: ['file'],
+    async handler({ request, params, db, schema, principal, storage, logger }) {
       const collection = schema.get(params[0] as string);
       const input = await readJsonObject(request);
       return Response.json(
-        await createUpload(db, storage, collection, principal, input),
+        await createUpload(db, storage, collection, principal, input, logger),
       );
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: /^\/files\/token$/,
+    tags: ['file'],
     async handler({ principal }) {
       if (!principal.record || !principal.collection) {
-        throw new ApiError(401, "Sign in to get a file token.");
+        throw new ApiError(401, 'Sign in to get a file token.');
       }
+      // A file token from an impersonation session ends with it.
+      const session =
+        principal.impersonatedBy !== undefined ? principal.session : undefined;
       return Response.json({
-        token: await fileToken(principal.collection, principal.record),
+        token: await fileToken(principal.collection, principal.record, session),
       });
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/files/${segment}/${segment}/${segment}$`),
+    tags: ['file'],
     async handler(context) {
-      const { request, params, db, schema, storage } = context;
+      const { request, params, db, schema, storage, thumbs } = context;
       const { collection, field, key } = await findFile(db, schema, params);
       const query = new URL(request.url).searchParams;
       if (field.protected) {
         // The view rule decides, for the session's caller or the file token's.
-        const token = query.get("token");
+        const token = query.get('token');
         const principal = token
           ? ((await principalOfFileToken(db, schema, token)) ?? {
               superuser: false,
@@ -440,27 +526,42 @@ export const ROUTES: readonly Route[] = [
           new URLSearchParams(),
         );
       }
-      const download = query.has("download") && query.get("download") !== "0";
-      return fileResponse(storage, key, request, {
+      const download = query.has('download') && query.get('download') !== '0';
+      const thumb = query.get('thumb');
+      const served = thumb ? await thumbs.keyOf(field, key, thumb) : key;
+      if (served === undefined) {
+        // To the original's own URL, so caches keep it only under that.
+        const original = new URL(request.url);
+        original.searchParams.delete('thumb');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `${original.pathname}${original.search}`,
+            'cache-control': 'no-store',
+          },
+        });
+      }
+      return fileResponse(storage, served, request, {
         download,
         protectedFile: field.protected,
       });
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-password$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
       const { identity, password, cookie } = await readJsonObject(request);
-      if (typeof identity !== "string" || typeof password !== "string") {
-        throw new ApiError(400, "Failed to authenticate.", {
-          ...(typeof identity !== "string" && {
-            identity: { code: "validation_required", message: "Required." },
+      if (typeof identity !== 'string' || typeof password !== 'string') {
+        throw new ApiError(400, 'Failed to authenticate.', {
+          ...(typeof identity !== 'string' && {
+            identity: { code: 'validation_required', message: 'Required.' },
           }),
-          ...(typeof password !== "string" && {
-            password: { code: "validation_required", message: "Required." },
+          ...(typeof password !== 'string' && {
+            password: { code: 'validation_required', message: 'Required.' },
           }),
         });
       }
@@ -477,7 +578,7 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
     async handler({ params, schema, oauth2 }) {
       const collection = authCollection(schema, params[0] as string);
@@ -500,28 +601,29 @@ export const ROUTES: readonly Route[] = [
       } satisfies AuthMethods);
     },
   },
-  ...phoneFlow("request-phone-code", (ctx, collection, input) =>
+  ...phoneFlow('request-phone-code', (ctx, collection, input) =>
     requestPhoneCode(ctx, collection, input.phone),
   ),
-  ...phoneFlow("request-password-reset-by-phone", (ctx, collection, input) =>
+  ...phoneFlow('request-password-reset-by-phone', (ctx, collection, input) =>
     requestPasswordResetByPhone(ctx, collection, input.phone),
   ),
-  ...phoneFlow("confirm-password-reset-by-phone", (ctx, collection, input) =>
+  ...phoneFlow('confirm-password-reset-by-phone', (ctx, collection, input) =>
     confirmPasswordResetByPhone(ctx, collection, input),
   ),
   ...phoneFlow(
-    "request-phone-verification",
+    'request-phone-verification',
     (ctx, collection, input, principal) =>
       requestPhoneVerification(ctx, collection, principal, input.phone),
   ),
   ...phoneFlow(
-    "confirm-phone-verification",
+    'confirm-phone-verification',
     (ctx, collection, input, principal) =>
       confirmPhoneVerification(ctx, collection, principal, input),
   ),
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-with-phone-code$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -539,28 +641,59 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: new RegExp(
       `^/collections/${segment}/auth-with-oauth2/${segment}$`,
     ),
-    async handler({ request, params, db, schema, principal, origins, oauth2 }) {
+    tags: ['auth'],
+    countsItself: true,
+    async handler(context) {
+      const { request, params, db, schema, principal, origins, oauth2 } =
+        context;
+      const query = new URL(request.url).searchParams;
+      // Counted first, so requests that fail below count too. The browser
+      // is navigating, so a refusal goes back to the app as its other
+      // sign-in errors do, not as JSON; only to a redirect that is valid,
+      // and only when OAuth2 is set up, so there is an app to return to.
+      try {
+        await context.rateLimit();
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 429) throw error;
+        let back: string;
+        try {
+          oauth2.provider(params[1] as string);
+          back =
+            checkRedirect(query.get('errorRedirect'), 'errorRedirect') ||
+            checkRedirect(query.get('redirect'));
+        } catch {
+          throw error;
+        }
+        context.noteError('too_many_requests');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            ...error.headers,
+            location: oauth2.returnUrl(back, 'too_many_requests'),
+          },
+        });
+      }
       const collection = authCollection(schema, params[0] as string);
       if (collection.id === SUPERUSERS) {
-        throw new ApiError(400, "Superusers sign in with their password.");
+        throw new ApiError(400, 'Superusers sign in with their password.');
       }
       const provider = oauth2.provider(params[1] as string);
-      const query = new URL(request.url).searchParams;
-      const redirect = checkRedirect(query.get("redirect"));
+      const redirect = checkRedirect(query.get('redirect'));
       const errorRedirect =
-        checkRedirect(query.get("errorRedirect"), "errorRedirect") || redirect;
+        checkRedirect(query.get('errorRedirect'), 'errorRedirect') || redirect;
       let linkRecordId: string | null = null;
-      if (query.get("link") === "true") {
+      if (query.get('link') === 'true') {
         // Linking adds a way into the account, so only this site may start it.
         checkSameOrigin(request, origins);
+        forbidImpersonated(principal, 'link a provider');
         if (!principal.record || principal.collection?.id !== collection.id) {
           throw new ApiError(
             401,
-            "Sign in to this collection to link a provider.",
+            'Sign in to this collection to link a provider.',
           );
         }
         linkRecordId = principal.record.id as string;
@@ -575,27 +708,31 @@ export const ROUTES: readonly Route[] = [
       return new Response(null, {
         status: 302,
         headers: [
-          ["location", location],
-          ["set-cookie", setStateCookie(request, state)],
+          ['location', location],
+          ['set-cookie', setStateCookie(request, state)],
         ],
       });
     },
   },
   {
-    method: "GET",
+    method: 'GET',
+    // Untagged, so sign-in limits leave it be: it is bound to the state
+    // cookie and a single-use code, and a refusal would lose the sign-in.
     pattern: new RegExp(`^/callback/${segment}$`),
     async handler(context) {
       const { request, params, db, schema, principal, mailer, oauth2 } =
         context;
-      let redirect = "";
-      let errorRedirect = "";
+      // Unknown, or OAuth2 is not set up: there is no app URL to return to.
+      oauth2.provider(params[0] as string);
+      let redirect = '';
+      let errorRedirect = '';
       const back = (error?: string): Response => {
         const to = error === undefined ? redirect : errorRedirect;
         const response = new Response(null, {
           status: 302,
-          headers: [["location", oauth2.returnUrl(to, error)]],
+          headers: [['location', oauth2.returnUrl(to, error)]],
         });
-        response.headers.append("set-cookie", setStateCookie(request));
+        response.headers.append('set-cookie', setStateCookie(request));
         return response;
       };
       try {
@@ -605,20 +742,22 @@ export const ROUTES: readonly Route[] = [
         // another provider's.
         if (params[0] !== state.provider) {
           throw new OAuth2Error(
-            "oauth2_failed",
-            "The sign-in returned from another provider.",
+            'oauth2_failed',
+            'The sign-in returned from another provider.',
           );
         }
         const provider = oauth2.provider(state.provider);
         const collection = authCollection(schema, state.collectionId);
-        // A link is for the record that started it, still signed in here.
+        // A link is for the record that started it, still signed in here,
+        // and never for a superuser acting as it.
         if (
           state.linkRecordId !== null &&
-          principal.record?.id !== state.linkRecordId
+          (principal.record?.id !== state.linkRecordId ||
+            principal.impersonatedBy !== undefined)
         ) {
           throw new OAuth2Error(
-            "oauth2_failed",
-            "Sign in again to link this provider.",
+            'oauth2_failed',
+            'Sign in again to link this provider.',
           );
         }
         const identity = await oauth2.identify(provider, state, request);
@@ -630,7 +769,7 @@ export const ROUTES: readonly Route[] = [
           state.linkRecordId,
         );
         if (linkedTo !== undefined) {
-          mailer.send("oauth2Linked", collection.name, linkedTo, {
+          mailer.send('oauth2Linked', collection.name, linkedTo, {
             provider: provider.displayName,
           });
         }
@@ -639,7 +778,7 @@ export const ROUTES: readonly Route[] = [
           await checkAuthRule(db, schema, collection, record.id as string);
         } catch (error) {
           if (error instanceof ApiError && error.status === 403) {
-            throw new OAuth2Error("sign_in_forbidden", error.message);
+            throw new OAuth2Error('sign_in_forbidden', error.message);
           }
           throw error;
         }
@@ -651,24 +790,29 @@ export const ROUTES: readonly Route[] = [
           db,
           collection,
           record,
-          request.headers.get("user-agent") ?? "",
+          request.headers.get('user-agent') ?? '',
         );
         const response = back();
         response.headers.append(
-          "set-cookie",
+          'set-cookie',
           setSessionCookie(request, { token, expires: session.expires }),
         );
         return response;
       } catch (error) {
-        if (error instanceof OAuth2Error) return back(error.code);
-        console.error("[nextbase] an OAuth2 sign-in failed:", error);
-        return back("oauth2_failed");
+        if (error instanceof OAuth2Error) {
+          context.noteError(error.code);
+          return back(error.code);
+        }
+        context.logger.failure('oauth2', 'an OAuth2 sign-in failed', error);
+        context.noteError('oauth2_failed');
+        return back('oauth2_failed');
       }
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: linkedAccounts,
+    tags: ['list'],
     async handler({ params, db, schema, principal }) {
       const { collection, id } = ownRecord(schema, principal, params);
       return Response.json({
@@ -677,53 +821,56 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(
       `^/collections/${segment}/records/${segment}/linked-accounts/${segment}$`,
     ),
+    tags: ['delete'],
     async handler({ params, db, schema, principal, mailer, oauth2 }) {
       const { collection, id } = ownRecord(schema, principal, params);
+      forbidImpersonated(principal, 'unlink a provider');
       const unlinked = await unlinkAccount(
         db,
         collection.id,
         id,
         params[2] as string,
       );
-      if (!unlinked) throw new ApiError(404, "The provider is not linked.");
+      if (!unlinked) throw new ApiError(404, 'The provider is not linked.');
       const [owner] = await db
-        .select("email")
+        .select('email')
         .from(table(collection.name))
         .where(hash({ id }))
         .all();
       if (owner) {
-        mailer.send("oauth2Unlinked", collection.name, owner.email as string, {
+        mailer.send('oauth2Unlinked', collection.name, owner.email as string, {
           provider: oauth2.displayName(params[2] as string),
         });
       }
       return new Response(null, { status: 204 });
     },
   },
-  ...flow("request-email-verification", (ctx, collection, input) =>
+  ...flow('request-email-verification', (ctx, collection, input) =>
     requestEmailVerification(ctx, collection, input.email),
   ),
-  ...flow("confirm-email-verification", (ctx, collection, input) =>
+  ...flow('confirm-email-verification', (ctx, collection, input) =>
     confirmEmailVerification(ctx, collection, input.token),
   ),
-  ...flow("request-password-reset", (ctx, collection, input) =>
+  ...flow('request-password-reset', (ctx, collection, input) =>
     requestPasswordReset(ctx, collection, input.email),
   ),
-  ...flow("confirm-password-reset", (ctx, collection, input) =>
+  ...flow('confirm-password-reset', (ctx, collection, input) =>
     confirmPasswordReset(ctx, collection, input),
   ),
-  ...flow("request-email-change", (ctx, collection, input, principal) =>
+  ...flow('request-email-change', (ctx, collection, input, principal) =>
     requestEmailChange(ctx, collection, principal, input.newEmail),
   ),
-  ...flow("confirm-email-change", (ctx, collection, input) =>
+  ...flow('confirm-email-change', (ctx, collection, input) =>
     confirmEmailChange(ctx, collection, input),
   ),
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/sign-up$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, db, schema, inProcess, origins } = context;
       const collection = authCollection(schema, params[0] as string);
@@ -731,9 +878,9 @@ export const ROUTES: readonly Route[] = [
       if (cookie === true && !inProcess) checkSameOrigin(request, origins);
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
-        typeof input.id === "string" && input.id !== "" ? input.id : newId();
+        typeof input.id === 'string' && input.id !== '' ? input.id : newId();
       await writeRecord(context, {
-        method: "POST",
+        method: 'POST',
         collection: collection.id,
         body: { ...input, id },
         query: new URLSearchParams(),
@@ -761,16 +908,18 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "POST",
+    method: 'POST',
     pattern: new RegExp(`^/collections/${segment}/auth-refresh$`),
+    tags: ['auth'],
     async handler(context) {
       const { request, params, schema, principal, db } = context;
       const collection = authCollection(schema, params[0] as string);
-      const record = recordIn(principal, collection, "refresh");
+      const record = recordIn(principal, collection, 'refresh');
       const { session } = principal;
       if (!session) {
-        throw new ApiError(401, "Sign in to this collection to refresh.");
+        throw new ApiError(401, 'Sign in to this collection to refresh.');
       }
+      forbidImpersonated(principal, 'be refreshed');
       await checkAuthRule(db, schema, collection, record.id as string);
       const body = await authRecord(context, collection, record);
       const expires = await extendSession(db, collection, session.id);
@@ -781,7 +930,7 @@ export const ROUTES: readonly Route[] = [
       const token = sessionCookie(request);
       if (token) {
         response.headers.append(
-          "set-cookie",
+          'set-cookie',
           setSessionCookie(request, { token, expires }),
         );
       }
@@ -789,7 +938,15 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "GET",
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/impersonate/${segment}$`),
+    // Only superusers may, and they skip rate limits, but it starts a
+    // session like the sign-ins.
+    tags: ['auth'],
+    handler: impersonate,
+  },
+  {
+    method: 'GET',
     pattern: /^\/session$/,
     async handler({ principal }) {
       const { collection, record, session } = principal;
@@ -801,20 +958,37 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: /^\/session$/,
-    async handler({ request, db, principal }) {
+    async handler(context) {
+      const { request, db, schema, principal } = context;
       if (principal.session) await deleteSession(db, principal.session);
-      const response = new Response(null, { status: 204 });
-      // Removed even when the session was already gone.
-      if (request.headers.has("cookie")) {
-        response.headers.append("set-cookie", setSessionCookie(request));
+      const restored = await restoredSession(request, db, schema, principal);
+      // The superuser is signed in again, so the client can say who.
+      const response = restored
+        ? authResponse(
+            await authRecord(context, restored.collection, restored.record),
+            undefined,
+          )
+        : new Response(null, { status: 204 });
+      // Removed even when the session was already gone, but not when a
+      // superuser acting as someone by token leaves: the cookie is their own.
+      const tokenImpersonation =
+        principal.impersonatedBy !== undefined && !principal.viaCookie;
+      if (request.headers.has('cookie') && !tokenImpersonation) {
+        response.headers.append(
+          'set-cookie',
+          setSessionCookie(request, restored),
+        );
+      }
+      if (impersonatorCookie(request) !== undefined && !tokenImpersonation) {
+        response.headers.append('set-cookie', setImpersonatorCookie(request));
       }
       return response;
     },
   },
   {
-    method: "GET",
+    method: 'GET',
     pattern: /^\/sessions$/,
     async handler({ db, principal }) {
       const current = requireSession(principal);
@@ -829,30 +1003,95 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: /^\/sessions$/,
     async handler({ db, principal }) {
-      await deleteOtherSessions(db, requireSession(principal));
+      const current = requireSession(principal);
+      forbidImpersonated(principal, 'revoke other sessions');
+      await deleteOtherSessions(db, current);
       return new Response(null, { status: 204 });
     },
   },
   {
-    method: "DELETE",
+    method: 'DELETE',
     pattern: new RegExp(`^/sessions/${segment}$`),
     async handler({ request, params, db, principal }) {
       const current = requireSession(principal);
       const id = params[0] as string;
+      // Its own session it may end, as by signing out.
+      if (id !== current.id)
+        forbidImpersonated(principal, 'revoke other sessions');
       const deleted = await deleteSession(db, {
         id,
         collectionId: current.collectionId,
         recordId: current.recordId,
       });
-      if (!deleted) throw new ApiError(404, "Session not found.");
+      if (!deleted) throw new ApiError(404, 'Session not found.');
       const response = new Response(null, { status: 204 });
       if (id === current.id && principal.viaCookie) {
-        response.headers.append("set-cookie", setSessionCookie(request));
+        response.headers.append('set-cookie', setSessionCookie(request));
       }
       return response;
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/logs$/,
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const list = await bounded(context, (db) =>
+        listRecords(
+          recordsContext(context, {}, { db }),
+          logsCollection(),
+          parse(context).url.searchParams,
+        ),
+      );
+      return Response.json({ ...list, items: list.items.map(logModel) });
+    },
+  },
+  // Before `/logs/{id}`, which would match it too.
+  {
+    method: 'GET',
+    pattern: /^\/logs\/stats$/,
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const filter = parse(context).url.searchParams.get('filter') ?? '';
+      return Response.json(
+        await bounded(context, (db) => logStats(db, context, filter)),
+      );
+    },
+  },
+  {
+    method: 'GET',
+    pattern: new RegExp(`^/logs/${segment}$`),
+    transaction: true,
+    async handler(context) {
+      requireSuperuser(context.principal);
+      const entry = await bounded(context, (db) =>
+        viewRecord(
+          recordsContext(context, {}, { db }),
+          logsCollection(),
+          context.params[0] as string,
+          parse(context).url.searchParams,
+        ),
+      ).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) {
+          throw new ApiError(404, 'Log entry not found.');
+        }
+        throw error;
+      });
+      return Response.json(logModel(entry));
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/logs$/,
+    async handler({ db, principal }) {
+      requireSuperuser(principal);
+      await deleteLogs(db);
+      return new Response(null, { status: 204 });
     },
   },
 ];
@@ -948,7 +1187,7 @@ function replyOf({ status, body }: Reply): Response {
 }
 
 interface RecordWrite {
-  method: "POST" | "PATCH" | "DELETE";
+  method: 'POST' | 'PATCH' | 'DELETE';
   collection: string;
   id?: string;
   body: Record<string, unknown>;
@@ -961,7 +1200,7 @@ async function writeRecord(
   write: RecordWrite,
 ): Promise<Reply> {
   const planned = await planRecordWrite(context, write);
-  if ("apply" in planned) return bounded(context, planned.apply);
+  if ('apply' in planned) return bounded(context, planned.apply);
   const apply = applyCreate(planned.create);
   return bounded(context, async (tx) => replyWith(await apply(tx)));
 }
@@ -987,12 +1226,12 @@ async function planRecordWrite(
     }),
     ...(written && { written }),
   };
-  if (write.method === "POST") {
+  if (write.method === 'POST') {
     return {
       create: await planNewRecord(ctx, collection, write.body, write.query),
     };
   }
-  if (write.method === "DELETE") {
+  if (write.method === 'DELETE') {
     const apply = await planDeleteRecord(ctx, collection, write.id as string);
     return {
       apply: async (tx) => {
@@ -1036,47 +1275,58 @@ function batchError(i: number, error: unknown): unknown {
 
 const MAX_BATCH = 50;
 
+const WRITE_TAGS = {
+  POST: 'create',
+  PATCH: 'update',
+  DELETE: 'delete',
+} as const satisfies Record<RecordWrite['method'], RouteTag>;
+
 // `{ requests: [{ method, url, body }] }`, each url a records path below the base path.
-function parseBatch(input: Record<string, unknown>): RecordWrite[] {
+/** A write of a batch, with its records path. */
+interface BatchWrite extends RecordWrite {
+  path: string;
+}
+
+function parseBatch(input: Record<string, unknown>): BatchWrite[] {
   const { requests } = input;
   if (
     !Array.isArray(requests) ||
     requests.length === 0 ||
     requests.length > MAX_BATCH
   ) {
-    throw new ApiError(400, "The batch is invalid.", {
+    throw new ApiError(400, 'The batch is invalid.', {
       requests: {
-        code: "validation_invalid",
+        code: 'validation_invalid',
         message: `Must be a list of 1 to ${MAX_BATCH} requests.`,
       },
     });
   }
-  return requests.map((request: unknown, i): RecordWrite => {
+  return requests.map((request: unknown, i): BatchWrite => {
     const invalid = (message: string): ApiError =>
-      new ApiError(400, "The batch is invalid.", {
-        requests: { [i]: { code: "validation_invalid", message } },
+      new ApiError(400, 'The batch is invalid.', {
+        requests: { [i]: { code: 'validation_invalid', message } },
       });
     if (
       request === null ||
-      typeof request !== "object" ||
+      typeof request !== 'object' ||
       Array.isArray(request)
     )
-      throw invalid("Must be an object.");
+      throw invalid('Must be an object.');
     const { method, url, body = {} } = request as Record<string, unknown>;
-    if (method !== "POST" && method !== "PATCH" && method !== "DELETE")
-      throw invalid("method must be POST, PATCH or DELETE.");
-    if (typeof url !== "string" || !url.startsWith("/"))
+    if (method !== 'POST' && method !== 'PATCH' && method !== 'DELETE')
+      throw invalid('method must be POST, PATCH or DELETE.');
+    if (typeof url !== 'string' || !url.startsWith('/'))
       throw invalid(
-        "url must be a records path such as /collections/posts/records.",
+        'url must be a records path such as /collections/posts/records.',
       );
-    if (body === null || typeof body !== "object" || Array.isArray(body))
-      throw invalid("body must be an object.");
-    const parsed = new URL(url, "http://batch.invalid");
-    const match = (method === "POST" ? records : record).exec(parsed.pathname);
+    if (body === null || typeof body !== 'object' || Array.isArray(body))
+      throw invalid('body must be an object.');
+    const parsed = new URL(url, 'http://batch.invalid');
+    const match = (method === 'POST' ? records : record).exec(parsed.pathname);
     if (!match) {
       throw invalid(
-        method === "POST"
-          ? "POST creates records: /collections/{collection}/records."
+        method === 'POST'
+          ? 'POST creates records: /collections/{collection}/records.'
           : `${method} needs a record: /collections/{collection}/records/{id}.`,
       );
     }
@@ -1085,6 +1335,7 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
       .map((p) => decodeURIComponent(p)) as [string, string | undefined];
     return {
       method,
+      path: parsed.pathname,
       collection,
       ...(id !== undefined && { id }),
       body: body as Record<string, unknown>,
@@ -1093,7 +1344,8 @@ function parseBatch(input: Record<string, unknown>): RecordWrite[] {
   });
 }
 
-// Always 204, so it does not reveal which accounts exist.
+// Always 204, so it does not reveal which accounts exist. None is open to
+// an impersonation session: each proves, changes or recovers a way in.
 function flow(
   name: string,
   run: (
@@ -1105,11 +1357,13 @@ function flow(
 ): Route[] {
   return [
     {
-      method: "POST",
+      method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      tags: ['auth'],
       async handler(context) {
         const { request, params, db, schema, principal, mailer } = context;
         const collection = authCollection(schema, params[0] as string);
+        forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
         const { rejectBreachedPasswords, effects, hooks } = context;
         await run(
@@ -1136,11 +1390,13 @@ function phoneFlow(
 ): Route[] {
   return [
     {
-      method: "POST",
+      method: 'POST',
       pattern: new RegExp(`^/collections/${segment}/${name}$`),
+      tags: ['auth'],
       async handler(context) {
         const { request, params, schema, principal } = context;
         const collection = authCollection(schema, params[0] as string);
+        forbidImpersonated(principal, 'change sign-in details');
         const input = await readJsonObject(request);
         await run(phoneContext(context), collection, input, principal);
         return new Response(null, { status: 204 });
@@ -1181,12 +1437,12 @@ async function startSession(
     db,
     collection,
     record,
-    request.headers.get("user-agent") ?? "",
+    request.headers.get('user-agent') ?? '',
   );
   const response = authResponse(body, cookie ? undefined : token);
   if (cookie) {
     response.headers.append(
-      "set-cookie",
+      'set-cookie',
       setSessionCookie(request, { token, expires: session.expires }),
     );
   }
@@ -1201,11 +1457,13 @@ function authRecord(
   context: Context,
   collection: AuthCollection,
   record: Record<string, unknown>,
+  impersonatedBy?: string,
 ): Promise<Record<string, unknown>> {
   const principal: Principal = {
     collection,
     record,
     superuser: collection.id === SUPERUSERS,
+    ...(impersonatedBy !== undefined && { impersonatedBy }),
   };
   return outputRecord(
     recordsContext({ ...context, principal }, {}),
@@ -1222,9 +1480,137 @@ function authResponse(
   return Response.json({ ...(token !== undefined && { token }), record });
 }
 
+/**
+ * Starts a session in which the calling superuser acts as the record, like
+ * a sign-in that skips the collection's auth rule. It lasts `duration`
+ * seconds and is never extended. With `cookie`, the superuser's own cookie
+ * session is kept in another cookie, and signing out restores it.
+ */
+async function impersonate(context: Context): Promise<Response> {
+  const { request, params, db, schema, principal, inProcess, origins } =
+    context;
+  forbidImpersonated(principal, 'impersonate');
+  requireSuperuser(principal);
+  const superuser = principal.record;
+  if (!superuser || !principal.collection || !principal.session) {
+    throw new ApiError(403, 'Sign in as a superuser to impersonate.');
+  }
+  const collection = authCollection(schema, params[0] as string);
+  if (collection.id === SUPERUSERS) {
+    throw new ApiError(403, 'Superusers cannot be impersonated.');
+  }
+  const { duration = IMPERSONATION_DURATION.max, cookie } =
+    await readJsonObject(request);
+  const { min, max } = IMPERSONATION_DURATION;
+  if (
+    typeof duration !== 'number' ||
+    !Number.isInteger(duration) ||
+    duration < min ||
+    duration > max
+  ) {
+    throw new ApiError(400, 'Failed to impersonate.', {
+      duration: {
+        code: 'validation_invalid_value',
+        message: `Must be a whole number of seconds from ${min} to ${max}.`,
+      },
+    });
+  }
+  // The superuser's own cookie session is kept aside, to be restored.
+  if (cookie === true && !principal.viaCookie) {
+    throw new ApiError(
+      400,
+      'Impersonation in cookie mode needs a cookie session.',
+    );
+  }
+  // Another site must not sign the browser in to an account of its choosing.
+  if (cookie === true && !inProcess) checkSameOrigin(request, origins);
+  const id = params[1] as string;
+  const [record] = await db
+    .select()
+    .from(table(collection.name))
+    .where(hash({ id }))
+    .all();
+  if (!record) throw new ApiError(404, 'Record not found.');
+  const superuserId = superuser.id as string;
+  // Before the session starts, so a refused `expand` or `fields` starts none.
+  const body = await authRecord(context, collection, record, superuserId);
+  const { token, session } = await createSession(
+    db,
+    collection,
+    record,
+    request.headers.get('user-agent') ?? '',
+    {
+      duration,
+      impersonator: { collection: principal.collection, record: superuser },
+    },
+  );
+  context.logger.audit('Impersonation started', {
+    type: 'impersonate',
+    superuserId,
+    collection: collection.name,
+    recordId: id,
+    sessionId: session.id,
+    expires: session.expires.toISOString(),
+  });
+  const response = Response.json({
+    ...(cookie !== true && { token }),
+    record: body,
+    session: sessionModel(session, false),
+  });
+  const own = sessionCookie(request);
+  if (cookie === true && own !== undefined) {
+    // Kept as long as the impersonation lasts, to be restored when it ends.
+    response.headers.append(
+      'set-cookie',
+      setImpersonatorCookie(request, { token: own, expires: session.expires }),
+    );
+    response.headers.append(
+      'set-cookie',
+      setSessionCookie(request, { token, expires: session.expires }),
+    );
+  }
+  return response;
+}
+
+/**
+ * Signing out of an impersonation session in the browser that started it
+ * gives the superuser back their own session, if it is still valid.
+ */
+async function restoredSession(
+  request: Request,
+  db: DB,
+  schema: Schema,
+  principal: Principal,
+): Promise<
+  | { token: string; expires: Date; collection: AuthCollection; record: Row }
+  | undefined
+> {
+  const kept = impersonatorCookie(request);
+  if (
+    kept === undefined ||
+    !principal.viaCookie ||
+    principal.impersonatedBy === undefined
+  ) {
+    return undefined;
+  }
+  const active = await sessionIn(db, schema, kept);
+  if (
+    active?.collection.id !== SUPERUSERS ||
+    active.record.id !== principal.impersonatedBy
+  ) {
+    return undefined;
+  }
+  return {
+    token: kept,
+    expires: active.session.expires,
+    collection: active.collection,
+    record: active.record,
+  };
+}
+
 function requireSession(principal: Principal): Session {
   if (!principal.session)
-    throw new ApiError(401, "Sign in to manage sessions.");
+    throw new ApiError(401, 'Sign in to manage sessions.');
   return principal.session;
 }
 
@@ -1237,20 +1623,20 @@ function ownRecord(
   const collection = authCollection(schema, params[0] as string);
   const id = params[1] as string;
   if (!principal.superuser && !principal.record) {
-    throw new ApiError(401, "Sign in to manage linked accounts.");
+    throw new ApiError(401, 'Sign in to manage linked accounts.');
   }
   const own =
     principal.collection?.id === collection.id && principal.record?.id === id;
   if (!principal.superuser && !own) {
-    throw new ApiError(404, "Record not found.");
+    throw new ApiError(404, 'Record not found.');
   }
   return { collection, id };
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {
   const collection: Collection = schema.get(idOrName);
-  if (collection.type !== "auth")
-    throw new ApiError(404, "Collection not found.");
+  if (collection.type !== 'auth')
+    throw new ApiError(404, 'Collection not found.');
   return collection;
 }
 
@@ -1261,7 +1647,7 @@ async function schemaChange<T>(change: () => Promise<T>): Promise<T> {
   } catch (error) {
     const { code, message } = error as { code?: unknown; message?: unknown };
     // Class 23: integrity constraint violations.
-    if (typeof code === "string" && code.startsWith("23")) {
+    if (typeof code === 'string' && code.startsWith('23')) {
       throw new ApiError(
         400,
         `The change conflicts with existing records: ${String(message)}`,
@@ -1269,8 +1655,8 @@ async function schemaChange<T>(change: () => Promise<T>): Promise<T> {
     }
     // A view reads what the change would drop or retype.
     if (
-      code === "2BP01" ||
-      (code === "0A000" && /\bview\b/.test(String(message)))
+      code === '2BP01' ||
+      (code === '0A000' && /\bview\b/.test(String(message)))
     ) {
       throw new ApiError(
         400,

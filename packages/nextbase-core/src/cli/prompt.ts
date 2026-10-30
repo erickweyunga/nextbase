@@ -1,7 +1,7 @@
-import { emitKeypressEvents } from "node:readline";
-import { createInterface, type Interface } from "node:readline/promises";
-import type { Readable, Writable } from "node:stream";
-import type { ReadStream } from "node:tty";
+import { emitKeypressEvents } from 'node:readline';
+import { createInterface, type Interface } from 'node:readline/promises';
+import type { Readable, Writable } from 'node:stream';
+import type { ReadStream } from 'node:tty';
 
 export interface Prompter {
   prompt(question: string, hidden: boolean): Promise<string>;
@@ -40,7 +40,7 @@ export function newPrompter(
       output.write(question);
       const line = await next.next();
       if (line.done) {
-        throw new Error("The input ended before every question was answered.");
+        throw new Error('The input ended before every question was answered.');
       }
       return line.value;
     },
@@ -60,26 +60,26 @@ function readHidden(
   stdin.setRawMode(true);
   stdin.resume();
   return new Promise((resolve, reject) => {
-    let value = "";
+    let value = '';
     const done = (finish: () => void): void => {
-      stdin.off("keypress", onKey);
+      stdin.off('keypress', onKey);
       stdin.setRawMode(false);
       stdin.pause();
-      stdout.write("\n");
+      stdout.write('\n');
       finish();
     };
     const onKey = (
       text: string | undefined,
       key: { name?: string; ctrl?: boolean },
     ): void => {
-      if (key.ctrl && key.name === "c")
-        done(() => reject(new Error("Canceled.")));
-      else if (key.name === "return" || key.name === "enter")
+      if (key.ctrl && key.name === 'c')
+        done(() => reject(new Error('Canceled.')));
+      else if (key.name === 'return' || key.name === 'enter')
         done(() => resolve(value));
-      else if (key.name === "backspace")
-        value = [...value].slice(0, -1).join("");
+      else if (key.name === 'backspace')
+        value = [...value].slice(0, -1).join('');
       else if (text && !key.ctrl) value += text;
     };
-    stdin.on("keypress", onKey);
+    stdin.on('keypress', onKey);
   });
 }

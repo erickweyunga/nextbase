@@ -3,22 +3,22 @@ import type {
   ErrorData,
   Field,
   FileField,
-} from "@nextbasejs/client";
-import type { Builder, DB, Tx } from "@nextbasejs/dbx";
-import { lockSchema, table } from "../db/system.ts";
-import { ApiError, indexRowTooLarge } from "../errors.ts";
-import { fileKey, fileNames } from "../files/files.ts";
-import { ruleProblem } from "../filter/compiler.ts";
-import { ID_PATTERN } from "../random.ts";
-import { findCollection, Schema } from "./cache.ts";
-import { parseCollection } from "./collection.ts";
-import { isMultiple } from "./fields.ts";
+} from '@nextbasejs/client';
+import type { Builder, DB, Tx } from '@nextbasejs/dbx';
+import { lockSchema, table } from '../db/system.ts';
+import { ApiError, indexRowTooLarge } from '../errors.ts';
+import { fileKey, fileNames } from '../files/files.ts';
+import { ruleProblem } from '../filter/compiler.ts';
+import { ID_PATTERN } from '../random.ts';
+import { findCollection, Schema } from './cache.ts';
+import { parseCollection } from './collection.ts';
+import { isMultiple } from './fields.ts';
 import {
   bumpSchemaVersion,
   deleteCollectionRow,
   loadCollections,
   saveCollectionRow,
-} from "./store.ts";
+} from './store.ts';
 import {
   createView,
   dropView,
@@ -26,7 +26,7 @@ import {
   grantViewRole,
   readViewRole,
   renameView,
-} from "./views.ts";
+} from './views.ts';
 
 // Each schema change is one transaction under the schema lock (load, validate,
 // DDL, store, bump version). DDL is transactional, so a failure changes nothing.
@@ -39,7 +39,7 @@ export async function newCollection(
     await lockSchema(tx);
     const others = await loadCollections(tx);
     let collection = parseCollection(input, { others });
-    if (collection.type === "view") {
+    if (collection.type === 'view') {
       const role = await ensureViewRole(tx);
       await grantViewRole(tx, role, others);
       // Its fields come from the query, so rules are checked after.
@@ -71,7 +71,7 @@ export async function updateCollection(
     const existing = find(all, idOrName);
     const others = all.filter((c) => c !== existing);
     let collection = parseCollection(input, { existing, others });
-    if (existing.type === "view" && collection.type === "view") {
+    if (existing.type === 'view' && collection.type === 'view') {
       const role = (await readViewRole(tx)) as string;
       if (collection.name !== existing.name) {
         await renameView(tx, role, existing.name, collection.name);
@@ -107,21 +107,21 @@ export async function deleteCollection(
     const all = await loadCollections(tx);
     const existing = find(all, idOrName);
     if (existing.system) {
-      throw new ApiError(400, "System collections cannot be deleted.");
+      throw new ApiError(400, 'System collections cannot be deleted.');
     }
     const references = all.flatMap((c) =>
       c === existing
         ? []
         : c.fields
             .filter(
-              (f) => f.type === "relation" && f.collectionId === existing.id,
+              (f) => f.type === 'relation' && f.collectionId === existing.id,
             )
             .map((f) => `${c.name}.${f.name}`),
     );
     if (references.length > 0) {
       throw new ApiError(
         400,
-        `The collection is referenced by ${references.join(", ")}. Remove those relation fields first.`,
+        `The collection is referenced by ${references.join(', ')}. Remove those relation fields first.`,
       );
     }
     // Such as `@collection.<name>` or `<name>_via_<field>` in another rule.
@@ -131,16 +131,16 @@ export async function deleteCollection(
     if (broken.length > 0) {
       throw new ApiError(
         400,
-        `The collection is used by ${broken.join(", ")}. Change those rules first.`,
+        `The collection is used by ${broken.join(', ')}. Change those rules first.`,
       );
     }
-    if (existing.type === "view") {
+    if (existing.type === 'view') {
       await dropView(tx, (await readViewRole(tx)) as string, existing.name);
     } else
       await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
     await deleteCollectionRow(tx, existing.id);
-    if (existing.type === "auth") {
-      for (const name of ["_sessions", "_linked_accounts", "_oauth2_states"]) {
+    if (existing.type === 'auth') {
+      for (const name of ['_sessions', '_linked_accounts', '_oauth2_states']) {
         await tx
           .newQuery(
             `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
@@ -160,12 +160,12 @@ async function removedFiles(
 ): Promise<string[]> {
   const removed = existing.fields.filter(
     (f): f is FileField =>
-      f.type === "file" &&
-      !next.fields.some((n) => n.id === f.id && n.type === "file"),
+      f.type === 'file' &&
+      !next.fields.some((n) => n.id === f.id && n.type === 'file'),
   );
   if (removed.length === 0) return [];
   const rows = await tx
-    .select("id", ...removed.map((f) => f.name))
+    .select('id', ...removed.map((f) => f.name))
     .from(table(existing.name))
     .all();
   return rows.flatMap((row) =>
@@ -186,13 +186,13 @@ async function refreshViewGrants(
 }
 
 const RULE_KEYS = [
-  "listRule",
-  "viewRule",
-  "createRule",
-  "updateRule",
-  "deleteRule",
-  "authRule",
-  "manageRule",
+  'listRule',
+  'viewRule',
+  'createRule',
+  'updateRule',
+  'deleteRule',
+  'authRule',
+  'manageRule',
 ] as const;
 
 interface RuleProblem {
@@ -236,10 +236,10 @@ function checkRules(
         `This change breaks the ${key} of ${target.name}: ${problem}`,
       );
     }
-    data[key] = { code: "validation_invalid_rule", message: problem };
+    data[key] = { code: 'validation_invalid_rule', message: problem };
   }
   if (Object.keys(data).length > 0)
-    throw new ApiError(400, "Failed to validate the collection.", data);
+    throw new ApiError(400, 'Failed to validate the collection.', data);
 }
 
 /** Exported for the migration that creates `_superusers`; use newCollection otherwise. */
@@ -258,7 +258,7 @@ export async function createCollectionTable(
     .map((f) => foreignKey(tx, f, tables));
   await tx
     .newQuery(
-      `CREATE TABLE {{${table(collection.name)}}} (${[...columns, ...foreignKeys].join(", ")})`,
+      `CREATE TABLE {{${table(collection.name)}}} (${[...columns, ...foreignKeys].join(', ')})`,
     )
     .execute();
   for (const index of systemIndexes(tx, collection)) {
@@ -360,7 +360,7 @@ async function convertMultiplicity(
 ): Promise<void> {
   const c = tx.quoteSimpleColumnName(field.name);
   const exec = (sql: string): Promise<unknown> => tx.newQuery(sql).execute();
-  const relation = field.type === "relation";
+  const relation = field.type === 'relation';
   if (isMultiple(field)) {
     if (relation) {
       await exec(
@@ -389,41 +389,45 @@ async function convertMultiplicity(
  */
 function columnType(q: Builder, field: Field, collection: Collection): string {
   switch (field.type) {
-    case "text":
+    case 'text':
       if (field.primaryKey) {
         // Ids appear in storage paths, so the database enforces their format too.
         // Named by collection id, since a later collection could reuse the table name.
         return `text CONSTRAINT ${q.quoteSimpleColumnName(`_${collection.id}_pkey`)} PRIMARY KEY CHECK (${q.quoteSimpleColumnName(field.name)} ~ '${ID_PATTERN.source}')`;
       }
       return "text NOT NULL DEFAULT ''";
-    case "email":
-    case "phone":
-    case "url":
+    case 'email':
+    case 'phone':
+    case 'url':
       return "text NOT NULL DEFAULT ''";
-    case "password":
-      return "text NOT NULL";
-    case "number":
-      return "double precision NOT NULL DEFAULT 0";
-    case "bool":
-      return "boolean NOT NULL DEFAULT false";
-    case "date":
-      return "timestamptz";
-    case "autodate":
-      return "timestamptz NOT NULL DEFAULT now()";
-    case "json":
-      return "jsonb";
-    case "select":
-    case "file":
+    case 'password':
+      return 'text NOT NULL';
+    case 'number':
+      return 'double precision NOT NULL DEFAULT 0';
+    case 'bool':
+      return 'boolean NOT NULL DEFAULT false';
+    case 'date':
+      return 'timestamptz';
+    case 'autodate':
+      return 'timestamptz NOT NULL DEFAULT now()';
+    case 'json':
+      return 'jsonb';
+    case 'select':
+    case 'file':
       return isMultiple(field)
         ? "text[] NOT NULL DEFAULT '{}'"
         : "text NOT NULL DEFAULT ''";
-    case "relation":
-      return isMultiple(field) ? "text[] NOT NULL DEFAULT '{}'" : "text";
+    case 'relation':
+      return isMultiple(field) ? "text[] NOT NULL DEFAULT '{}'" : 'text';
+    default: {
+      const unknown: never = field;
+      throw new Error(`Unknown field type: ${JSON.stringify(unknown)}.`);
+    }
   }
 }
 
 function isSingleRelation(field: Field): boolean {
-  return field.type === "relation" && !isMultiple(field);
+  return field.type === 'relation' && !isMultiple(field);
 }
 
 function foreignKeyName(q: Builder, field: Field): string {
@@ -436,7 +440,7 @@ function foreignKey(
   field: Field,
   tables: ReadonlyMap<string, string>,
 ): string {
-  if (field.type !== "relation") throw new Error("Not a relation field.");
+  if (field.type !== 'relation') throw new Error('Not a relation field.');
   const target = tables.get(field.collectionId);
   if (target === undefined) {
     throw new Error(`Unknown relation target ${field.collectionId}.`);
@@ -456,19 +460,19 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
   const col = (name: string): string => q.quoteSimpleColumnName(name);
   const name = (suffix: string): string => `_${collection.id}_${suffix}`;
   const indexes: SystemIndex[] = [];
-  if (collection.type === "auth") {
+  if (collection.type === 'auth') {
     indexes.push(
       {
-        name: name("email"),
-        sql: `CREATE UNIQUE INDEX ${col(name("email"))} ON ${t} (lower("email")) WHERE "email" <> ''`,
+        name: name('email'),
+        sql: `CREATE UNIQUE INDEX ${col(name('email'))} ON ${t} (lower("email")) WHERE "email" <> ''`,
       },
       {
-        name: name("phone"),
-        sql: `CREATE UNIQUE INDEX ${col(name("phone"))} ON ${t} ("phone") WHERE "phone" <> ''`,
+        name: name('phone'),
+        sql: `CREATE UNIQUE INDEX ${col(name('phone'))} ON ${t} ("phone") WHERE "phone" <> ''`,
       },
       {
-        name: name("tokenKey"),
-        sql: `CREATE UNIQUE INDEX ${col(name("tokenKey"))} ON ${t} ("tokenKey")`,
+        name: name('tokenKey'),
+        sql: `CREATE UNIQUE INDEX ${col(name('tokenKey'))} ON ${t} ("tokenKey")`,
       },
     );
   }
@@ -478,13 +482,13 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
         name: name(`${field.id}_gin`),
         sql: `CREATE INDEX ${col(name(`${field.id}_gin`))} ON ${t} USING gin (${col(field.name)})`,
       });
-    } else if (field.type === "relation") {
+    } else if (field.type === 'relation') {
       // Rules, back-relations and delete cascades look records up by this column.
       indexes.push({
         name: name(field.id),
         sql: `CREATE INDEX ${col(name(field.id))} ON ${t} (${col(field.name)})`,
       });
-    } else if (field.type === "autodate" && field.name === "created") {
+    } else if (field.type === 'autodate' && field.name === 'created') {
       // Lists sort by `-created, -id` when no sort is given.
       indexes.push({
         name: name(`${field.id}_sort`),
@@ -495,7 +499,7 @@ function systemIndexes(q: Builder, collection: Collection): SystemIndex[] {
   return indexes;
 }
 
-type Index = Collection["indexes"][number];
+type Index = Collection['indexes'][number];
 
 async function createIndex(
   tx: Tx,
@@ -503,26 +507,26 @@ async function createIndex(
   index: Index,
 ): Promise<void> {
   const opclass =
-    index.type === "trigram" ? ` ${await trigramOperatorClass(tx)}` : "";
+    index.type === 'trigram' ? ` ${await trigramOperatorClass(tx)}` : '';
   const columns = index.fields.map((id) => {
     const field = collection.fields.find((f) => f.id === id);
     if (!field)
       throw new Error(`Index ${index.name} uses unknown field ${id}.`);
     return `${tx.quoteSimpleColumnName(field.name)}${opclass}`;
   });
-  const using = index.type === "trigram" ? " USING gin" : "";
+  const using = index.type === 'trigram' ? ' USING gin' : '';
   try {
     await tx
       .newQuery(
-        `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${tx.quoteSimpleColumnName(index.name)} ON {{${table(collection.name)}}}${using} (${columns.join(", ")})`,
+        `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${tx.quoteSimpleColumnName(index.name)} ON {{${table(collection.name)}}}${using} (${columns.join(', ')})`,
       )
       .execute();
   } catch (error) {
     // An entry must fit in a page, so long text cannot go in a btree index.
     if (!indexRowTooLarge(error)) throw error;
     const problem = {
-      code: "validation_length_out_of_range",
-      message: "Some records have values too large to index.",
+      code: 'validation_length_out_of_range',
+      message: 'Some records have values too large to index.',
     };
     throw new ApiError(
       400,
@@ -544,7 +548,7 @@ async function trigramOperatorClass(tx: Tx): Promise<string> {
   let [schema] = await find();
   if (schema === undefined) {
     try {
-      await tx.newQuery("CREATE EXTENSION pg_trgm").execute();
+      await tx.newQuery('CREATE EXTENSION pg_trgm').execute();
     } catch (error) {
       // The schema change rolls back with it.
       throw new ApiError(
@@ -566,7 +570,7 @@ function sameIndex(a: Index, b: Index | undefined): boolean {
   return (
     b !== undefined &&
     a.unique === b.unique &&
-    (a.type ?? "btree") === (b.type ?? "btree") &&
+    (a.type ?? 'btree') === (b.type ?? 'btree') &&
     a.fields.length === b.fields.length &&
     a.fields.every((id, i) => id === b.fields[i])
   );
@@ -589,6 +593,6 @@ function find(
   idOrName: string,
 ): Collection {
   const found = findCollection(collections, idOrName);
-  if (!found) throw new ApiError(404, "Collection not found.");
+  if (!found) throw new ApiError(404, 'Collection not found.');
   return found;
 }

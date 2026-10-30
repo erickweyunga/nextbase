@@ -1,10 +1,10 @@
-import { writeFile } from "node:fs/promises";
-import { parseArgs } from "node:util";
-import pg from "pg";
-import { endPool } from "../db/pool.ts";
-import { ApiError } from "../errors.ts";
-import { NextBase } from "../index.ts";
-import { typegen } from "./typegen.ts";
+import { writeFile } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
+import pg from 'pg';
+import { endPool } from '../db/pool.ts';
+import { ApiError } from '../errors.ts';
+import { NextBase } from '../index.ts';
+import { typegen } from './typegen.ts';
 
 /** Abstracted so the CLI runs in tests without a terminal. */
 export interface Io {
@@ -40,22 +40,22 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   }
   const { values, positionals } = parsed;
   const [command, ...rest] = positionals;
-  if (command === undefined || command === "help" || values.help) {
+  if (command === undefined || command === 'help' || values.help) {
     io.out(HELP);
     return 0;
   }
   if (
     rest.length > 0 ||
-    !["migrate", "superuser", "typegen"].includes(command)
+    !['migrate', 'superuser', 'typegen'].includes(command)
   ) {
-    io.err(`Unknown command: ${positionals.join(" ")}`);
+    io.err(`Unknown command: ${positionals.join(' ')}`);
     io.err(HELP);
     return 2;
   }
   const database = values.database ?? io.env.DATABASE_URL;
   if (!database) {
     io.err(
-      "No database: set DATABASE_URL (in the environment, .env.local or .env) or pass --database.",
+      'No database: set DATABASE_URL (in the environment, .env.local or .env) or pass --database.',
     );
     return 1;
   }
@@ -64,16 +64,16 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   const pool = new pg.Pool({ connectionString: database });
   const nextbase = new NextBase({ database: pool });
   try {
-    if (command === "migrate") {
+    if (command === 'migrate') {
       await nextbase.migrate();
       io.out("NextBase's tables are up to date.");
-    } else if (command === "superuser") {
+    } else if (command === 'superuser') {
       return await superuser(nextbase, values.email, io);
     } else {
       const collections = await nextbase
         .client({ superuser: true })
         .collections.getFullList();
-      const file = values.out ?? "nextbase-types.ts";
+      const file = values.out ?? 'nextbase-types.ts';
       await writeFile(file, typegen(collections));
       io.out(`Wrote types for ${collections.length} collections to ${file}.`);
     }
@@ -91,10 +91,10 @@ function parse(argv: readonly string[]) {
     args: [...argv],
     allowPositionals: true,
     options: {
-      database: { type: "string" },
-      email: { type: "string" },
-      out: { type: "string" },
-      help: { type: "boolean", short: "h" },
+      database: { type: 'string' },
+      email: { type: 'string' },
+      out: { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
     },
   });
 }
@@ -112,9 +112,9 @@ async function superuser(
   }
   let password = io.env.NEXTBASE_SUPERUSER_PASSWORD;
   if (password === undefined) {
-    password = await io.prompt("Password: ", true);
-    if ((await io.prompt("Repeat the password: ", true)) !== password) {
-      io.err("The passwords do not match.");
+    password = await io.prompt('Password: ', true);
+    if ((await io.prompt('Repeat the password: ', true)) !== password) {
+      io.err('The passwords do not match.');
       return 1;
     }
   }
@@ -126,9 +126,9 @@ async function superuser(
 function describe(error: unknown): string {
   if (!(error instanceof ApiError)) return (error as Error).message;
   const fields = Object.entries(error.data).map(([name, problem]) =>
-    "message" in problem
+    'message' in problem
       ? `  ${name}: ${String(problem.message)}`
       : `  ${name}`,
   );
-  return [error.message, ...fields].join("\n");
+  return [error.message, ...fields].join('\n');
 }

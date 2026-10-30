@@ -30,6 +30,10 @@ pnpm check      # lint, typecheck, test, build, package validation, knip (what C
 pnpm format     # apply Biome formatting and import sorting
 ```
 
+Follows the [Google TypeScript style guide](https://google.github.io/styleguide/tsguide.html),
+except that classes use ECMAScript #private fields, which keep secrets out of
+console.log and error reports.
+
 ## Contributing
 
 1. Branch from `dev` and run `pnpm changeset` if the change affects a

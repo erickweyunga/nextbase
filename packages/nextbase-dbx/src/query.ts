@@ -3,7 +3,7 @@ import {
   lastResult,
   type QueryConfig,
   type QueryResult,
-} from "./builder.ts";
+} from './builder.ts';
 
 /** Values for `{:name}` placeholders, keyed by name. */
 export type Params = Record<string, unknown>;
@@ -18,8 +18,8 @@ export interface ExecResult {
 /** Thrown by `one()` and `row()` when the query returns no rows. */
 export class NoRowsError extends Error {
   constructor() {
-    super("dbx: no rows in result set.");
-    this.name = "NoRowsError";
+    super('dbx: no rows in result set.');
+    this.name = 'NoRowsError';
   }
 }
 
@@ -57,40 +57,40 @@ export class Query {
 
   /** Runs for effect; returned rows are ignored. */
   async execute(): Promise<ExecResult> {
-    const result = await this.#run("exec");
+    const result = await this.#run('exec');
     return { rowsAffected: result.rowCount ?? 0 };
   }
 
   /** Returns every row. `T` is not checked at runtime. */
   async all<T = Row>(): Promise<T[]> {
-    const result = await this.#run("query");
+    const result = await this.#run('query');
     return result.rows as T[];
   }
 
   /** Throws NoRowsError if empty. Fetches every row, so the SQL should LIMIT 1. */
   async one<T = Row>(): Promise<T> {
-    const { rows } = await this.#run("query");
+    const { rows } = await this.#run('query');
     if (rows.length === 0) throw new NoRowsError();
     return rows[0] as T;
   }
 
   async column<T = unknown>(): Promise<T[]> {
-    const result = await this.#run("query", "array");
+    const result = await this.#run('query', 'array');
     return result.rows.map((row) => (row as unknown[])[0] as T);
   }
 
   /** First row as an array of values. Throws NoRowsError if empty. */
   async row<T extends unknown[] = unknown[]>(): Promise<T> {
-    const { rows } = await this.#run("query", "array");
+    const { rows } = await this.#run('query', 'array');
     if (rows.length === 0) throw new NoRowsError();
     return rows[0] as T;
   }
 
   // SQL with several statements and no parameters is sent as one simple
   // query, which returns a result for each statement. Only the last one counts.
-  async #run(kind: "query" | "exec", rowMode?: "array"): Promise<QueryResult> {
+  async #run(kind: 'query' | 'exec', rowMode?: 'array'): Promise<QueryResult> {
     const { executor, options } = this.#builder;
-    const log = kind === "exec" ? options.execLog : options.queryLog;
+    const log = kind === 'exec' ? options.execLog : options.queryLog;
     const start = performance.now();
     try {
       const values = this.#placeholders.map((name) => {

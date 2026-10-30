@@ -2,17 +2,17 @@ import type {
   AuthCollection,
   Collection,
   ViewCollection,
-} from "@nextbasejs/client";
-import { type Builder, exp, hash, type Tx } from "@nextbasejs/dbx";
-import { table } from "../db/system.ts";
+} from '@nextbasejs/client';
+import { type Builder, exp, hash, type Tx } from '@nextbasejs/dbx';
+import { table } from '../db/system.ts';
 
 interface CollectionRow {
   id: string;
-  type: Collection["type"];
+  type: Collection['type'];
   name: string;
   system: boolean;
-  fields: Collection["fields"];
-  indexes: Collection["indexes"];
+  fields: Collection['fields'];
+  indexes: Collection['indexes'];
   options: Partial<AuthOptions> | Partial<ViewOptions>;
   list_rule: string | null;
   view_rule: string | null;
@@ -23,17 +23,17 @@ interface CollectionRow {
 
 type AuthOptions = Pick<
   AuthCollection,
-  "authRule" | "manageRule" | "identityFields" | "phoneSignIn" | "tokens"
+  'authRule' | 'manageRule' | 'identityFields' | 'phoneSignIn' | 'tokens'
 >;
 
-type ViewOptions = Pick<ViewCollection, "viewQuery">;
+type ViewOptions = Pick<ViewCollection, 'viewQuery'>;
 
 /** In creation order. */
 export async function loadCollections(q: Builder): Promise<Collection[]> {
   const rows = await q
     .select()
-    .from(table("_collections"))
-    .orderBy("created", "id")
+    .from(table('_collections'))
+    .orderBy('created', 'id')
     .all<CollectionRow>();
   return rows.map(fromRow);
 }
@@ -43,7 +43,7 @@ export async function saveCollectionRow(
   collection: Collection,
 ): Promise<void> {
   const options: Partial<AuthOptions> | ViewOptions =
-    collection.type === "auth"
+    collection.type === 'auth'
       ? {
           authRule: collection.authRule,
           manageRule: collection.manageRule,
@@ -51,12 +51,12 @@ export async function saveCollectionRow(
           phoneSignIn: collection.phoneSignIn,
           tokens: collection.tokens,
         }
-      : collection.type === "view"
+      : collection.type === 'view'
         ? { viewQuery: collection.viewQuery }
         : {};
   await tx
     .upsert(
-      table("_collections"),
+      table('_collections'),
       {
         id: collection.id,
         type: collection.type,
@@ -71,21 +71,21 @@ export async function saveCollectionRow(
         create_rule: collection.createRule,
         update_rule: collection.updateRule,
         delete_rule: collection.deleteRule,
-        updated: exp("now()"),
+        updated: exp('now()'),
       },
-      "id",
+      'id',
     )
     .execute();
 }
 
 export async function deleteCollectionRow(tx: Tx, id: string): Promise<void> {
-  await tx.delete(table("_collections"), hash({ id })).execute();
+  await tx.delete(table('_collections'), hash({ id })).execute();
 }
 
 export async function bumpSchemaVersion(tx: Tx): Promise<void> {
   await tx
     .newQuery(
-      `UPDATE {{${table("_meta")}}} SET schema_version = schema_version + 1`,
+      `UPDATE {{${table('_meta')}}} SET schema_version = schema_version + 1`,
     )
     .execute();
 }
@@ -95,7 +95,10 @@ function fromRow(row: CollectionRow): Collection {
     id: row.id,
     name: row.name,
     system: row.system,
-    fields: row.fields,
+    // File fields stored before thumbnails existed.
+    fields: row.fields.map((field) =>
+      field.type === 'file' ? { ...field, thumbs: field.thumbs ?? [] } : field,
+    ),
     indexes: row.indexes,
     listRule: row.list_rule,
     viewRule: row.view_rule,
@@ -103,12 +106,12 @@ function fromRow(row: CollectionRow): Collection {
     updateRule: row.update_rule,
     deleteRule: row.delete_rule,
   };
-  if (row.type === "base") return { ...base, type: "base" };
-  if (row.type === "view")
-    return { ...base, type: "view", ...(row.options as ViewOptions) };
+  if (row.type === 'base') return { ...base, type: 'base' };
+  if (row.type === 'view')
+    return { ...base, type: 'view', ...(row.options as ViewOptions) };
   return {
     ...base,
-    type: "auth",
+    type: 'auth',
     // Collections stored before phone sign-in existed.
     phoneSignIn: false,
     ...(row.options as Partial<AuthOptions>),

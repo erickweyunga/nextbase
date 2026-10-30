@@ -1,9 +1,9 @@
-import type { Pool } from "@nextbasejs/dbx";
-import { attachDatabasePool } from "@vercel/functions";
-import pg from "pg";
+import type { Pool } from '@nextbasejs/dbx';
+import { attachDatabasePool } from '@vercel/functions';
+import pg from 'pg';
 
 // On globalThis so `next dev` reloads reuse pools instead of leaking connections.
-const POOLS = Symbol.for("nextbase.pools");
+const POOLS = Symbol.for('nextbase.pools');
 
 type PoolCache = Map<string, pg.Pool>;
 
@@ -24,8 +24,8 @@ export function sharedPool(connectionString: string): Pool {
     attachDatabasePool(pool);
     // Without a listener an idle connection's failure crashes the process. The
     // pool discards it and the next query reconnects.
-    pool.on("error", (error: Error) => {
-      console.error("[nextbase] idle database connection failed:", error);
+    pool.on('error', (error: Error) => {
+      console.error('[nextbase] idle database connection failed:', error);
     });
     pools.set(connectionString, pool);
   }
@@ -42,7 +42,7 @@ export async function endPool(pool: pg.Pool): Promise<void> {
   let open = pool.totalCount;
   const closed = new Promise<void>((resolve) => {
     if (open === 0) resolve();
-    pool.on("remove", () => {
+    pool.on('remove', () => {
       if (--open === 0) resolve();
     });
   });
