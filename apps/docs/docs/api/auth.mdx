@@ -930,7 +930,7 @@ POST /collections/{collection}/impersonate/{id}
 | Param | Type | Description |
 | ----- | ---- | ----------- |
 | `duration` | number | Optional. Whole seconds from `60` to `3600`. Defaults to `3600`. |
-| `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token, and keeps the superuser's own cookie session aside in `__Host-nextbase_impersonator` until [sign out](#sign-out). The request must then send an `Origin` header naming this site. |
+| `cookie` | boolean | Optional. `true` sets the session cookie instead of returning the token, and keeps the superuser's own cookie session aside in `__Host-nextbase_impersonator` until [sign out](#sign-out). The superuser must be signed in with the cookie, and the request must send an `Origin` header naming this site. |
 
 **Query parameters:** `expand` and `fields`, applied to `record`, as the
 record would see them.
@@ -972,6 +972,9 @@ cookie, as a [sign-in](#sign-in-with-a-password) does.
   }
 }
 ```
+Also `Impersonation in cookie mode needs a cookie session.` for `cookie: true`
+from a superuser signed in with a Bearer token, whose token the cookie would
+replace.
 
 </TabItem>
 <TabItem value="401" label="401">
@@ -1076,7 +1079,10 @@ curl -X DELETE https://app.example/api/nextbase/session -H 'authorization: Beare
 DELETE /session
 ```
 
-**Responses:** `204` with no body, also when there was no session.
+**Responses:** `204` with no body, also when there was no session. When it
+puts back a superuser's cookie session after a cookie impersonation, `200`
+with `{ "record": { ... } }`, the superuser's record, which the SDK saves in
+its auth store.
 
 ## List sessions
 

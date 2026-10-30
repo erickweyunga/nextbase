@@ -255,7 +255,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * the record, with its own in-memory auth store: this client stays signed
    * in as the superuser. With `cookie: true`, this browser's cookie session
    * becomes the record's instead, and `signOut()` gives the superuser theirs
-   * back; the auth store is then saved as for a cookie sign-in.
+   * back; the auth store is then saved as for a cookie sign-in. Cookie mode
+   * needs the superuser to be signed in with the cookie.
    */
   async impersonate(
     id: string,
@@ -263,8 +264,13 @@ export class RecordService<T extends RecordModel = RecordModel> {
   ): Promise<ImpersonateResponse<T>>;
   async impersonate(
     id: string,
-    options?: ImpersonateOptions,
+    options?: ImpersonateOptions & { cookie?: false },
   ): Promise<ImpersonateResponse<T> & { client: NextBaseClient }>;
+  /** `client` is set when `cookie` is not true. */
+  async impersonate(
+    id: string,
+    options?: ImpersonateOptions,
+  ): Promise<ImpersonateResponse<T> & { client?: NextBaseClient }>;
   async impersonate(
     id: string,
     options: ImpersonateOptions = {},

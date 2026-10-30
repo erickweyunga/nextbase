@@ -112,7 +112,18 @@ export class Logger {
 
   /** Buffers an entry, if logs are on and its level is kept. */
   add(level: number, message: string, data: Record<string, unknown>): void {
-    if (!this.keeps(level)) return;
+    if (this.keeps(level)) this.#push(level, message, data);
+  }
+
+  /**
+   * Buffers an audit entry at info, such as an impersonation, whenever
+   * logs are on: `minLevel` does not apply, so the record is always kept.
+   */
+  audit(message: string, data: Record<string, unknown>): void {
+    if (this.#config !== undefined) this.#push(LOG_LEVELS.info, message, data);
+  }
+
+  #push(level: number, message: string, data: Record<string, unknown>): void {
     if (this.#buffer.length >= MAX_BUFFERED) {
       if (!this.#dropping) {
         this.#dropping = true;

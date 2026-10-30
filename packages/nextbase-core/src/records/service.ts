@@ -1239,7 +1239,6 @@ function compile(
   }
 }
 
-/** Whether manageRule lets the caller change protected auth fields of `id`. */
 /**
  * An impersonation session may change no account's way in: its password,
  * token key, email, phone, whether they are verified, or identity fields.
@@ -1272,6 +1271,7 @@ function forbidSignInChanges(
   }
 }
 
+/** Whether manageRule lets the caller change protected auth fields of `id`. */
 async function canManage(
   q: Builder,
   ctx: RecordsContext,

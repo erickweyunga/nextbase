@@ -2,6 +2,7 @@ import type { AuthCollection, Collection, FileField } from '@nextbasejs/client';
 import { type DB, hash } from '@nextbasejs/dbx';
 import parseRange from 'range-parser';
 import type { Principal } from '../auth/principal.ts';
+import { type Session, sessionById } from '../auth/sessions.ts';
 import { countAttempt, type Limit, uploaderKey } from '../auth/throttle.ts';
 import { peekToken, signToken, verifyToken } from '../auth/tokens.ts';
 import { table } from '../db/system.ts';
@@ -172,19 +173,28 @@ async function deleteExpiredUploads(
 
 /**
  * A short-lived token for protected files, for links that cannot send an
- * Authorization header. Bound to the record's tokenKey.
+ * Authorization header. Bound to the record's tokenKey. Minted on an
+ * impersonation `session`, it names that session, lasts no longer, and
+ * works only while the session does.
  */
-/** Lasts the collection's file token duration, or `limit` seconds if fewer. */
 export function fileToken(
   collection: AuthCollection,
   record: Record<string, unknown>,
-  limit?: number,
+  session?: Session,
 ): Promise<string> {
   const { secret, duration } = collection.tokens.file;
+  const left = session
+    ? Math.floor((session.expires.getTime() - Date.now()) / 1000)
+    : duration;
   return signToken(
     `${record.tokenKey as string}${secret}`,
-    { type: 'file', id: record.id, collectionId: collection.id },
-    limit === undefined ? duration : Math.max(1, Math.min(duration, limit)),
+    {
+      type: 'file',
+      id: record.id,
+      collectionId: collection.id,
+      ...(session && { sid: session.id }),
+    },
+    Math.max(1, Math.min(duration, left)),
   );
 }
 
@@ -214,6 +224,25 @@ export async function principalOfFileToken(
     'file',
   );
   if (!verified) return undefined;
+  // Only impersonation tokens name a session; others take no extra query.
+  if (typeof verified.sid === 'string') {
+    const active = await sessionById(db, schema, verified.sid);
+    if (
+      active === undefined ||
+      active.session.impersonatedBy === null ||
+      active.collection.id !== collection.id ||
+      active.record.id !== record.id
+    ) {
+      return undefined;
+    }
+    return {
+      collection: active.collection,
+      record: active.record,
+      superuser: false,
+      impersonatedBy: active.session.impersonatedBy,
+      session: active.session,
+    };
+  }
   return {
     collection,
     record,

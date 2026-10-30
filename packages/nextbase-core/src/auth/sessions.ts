@@ -153,11 +153,22 @@ async function readSession(
   return row as SessionRow;
 }
 
+/** As `readSessions`, by session id instead of token. */
+async function readSessionById(
+  db: DB,
+  schema: Schema,
+  id: string,
+): Promise<SessionRow> {
+  const [row] = await readSessions(db, schema, [id], 'id');
+  return row as SessionRow;
+}
+
 /** `readSession` for several tokens, with one query: a row for each, in order. */
 async function readSessions(
   db: DB,
   schema: Schema,
   hashes: readonly string[],
+  by: 'token_hash' | 'id' = 'token_hash',
 ): Promise<SessionRow[]> {
   const params: Record<string, unknown> = { tokenHashes: [...hashes] };
   const branches = schema.collections
@@ -181,7 +192,7 @@ async function readSessions(
        FROM {{${table('_meta')}}} m
        CROSS JOIN unnest({:tokenHashes}::text[]) WITH ORDINALITY AS h(hash, i)
        LEFT JOIN {{${table('_sessions')}}} s
-         ON s.token_hash = h.hash AND s.expires > now()
+         ON s.${by} = h.hash AND s.expires > now()
        ORDER BY h.i`,
     )
     .bind(params)
@@ -279,6 +290,25 @@ export async function sessionIn(
 ): Promise<Omit<ActiveSession, 'extended'> | undefined> {
   try {
     const row = await readSession(db, schema, tokenHash(token));
+    return await activeSession(db, schema, schema, row);
+  } catch (error) {
+    if (SCHEMA_RACE.has((error as { code?: string }).code ?? ''))
+      return undefined;
+    throw error;
+  }
+}
+
+/**
+ * The session with this id, if still valid, as `sessionIn` finds a token's.
+ * For tokens minted on a session that must end with it.
+ */
+export async function sessionById(
+  db: DB,
+  schema: Schema,
+  id: string,
+): Promise<Omit<ActiveSession, 'extended'> | undefined> {
+  try {
+    const row = await readSessionById(db, schema, id);
     return await activeSession(db, schema, schema, row);
   } catch (error) {
     if (SCHEMA_RACE.has((error as { code?: string }).code ?? ''))

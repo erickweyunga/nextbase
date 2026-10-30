@@ -46,12 +46,14 @@ await nb.signOut();
 // The superuser is signed in again.
 ```
 
-With `cookie: true`, the browser's session cookie becomes the user's. If the
-superuser was signed in with the cookie, their session is kept aside in an
-`HttpOnly` cookie, `__Host-nextbase_impersonator` (`nextbase_impersonator`
-over plain HTTP), for as long as the impersonation lasts. Signing out of the
-impersonation puts it back, if it is still valid. Once the impersonation has
-run out, sign in again.
+With `cookie: true`, the browser's session cookie becomes the user's. The
+superuser must be signed in with the cookie too; signed in with a Bearer
+token, it is a `400`, since the token would be lost. Their session is kept
+aside in an `HttpOnly` cookie, `__Host-nextbase_impersonator`
+(`nextbase_impersonator` over plain HTTP), for as long as the impersonation
+lasts. Signing out of the impersonation puts it back, if it is still valid,
+and `nb.authStore` holds the superuser's record again. Once the impersonation
+has run out, sign in again.
 
 The request must come from your site, as with any cookie sign-in.
 
@@ -70,7 +72,8 @@ changes who else is signed in. Each of these is a `403`:
 - revoking other sessions; it can end only itself;
 - impersonating.
 
-File tokens it gets end when it does.
+File tokens it gets act as it, so rules see `@request.impersonatedBy`, and
+stop working when it ends.
 
 ## What ends it
 
@@ -101,8 +104,8 @@ if (session?.impersonatedBy) showBanner("A superuser is acting as you.");
 
 ## The log
 
-Every impersonation started is logged at info, with `data.type`
-`impersonate`, the superuser's id, the collection, the record's id, the
+Every impersonation started is logged at info, whatever `minLevel` is, with
+`data.type` `impersonate`, the superuser's id, the collection, the record's id, the
 session's id and when it expires. Requests the session makes carry
 `impersonatedBy` in their entries. See [Logs](/docs/guides/logs); with
 `logs: false`, nothing is written.

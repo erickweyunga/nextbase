@@ -3,7 +3,13 @@ import type {
   AuthMethods,
   Collection,
 } from '@nextbasejs/client';
-import { type DB, hash, type Tx, type TxOptions } from '@nextbasejs/dbx';
+import {
+  type DB,
+  hash,
+  type Row,
+  type Tx,
+  type TxOptions,
+} from '@nextbasejs/dbx';
 import {
   confirmEmailChange,
   confirmEmailVerification,
@@ -73,7 +79,7 @@ import {
 } from '../files/serve.ts';
 import type { Storage } from '../files/storage.ts';
 import { readJsonObject, readRecordBody } from '../http.ts';
-import { LOG_LEVELS, type Logger } from '../logs/logger.ts';
+import type { Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
   logModel,
@@ -488,18 +494,10 @@ export const ROUTES: readonly Route[] = [
         throw new ApiError(401, 'Sign in to get a file token.');
       }
       // A file token from an impersonation session ends with it.
-      const remaining =
-        principal.impersonatedBy !== undefined && principal.session
-          ? Math.floor(
-              (principal.session.expires.getTime() - Date.now()) / 1000,
-            )
-          : undefined;
+      const session =
+        principal.impersonatedBy !== undefined ? principal.session : undefined;
       return Response.json({
-        token: await fileToken(
-          principal.collection,
-          principal.record,
-          remaining,
-        ),
+        token: await fileToken(principal.collection, principal.record, session),
       });
     },
   },
@@ -946,9 +944,17 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'DELETE',
     pattern: /^\/session$/,
-    async handler({ request, db, schema, principal }) {
+    async handler(context) {
+      const { request, db, schema, principal } = context;
       if (principal.session) await deleteSession(db, principal.session);
-      const response = new Response(null, { status: 204 });
+      const restored = await restoredSession(request, db, schema, principal);
+      // The superuser is signed in again, so the client can say who.
+      const response = restored
+        ? authResponse(
+            await authRecord(context, restored.collection, restored.record),
+            undefined,
+          )
+        : new Response(null, { status: 204 });
       // Removed even when the session was already gone, but not when a
       // superuser acting as someone by token leaves: the cookie is their own.
       const tokenImpersonation =
@@ -956,10 +962,7 @@ export const ROUTES: readonly Route[] = [
       if (request.headers.has('cookie') && !tokenImpersonation) {
         response.headers.append(
           'set-cookie',
-          setSessionCookie(
-            request,
-            await restoredSession(request, db, schema, principal),
-          ),
+          setSessionCookie(request, restored),
         );
       }
       if (impersonatorCookie(request) !== undefined && !tokenImpersonation) {
@@ -1496,6 +1499,13 @@ async function impersonate(context: Context): Promise<Response> {
       },
     });
   }
+  // The superuser's own cookie session is kept aside, to be restored.
+  if (cookie === true && !principal.viaCookie) {
+    throw new ApiError(
+      400,
+      'Impersonation in cookie mode needs a cookie session.',
+    );
+  }
   // Another site must not sign the browser in to an account of its choosing.
   if (cookie === true && !inProcess) checkSameOrigin(request, origins);
   const id = params[1] as string;
@@ -1518,7 +1528,7 @@ async function impersonate(context: Context): Promise<Response> {
       impersonator: { collection: principal.collection, record: superuser },
     },
   );
-  context.logger.add(LOG_LEVELS.info, 'Impersonation started', {
+  context.logger.audit('Impersonation started', {
     type: 'impersonate',
     superuserId,
     collection: collection.name,
@@ -1531,18 +1541,13 @@ async function impersonate(context: Context): Promise<Response> {
     record: body,
     session: sessionModel(session, false),
   });
-  if (cookie === true) {
-    const own = principal.viaCookie ? sessionCookie(request) : undefined;
+  const own = sessionCookie(request);
+  if (cookie === true && own !== undefined) {
     // Kept as long as the impersonation lasts, to be restored when it ends.
-    if (own !== undefined) {
-      response.headers.append(
-        'set-cookie',
-        setImpersonatorCookie(request, {
-          token: own,
-          expires: session.expires,
-        }),
-      );
-    }
+    response.headers.append(
+      'set-cookie',
+      setImpersonatorCookie(request, { token: own, expires: session.expires }),
+    );
     response.headers.append(
       'set-cookie',
       setSessionCookie(request, { token, expires: session.expires }),
@@ -1560,7 +1565,10 @@ async function restoredSession(
   db: DB,
   schema: Schema,
   principal: Principal,
-): Promise<{ token: string; expires: Date } | undefined> {
+): Promise<
+  | { token: string; expires: Date; collection: AuthCollection; record: Row }
+  | undefined
+> {
   const kept = impersonatorCookie(request);
   if (
     kept === undefined ||
@@ -1576,7 +1584,12 @@ async function restoredSession(
   ) {
     return undefined;
   }
-  return { token: kept, expires: active.session.expires };
+  return {
+    token: kept,
+    expires: active.session.expires,
+    collection: active.collection,
+    record: active.record,
+  };
 }
 
 function requireSession(principal: Principal): Session {

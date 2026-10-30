@@ -10,6 +10,7 @@ import { RealtimeService } from './realtime.ts';
 import { RecordService } from './records.ts';
 import {
   type ApiErrorBody,
+  type AuthResponse,
   type CurrentSession,
   DEFAULT_BASE_PATH,
   type HealthResponse,
@@ -228,13 +229,22 @@ export class NextBaseClient<
   /**
    * Ends the session on the server, removes its cookie, and clears the auth
    * store, unless a sign-in started meanwhile has saved a new session.
+   * Ending a cookie impersonation signs the superuser back in, and the store
+   * then holds their record.
    */
   async signOut(options?: SendOptions): Promise<void> {
     const apply = authSync(this.authStore).intent();
+    let restored: AuthResponse | undefined;
     try {
-      await this.send('/session', { ...options, method: 'DELETE' });
+      restored = await this.send<AuthResponse | undefined>('/session', {
+        ...options,
+        method: 'DELETE',
+      });
     } finally {
-      apply(() => this.authStore.clear());
+      apply(() => {
+        if (restored) this.authStore.save('', restored.record);
+        else this.authStore.clear();
+      });
     }
   }
 

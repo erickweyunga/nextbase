@@ -1,6 +1,20 @@
-import { NextBaseClient } from '@nextbasejs/client';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  type ImpersonateResponse,
+  NextBaseClient,
+  type RecordModel,
+} from '@nextbasejs/client';
 import { decodeJwt } from 'jose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+} from 'vitest';
 import { type CookieStore, NextBase } from '../src/index.ts';
 import { timings } from '../src/realtime/timings.ts';
 import { call, origin, type Reply } from './http.ts';
@@ -34,8 +48,11 @@ interface Stream {
 describe('impersonation', () => {
   const defaults = { ...timings };
   let t: TestDatabase;
+  let dir = '';
   let nextbase: NextBase;
   let admin = '';
+  /** Paths of protected files any signed-in caller sees, and one hidden from impersonators. */
+  const files = { shared: '', private: '' };
   let adminId = '';
   const ids = { ann: '', bob: '', max: '', locked: '', team: '' };
   const hooked: string[] = [];
@@ -190,8 +207,10 @@ describe('impersonation', () => {
   beforeAll(async () => {
     Object.assign(timings, { pollMs: 30, heartbeatMs: 100, sessionMs: 50 });
     t = await createTestDatabase();
+    dir = await mkdtemp(join(tmpdir(), 'nextbase-impersonation-'));
     nextbase = new NextBase({
       database: t.pool,
+      storage: { dir },
       // Tests sign in many times a second; rate limits have their own tests.
       rateLimits: false,
       appUrl: origin,
@@ -276,6 +295,21 @@ describe('impersonation', () => {
       })
     )?.id as string;
     await su.collection('secrets').create({ text: 'hidden' });
+    for (const [name, viewRule] of [
+      ['shared', '@request.auth.id != ""'],
+      ['private', '@request.auth.id != "" && @request.impersonatedBy = ""'],
+    ] as const) {
+      await su.collections.create({
+        name,
+        viewRule,
+        fields: [{ name: 'paper', type: 'file', protected: true }],
+      });
+      const record = await su.collection(name).create({
+        paper: new File([name], 'paper.txt', { type: 'text/plain' }),
+      });
+      files[name] =
+        `/files/${record?.collectionId}/${record?.id}/${record?.paper}`;
+    }
   });
   afterAll(async () => {
     Object.assign(timings, defaults);
@@ -283,6 +317,7 @@ describe('impersonation', () => {
     // Log entries still waiting would be written to an ended pool.
     await nextbase.flush();
     await t.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   describe('starting', () => {
@@ -451,6 +486,35 @@ describe('impersonation', () => {
         [(quiet.body.session as { id: string }).id],
       );
       expect(none).toEqual([]);
+    });
+
+    it('is logged even when minLevel leaves out info entries', async () => {
+      const strict = new NextBase({
+        database: t.pool,
+        logs: { minLevel: 4 },
+        rateLimits: false,
+      });
+      const reply = await call(
+        strict,
+        'POST',
+        `/collections/users/impersonate/${ids.bob}`,
+        { token: admin, body: {} },
+      );
+      expect(reply.status).toBe(200);
+      // An ordinary info entry is still left out.
+      await call(strict, 'GET', '/collections/notes/records?perPage=7', {
+        token: reply.body.token as string,
+      });
+      await strict.flush();
+      const { rows } = await t.pool.query(
+        "SELECT level, data->>'type' AS type FROM nextbase._logs WHERE data->>'sessionId' = $1",
+        [(reply.body.session as { id: string }).id],
+      );
+      expect(rows).toEqual([{ level: 0, type: 'impersonate' }]);
+      const { rows: requests } = await t.pool.query(
+        "SELECT 1 FROM nextbase._logs WHERE data->>'url' LIKE '%perPage=7'",
+      );
+      expect(requests).toEqual([]);
     });
   });
 
@@ -847,6 +911,44 @@ describe('impersonation', () => {
       });
       const claims = decodeJwt(ownFile.body.token as string);
       expect((claims.exp as number) - (claims.iat as number)).toBe(120);
+      expect(claims).not.toHaveProperty('sid');
+    });
+
+    it('gets file tokens that act as the session, and only while it lasts', async () => {
+      const reply = await impersonate(ids.ann);
+      const token = reply.body.token as string;
+      const fileToken = async (who: string): Promise<string> =>
+        (await call(nextbase, 'POST', '/files/token', { token: who })).body
+          .token as string;
+      const get = async (path: string, file: string): Promise<number> =>
+        (await raw('GET', `${path}?token=${encodeURIComponent(file)}`)).status;
+      const impersonated = await fileToken(token);
+      expect(decodeJwt(impersonated).sid).toBe(
+        (reply.body.session as { id: string }).id,
+      );
+      expect(await get(files.shared, impersonated)).toBe(200);
+      // Rules see who is acting, as with the session itself.
+      expect(await get(files.private, impersonated)).toBe(404);
+      const { token: ann } = await login('users', 'ann@example.com');
+      const own = await fileToken(ann);
+      expect(await get(files.private, own)).toBe(200);
+
+      // Signing out of the session ends its file tokens.
+      await call(nextbase, 'DELETE', '/session', { token });
+      expect(await get(files.shared, impersonated)).toBe(404);
+      expect(await get(files.shared, own)).toBe(200);
+
+      // So does losing its superuser.
+      const other = await newSuperuser('files@example.com');
+      const again = await fileToken(await actAs(ids.ann, other.token));
+      expect(await get(files.shared, again)).toBe(200);
+      await call(
+        nextbase,
+        'DELETE',
+        `/collections/_superusers/records/${other.id}`,
+        { token: admin },
+      );
+      expect(await get(files.shared, again)).toBe(404);
     });
   });
 
@@ -926,7 +1028,11 @@ describe('impersonation', () => {
           cookie: `nextbase_session=${session}; nextbase_impersonator=${su}`,
         },
       });
-      expect(out.status).toBe(204);
+      // The superuser is back, and the answer says so.
+      expect(out.status).toBe(200);
+      expect(await out.json()).toMatchObject({
+        record: { id: adminId, collectionName: '_superusers' },
+      });
       expect(cookieOf(out, 'nextbase_session')).toBe(su);
       expect(cookieOf(out, 'nextbase_impersonator')).toBe('');
       const back = await raw('GET', '/session', {
@@ -948,6 +1054,7 @@ describe('impersonation', () => {
           cookie: `nextbase_session=${session}; nextbase_impersonator=${su}`,
         },
       });
+      expect(out.status).toBe(204);
       expect(cookieOf(out, 'nextbase_session')).toBe('');
       expect(cookieOf(out, 'nextbase_impersonator')).toBe('');
 
@@ -974,13 +1081,20 @@ describe('impersonation', () => {
           headers: {
             origin: 'https://evil.example',
             'sec-fetch-site': 'cross-site',
-            authorization: `Bearer ${admin}`,
             cookie: `nextbase_session=${su}`,
           },
           body: { cookie: true },
         },
       );
       expect(response.status).toBe(403);
+    });
+
+    it('needs the superuser on a cookie session', async () => {
+      const reply = await impersonate(ids.ann, { body: { cookie: true } });
+      expect(reply.status).toBe(400);
+      expect(reply.body.message).toBe(
+        'Impersonation in cookie mode needs a cookie session.',
+      );
     });
 
     it('is not renewed, and a token impersonation leaves the cookie alone', async () => {
@@ -1037,6 +1151,32 @@ describe('impersonation', () => {
       await result.client.signOut();
       expect(result.client.authStore.isValid).toBe(false);
       expect((await nb.getSession())?.record.id).toBe(adminId);
+      // Signed in by token, cookie mode would lose the superuser's token.
+      await expect(
+        nb.collection('users').impersonate(ids.ann, { cookie: true }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(nb.authStore.token).toBe(token);
+    });
+
+    it('types the result by the cookie option', () => {
+      // Never called: only the types are checked.
+      const users = new NextBaseClient().collection('users');
+      type Response = ImpersonateResponse<RecordModel>;
+      const options: { cookie?: boolean } = {};
+      expectTypeOf(() => users.impersonate('x')).returns.resolves.toEqualTypeOf<
+        Response & { client: NextBaseClient }
+      >();
+      expectTypeOf(() =>
+        users.impersonate('x', { cookie: false }),
+      ).returns.resolves.toEqualTypeOf<Response & { client: NextBaseClient }>();
+      expectTypeOf(() =>
+        users.impersonate('x', { cookie: true }),
+      ).returns.resolves.toEqualTypeOf<Response>();
+      expectTypeOf(() =>
+        users.impersonate('x', options),
+      ).returns.resolves.toEqualTypeOf<
+        Response & { client?: NextBaseClient }
+      >();
     });
 
     it('swaps the cookie session in cookie mode, and back on sign-out', async () => {
@@ -1057,6 +1197,8 @@ describe('impersonation', () => {
       expect(cookies.get('nextbase_impersonator')?.value).toBe(su);
       expect((await nb.getSession())?.impersonatedBy).toBe(adminId);
       await nb.signOut();
+      expect(nb.authStore.record?.id).toBe(adminId);
+      expect(nb.authStore.token).toBe('');
       expect(cookies.get('nextbase_session')?.value).toBe(su);
       expect(cookies.get('nextbase_impersonator')).toBeUndefined();
       expect((await nb.getSession())?.record.id).toBe(adminId);

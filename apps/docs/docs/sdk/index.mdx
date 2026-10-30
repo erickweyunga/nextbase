@@ -46,9 +46,10 @@ await client.signOut(); // ends the impersonation early
 ```
 
 `client` is a new client of the same server with an in-memory auth store, so
-`nb` stays signed in as the superuser. With `{ cookie: true }`, the browser's
-cookie session becomes the user's instead, `nb.authStore` holds their record,
-and `nb.signOut()` puts the superuser's own session back. See
+`nb` stays signed in as the superuser. With `{ cookie: true }`, which needs
+`nb` signed in with the cookie, the browser's cookie session becomes the
+user's instead, `nb.authStore` holds their record, and `nb.signOut()` puts
+the superuser's own session and record back. See
 [Impersonation](/docs/guides/auth/impersonation).
 
 `nb.withAuthStore(store)` gives a client of the same server signed in through

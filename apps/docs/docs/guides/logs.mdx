@@ -93,8 +93,8 @@ server console too, as before.
 
 Each [impersonation](/docs/guides/auth/impersonation) a superuser starts is
 logged at info, with `data.type` `impersonate`, the `superuserId`, the
-`collection`, the `recordId`, the `sessionId` and when it `expires`. Like
-every entry, it is not written with `logs: false`.
+`collection`, the `recordId`, the `sessionId` and when it `expires`. It is
+written whatever `minLevel` is, but not with `logs: false`.
 
 ## Reading the log
 
