@@ -159,8 +159,9 @@ Bearer token, or `token`. Anyone else gets 404.
 
 With `thumb`, the thumbnail is served the same way, made first if it was not
 stored yet. A size that is not `100x100` or one of the field's `thumbs`, a
-file of another type, and an image that cannot be thumbed get the original
-file.
+file of another type, and an image that cannot be thumbed get a redirect
+(302, `Cache-Control: no-store`) to the same URL without `thumb`, keeping
+`token` and `download`.
 
 ## Get a file token
 

@@ -529,6 +529,18 @@ export const ROUTES: readonly Route[] = [
       const download = query.has('download') && query.get('download') !== '0';
       const thumb = query.get('thumb');
       const served = thumb ? await thumbs.keyOf(field, key, thumb) : key;
+      if (served === undefined) {
+        // To the original's own URL, so caches keep it only under that.
+        const original = new URL(request.url);
+        original.searchParams.delete('thumb');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `${original.pathname}${original.search}`,
+            'cache-control': 'no-store',
+          },
+        });
+      }
       return fileResponse(storage, served, request, {
         download,
         protectedFile: field.protected,

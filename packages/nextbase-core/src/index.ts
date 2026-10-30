@@ -638,13 +638,15 @@ export class NextBase<C extends Collections = Collections> {
     const storage = this.#storage;
     this.#waitUntil(
       (async () => {
-        // Thumbnails first: on disk, a record's directory goes once empty.
+        await storage.delete(keys);
+        // Thumbnails after their files: one made meanwhile either is deleted
+        // here or finds its file gone and deletes itself. On disk, the
+        // record's directory goes with the last of them, once empty.
         await Promise.all(
           keys
             .filter(hasThumbs)
             .map((key) => storage.deletePrefix(thumbsPrefix(key))),
         );
-        await storage.delete(keys);
       })().catch((error: unknown) => {
         this.#logger.failure('storage', 'deleting stored files failed', error);
       }),

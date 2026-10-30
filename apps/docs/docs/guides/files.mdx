@@ -117,20 +117,26 @@ Pass `thumb` to get a JPEG, PNG, GIF or WebP image in one of the field's
 | `0xH` | `H` high, keeping the aspect ratio. |
 | `Wx0` | `W` wide, keeping the aspect ratio. |
 
-Sides go up to 2500 pixels. A thumbnail is never larger than its image, keeps
-its format, and is turned the way the photo's EXIF orientation says; EXIF
+Sizes are written without leading zeros, with sides up to 2500 pixels, and
+`t`, `b` and `f` only when neither side is 0. A thumbnail is never larger
+than its image, so it can be smaller than the size asked for: a 200x50 image
+at `100x100` gives 100x50. It keeps its format, and is turned the way the photo's EXIF orientation says; EXIF
 and other metadata are left out. An animated GIF gives a still of its first
 frame.
 
 Each thumbnail is made the first time it is requested, stored beside its
 file, and served from storage after that, with the same rules, headers and,
 with a bucket, signed redirects as the file itself. Thumbnails are deleted
-with their file.
+with their file. Thumbnails of a size removed from `thumbs` stay in storage
+until then.
 
-The original file is served instead for a size the field does not list,
-other types of file, including SVG, and images that cannot be read or are
-larger than 50 megapixels. Those failures are logged as warnings with
-`data.type` `"thumbs"`.
+Otherwise, the request redirects (302, not cached) to the original file's
+own URL, without `thumb`: for a size the field does not list, other types of
+file, including SVG, files over 50 MB, images that cannot be read, have more
+than 50 megapixels, a side over 16384 pixels or one side more than 50 times
+the other, and while the server is too busy making other thumbnails. Images
+that cannot be thumbed are remembered beside the file, so they are tried
+once, and logged as warnings with `data.type` `"thumbs"`.
 
 Thumbnails are made with [sharp](https://sharp.pixelplumbing.com), which you
 install in your app:
@@ -139,7 +145,8 @@ install in your app:
 npm install sharp
 ```
 
-Without it, originals are served, and a warning is logged once. Next.js
+Without it, requests redirect to the originals, and a warning is logged once
+per instance. Next.js
 leaves sharp out of its server bundles by default, since it has native code,
 so it needs no configuration there. sharp installs a native build for the
 platform it is installed on: install your dependencies where the app is

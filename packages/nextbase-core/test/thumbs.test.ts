@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
@@ -8,11 +8,22 @@ import {
   type RecordModel,
 } from '@nextbasejs/client';
 import sharp from 'sharp';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { newStorage } from '../src/files/storage.ts';
+import { thumbLimits } from '../src/files/thumbs.ts';
 import { NextBase } from '../src/index.ts';
 import { type FakeS3, startFakeS3 } from './fake-s3.ts';
 import { origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
+import { waitFor } from './wait.ts';
 
 const PASSWORD = 'password 123 456';
 
@@ -98,6 +109,19 @@ async function colour(
 const bytesOf = async (response: Response): Promise<Buffer> =>
   Buffer.from(await response.arrayBuffer());
 
+const LIMITS = { ...thumbLimits };
+
+/** The URL a fallback redirects to: the same one, without `thumb`. */
+function expectFallback(response: Response, path: string): string {
+  expect(response.status).toBe(302);
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  const url = new URL(path, origin);
+  url.searchParams.delete('thumb');
+  const location = response.headers.get('location') ?? '';
+  expect(location).toBe(url.pathname + url.search);
+  return location;
+}
+
 describe('thumbnails with local storage', () => {
   let t: TestDatabase;
   let dir: string;
@@ -152,6 +176,20 @@ describe('thumbnails with local storage', () => {
     }>("SELECT level, data FROM nextbase._logs WHERE data->>'type' = 'thumbs'");
     return rows.map((r) => ({ level: r.level, ...r.data }));
   };
+
+  /** Calls of `put` for thumbnails and markers, on any local storage. */
+  const thumbPuts = (spy: { mock: { calls: unknown[][] } }, name: string) =>
+    spy.mock.calls.filter((c) => String(c[0]).includes(`/thumbs_${name}/`))
+      .length;
+
+  /** Follows a fallback to the original. */
+  const original = async (path: string): Promise<Response> =>
+    get(expectFallback(await get(path), path));
+
+  afterEach(() => {
+    Object.assign(thumbLimits, LIMITS);
+    vi.restoreAllMocks();
+  });
 
   beforeAll(async () => {
     t = await createTestDatabase();
@@ -211,6 +249,12 @@ describe('thumbnails with local storage', () => {
       '12345x1',
       ' 10x10',
       '-1x10',
+      '0100x100',
+      '100x0100',
+      '00x10',
+      '0x100t',
+      '100x0b',
+      '0x100f',
     ]) {
       const error = await field([size]);
       expect(error, size).toBeInstanceOf(ClientError);
@@ -389,11 +433,18 @@ describe('thumbnails with local storage', () => {
       'together.png',
       'image/png',
     );
+    const put = vi.spyOn(
+      Object.getPrototypeOf(newStorage({ dir })) as {
+        put: (...args: unknown[]) => Promise<void>;
+      },
+      'put',
+    );
     const responses = await Promise.all(
       Array.from({ length: 10 }, () =>
         get(pathOf(post, name, { thumb: '100x100f' })),
       ),
     );
+    expect(thumbPuts(put, name)).toBe(1);
     const bodies = await Promise.all(responses.map(bytesOf));
     for (const [i, response] of responses.entries()) {
       expect(response.status).toBe(200);
@@ -402,13 +453,23 @@ describe('thumbnails with local storage', () => {
     expect((await thumbsOf(post)).thumbs).toEqual([`100x100f_${name}`]);
   });
 
-  it('serves the original for other sizes, files and images it cannot read', async () => {
+  it('redirects to the original for other sizes, files and images it cannot read', async () => {
     const png = await image(300, 300);
     const { post, name } = await upload(png, 'a.png', 'image/png');
-    for (const thumb of ['123x45', '0x0', 'nonsense', '100X100']) {
-      const response = await get(pathOf(post, name, { thumb }));
+    for (const thumb of ['123x45', '0x0', 'nonsense', '100X100', '0100x100']) {
+      const response = await original(pathOf(post, name, { thumb }));
+      expect(response.headers.get('cache-control'), thumb).toBe(
+        'public, max-age=604800',
+      );
       expect(await bytesOf(response), thumb).toEqual(png);
     }
+    const download = pathOf(post, name, { thumb: '1x1' }).replace(
+      '?',
+      '?download=1&',
+    );
+    expect(expectFallback(await get(download), download)).toBe(
+      `${pathOf(post, name)}?download=1`,
+    );
 
     const pdf = Buffer.from(
       '%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n',
@@ -417,36 +478,106 @@ describe('thumbnails with local storage', () => {
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300"/></svg>',
     );
-    const corrupt = await corruptPng();
-    const huge = hugePng();
+    const unthumbable: [Buffer, string, string][] = [
+      [await corruptPng(), 'corrupt.png', 'image/png'],
+      [hugePng(), 'huge.png', 'image/png'],
+      // Under the pixel limit, but slow to decode.
+      [await image(1, 20_000), 'strip.png', 'image/png'],
+      [await image(10, 600), 'thin.png', 'image/png'],
+    ];
+    const put = vi.spyOn(
+      Object.getPrototypeOf(newStorage({ dir })) as {
+        put: (...args: unknown[]) => Promise<void>;
+      },
+      'put',
+    );
+    const failed: { post: RecordModel | null; name: string }[] = [];
     for (const [bytes, filename, type, contentType] of [
       [pdf, 'doc.pdf', 'application/pdf', 'application/pdf'],
       [svg, 'logo.svg', 'image/svg+xml', 'application/octet-stream'],
-      [corrupt, 'corrupt.png', 'image/png', 'image/png'],
-      [huge, 'huge.png', 'image/png', 'image/png'],
+      ...unthumbable.map(([b, f, ty]) => [b, f, ty, ty] as const),
     ] as const) {
       const file = await upload(bytes, filename, type);
       for (const thumb of ['100x100', '100x100', '50x50']) {
-        const response = await get(pathOf(file.post, file.name, { thumb }));
+        const response = await original(
+          pathOf(file.post, file.name, { thumb }),
+        );
         expect(response.status, filename).toBe(200);
         expect(response.headers.get('content-type'), filename).toBe(
           contentType,
         );
         expect(await bytesOf(response), filename).toEqual(bytes);
       }
-      expect((await thumbsOf(file.post)).entries, filename).toEqual([
-        file.name,
-      ]);
+      const stored = await thumbsOf(file.post);
+      if (filename.endsWith('.png')) {
+        // A marker, written once, says the file can never be thumbed.
+        expect(stored.thumbs, filename).toEqual(['.failed']);
+        expect(thumbPuts(put, file.name), filename).toBe(1);
+        failed.push(file);
+      } else {
+        expect(stored.entries, filename).toEqual([file.name]);
+      }
     }
 
     // Each file's failure is logged once: stored files never change.
     const logged = await warnings();
-    expect(logged).toHaveLength(2);
-    expect(logged.map((l) => l.level)).toEqual([4, 4]);
-    expect(logged.map((l) => l.error).sort()).toEqual([
-      'Input image exceeds pixel limit',
-      expect.stringContaining('png'),
-    ]);
+    expect(logged.map((l) => l.level)).toEqual([4, 4, 4, 4]);
+    const errors = logged.map((l) => String(l.error));
+    for (const reason of ['libpng', 'pixel limit', '1x20000', '10x600']) {
+      expect(
+        errors.some((e) => e.includes(reason)),
+        reason,
+      ).toBe(true);
+    }
+
+    // The markers hold for every instance: none decodes the files again.
+    const other = new NextBase({ database: t.pool, storage: { dir } });
+    for (const file of failed) {
+      const path = pathOf(file.post, file.name, { thumb: '100x100' });
+      expectFallback(await other.handle(new Request(`${origin}${path}`)), path);
+    }
+    await other.flush();
+    expect(await warnings()).toHaveLength(4);
+  });
+
+  it('redirects to the original, remembering nothing, when the file cannot be read', async () => {
+    const png = await image(200, 200);
+    const { post, name } = await upload(png, 'locked.png', 'image/png');
+    const file = join(
+      dir,
+      post?.collectionId as string,
+      post?.id as string,
+      name,
+    );
+    await chmod(file, 0);
+    try {
+      const path = pathOf(post, name, { thumb: '50x50' });
+      expectFallback(await get(path), path);
+    } finally {
+      await chmod(file, 0o644);
+    }
+    expect((await thumbsOf(post)).thumbs).toEqual([]);
+    const response = await get(pathOf(post, name, { thumb: '50x50' }));
+    expect(response.status).toBe(200);
+    expect((await sharp(await bytesOf(response)).metadata()).width).toBe(50);
+    await settle();
+    await nextbase.flush();
+    const { rows } = await t.pool.query<{ message: string }>(
+      "SELECT message FROM nextbase._logs WHERE data->>'type' = 'storage'",
+    );
+    expect(rows.map((r) => r.message)).toContain(
+      'Reading a file to thumb failed',
+    );
+  });
+
+  it('does not read files larger than the limit', async () => {
+    thumbLimits.maxBytes = 1000;
+    const png = await image(400, 400, 'jpeg');
+    expect(png.length).toBeGreaterThan(1000);
+    const { post, name } = await upload(png, 'large.jpg', 'image/jpeg');
+    const response = await original(pathOf(post, name, { thumb: '50x50' }));
+    expect(await bytesOf(response)).toEqual(png);
+    expect((await thumbsOf(post)).thumbs).toEqual(['.failed']);
   });
 
   it('stays 404 for files the record does not have or storage lost', async () => {
@@ -526,6 +657,12 @@ describe('thumbnails with local storage', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect((await sharp(await bytesOf(response)).metadata()).width).toBe(50);
+    // A fallback keeps the token, and the original stays uncached.
+    const other = await original(
+      pathOf(record, name, { thumb: '60x60', token }),
+    );
+    expect(other.status).toBe(200);
+    expect(other.headers.get('cache-control')).toBe('private, no-store');
 
     const stranger = nextbase.client();
     await stranger.collection('users').signUp({
@@ -631,6 +768,9 @@ describe('thumbnails in an S3-compatible bucket', () => {
       fields: [{ name: 'img', type: 'file', thumbs: ['30x20'] }],
     });
   });
+  afterEach(() => {
+    Object.assign(thumbLimits, LIMITS);
+  });
   afterAll(async () => {
     s3.hold = undefined;
     await settle();
@@ -663,13 +803,47 @@ describe('thumbnails in an S3-compatible bucket', () => {
     await nextbase.handle(new Request(url('30x20')));
     expect(puts(thumbKey)).toBe(1);
 
-    // Sizes the field does not allow redirect to the original.
-    const original = await nextbase.handle(new Request(url('31x20')));
-    expect(
-      decodeURIComponent(
-        new URL(original.headers.get('location') ?? '').pathname,
-      ),
-    ).toBe(`/${s3.bucket}/${key}`);
+    // Sizes the field does not allow redirect to the original's URL.
+    const other = url('31x20');
+    expectFallback(
+      await nextbase.handle(new Request(other)),
+      other.pathname + other.search,
+    );
+  });
+
+  it('serves the original while too busy, remembering nothing', async () => {
+    thumbLimits.slots = 1;
+    thumbLimits.waitMs = 50;
+    const busy = await upload(await image(100, 100));
+    const waiting = await upload(await image(100, 100));
+    let release = (): void => {};
+    s3.holdGets = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const before = s3.requests.length;
+    try {
+      // Reading its file is held, so the one slot stays taken.
+      const first = nextbase.handle(new Request(busy.url('30x20')));
+      await waitFor(
+        () => s3.requests.slice(before).some((r) => r.startsWith('GET ')),
+        "the file's GET",
+      );
+      const timedOut = waiting.url('30x20');
+      const path = timedOut.pathname + timedOut.search;
+      expectFallback(await nextbase.handle(new Request(timedOut)), path);
+      thumbLimits.queued = 0;
+      expectFallback(await nextbase.handle(new Request(timedOut)), path);
+      s3.holdGets = undefined;
+      release();
+      expect((await first).status).toBe(302);
+    } finally {
+      s3.holdGets = undefined;
+      release();
+    }
+    const later = await nextbase.handle(new Request(waiting.url('30x20')));
+    expect(new URL(later.headers.get('location') ?? '').pathname).toContain(
+      `/thumbs_${waiting.name}/30x20_`,
+    );
   });
 
   it("deletes a record's thumbnails from the bucket", async () => {
@@ -695,10 +869,10 @@ describe('thumbnails in an S3-compatible bucket', () => {
     });
     const before = s3.requests.length;
     const response = nextbase.handle(new Request(url('30x20')));
-    // Waits for the thumbnail's PUT to be held.
-    while (!s3.requests.slice(before).some((r) => r.startsWith('PUT '))) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await waitFor(
+      () => s3.requests.slice(before).some((r) => r.startsWith('PUT ')),
+      "the thumbnail's PUT",
+    );
     await nextbase
       .client()
       .collection('photos')
