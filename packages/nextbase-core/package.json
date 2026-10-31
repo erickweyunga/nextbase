@@ -48,6 +48,7 @@
     "@aws-sdk/s3-request-presigner": "catalog:",
     "@file-type/xml": "catalog:",
     "@nextbasejs/client": "workspace:^",
+    "@simplewebauthn/server": "catalog:",
     "@vercel/functions": "catalog:",
     "file-type": "catalog:",
     "jose": "catalog:",

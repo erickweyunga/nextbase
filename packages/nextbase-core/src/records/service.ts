@@ -12,7 +12,11 @@ import {
   Tx,
 } from '@nextbasejs/dbx';
 import { checkBreached } from '../auth/breached.ts';
-import { checkPassword, hasAuthenticator, type Mfa } from '../auth/mfa.ts';
+import {
+  checkRecentOrPassword,
+  hasAuthenticator,
+  type Mfa,
+} from '../auth/mfa.ts';
 import { hashPassword, verifyPassword } from '../auth/password.ts';
 import {
   type PasswordOrigin,
@@ -963,9 +967,6 @@ export async function planDeleteRecord(
   };
 }
 
-/** Within this, a session counts as recent enough to delete its own account. */
-const FRESH_SESSION_MS = 24 * 60 * 60 * 1000;
-
 /**
  * Deleting one's own account needs more than a possibly stolen session: the password, a sign-in within
  * a day, or an emailed link, plus an app code with MFA. Other deletes are left to the delete rule.
@@ -982,17 +983,14 @@ async function checkOwnDeletion(
   if (collection.type !== 'auth' || !record || !ownAccount(ctx, collection, id))
     return;
   forbidImpersonated(principal, 'delete the account');
-  const created = principal.session?.created.getTime() ?? 0;
-  if (password === undefined && Date.now() - created > FRESH_SESSION_MS) {
-    throw new ApiError(
-      400,
-      'Enter your current password, or sign in again, to delete your account.',
-      { password: { code: 'validation_required', message: 'Required.' } },
-    );
-  }
-  if (password !== undefined) {
-    await checkPassword(ctx.pool, collection, record, password);
-  }
+  await checkRecentOrPassword(
+    ctx.pool,
+    collection,
+    record,
+    principal.session,
+    password,
+    'delete your account',
+  );
   await checkStepUp(ctx, collection, record, mfaCode);
 }
 
@@ -1869,6 +1867,8 @@ async function deleteRows(
       '_recovery_codes',
       '_password_origins',
       '_otps',
+      '_passkeys',
+      '_webauthn_challenges',
     ]) {
       await tx
         .newQuery(

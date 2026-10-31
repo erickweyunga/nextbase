@@ -41,6 +41,7 @@ import {
 import type { Mailer } from '../auth/mail.ts';
 import {
   type Challenge,
+  checkRecentOrPassword,
   IMPERSONATION,
   invalidMfa,
   type Mfa,
@@ -64,6 +65,7 @@ import {
   requestOtp,
   signInWithOtp,
 } from '../auth/otp.ts';
+import type { Passkeys } from '../auth/passkeys.ts';
 import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
@@ -178,6 +180,7 @@ interface Context {
   sms: Sms;
   oauth2: OAuth2;
   mfa: Mfa;
+  passkeys: Passkeys;
   /** The app's check of who may sign up, link or sign in. */
   validateSignIn: ValidateSignIn | undefined;
   rejectBreachedPasswords: boolean;
@@ -707,9 +710,68 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/passkey-options$`),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, mfa, passkeys }) {
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readOptionalJsonObject(request);
+      // For a second step, only the pending record's passkeys may answer.
+      const pending =
+        input.mfaId === undefined
+          ? undefined
+          : await mfa.pending(db, collection, input.mfaId);
+      return Response.json(
+        await passkeys.signInOptions(db, collection, pending?.record),
+      );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/auth-with-passkey$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins, passkeys } =
+        context;
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readJsonObject(request);
+      const cookie = input.cookie === true;
+      // Another site must not sign the browser in to an account of its choosing.
+      if (cookie && !inProcess) checkSameOrigin(request, origins);
+      const named =
+        input.mfaId === undefined
+          ? undefined
+          : await bodyStep(context, collection, input.mfaId, 'passkey');
+      const { record, userVerified } = await passkeys.verifySignIn(
+        db,
+        collection,
+        input,
+      );
+      await checkAuthFilter(db, schema, collection, record.id as string);
+      const step =
+        named ?? (await cookieStep(context, collection, record, 'passkey'));
+      if (step) {
+        if (step.pending.record.id !== record.id) throw invalidMfa();
+        return finishStep(context, step, 'passkey', cookie);
+      }
+      await checkSignIn(context.validateSignIn, {
+        action: 'sign-in',
+        method: 'passkey',
+        collection: collection.name,
+        record,
+      });
+      await checkEmailVerified(db, collection, record.id as string);
+      // Verified by its device, a passkey is two factors: the device and its unlock.
+      if (userVerified) {
+        return startSession(context, collection, record, cookie, ['passkey']);
+      }
+      return completeSignIn(context, collection, record, 'passkey', cookie);
+    },
+  },
+  {
     method: 'GET',
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
-    async handler({ params, schema, oauth2 }) {
+    async handler({ params, schema, oauth2, passkeys }) {
       const collection = authCollection(schema, params[0] as string);
       const providers = collection.id === SUPERUSERS ? [] : oauth2.list();
       return Response.json({
@@ -729,6 +791,9 @@ export const ROUTES: readonly Route[] = [
         },
         otp: {
           enabled: otpEnabled(collection),
+        },
+        passkey: {
+          enabled: passkeys.enabled(collection),
         },
         mfa: {
           enabled: collection.authRule !== null && collection.mfa.enabled,
@@ -1327,7 +1392,12 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('mfa'),
     tags: ['auth'],
     async handler({ params, db, schema, principal, mfa }) {
-      const { collection, record } = ownMfa(schema, principal, params);
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'multi-factor sign-in',
+      );
       return Response.json(
         await mfa.status(db, collection, record.id as string),
       );
@@ -1338,7 +1408,12 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('totp'),
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
-      const { collection, record } = ownMfa(schema, principal, params);
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'multi-factor sign-in',
+      );
       const { password } = await readJsonObject(request);
       return Response.json(
         await mfa.startTotp(db, collection, record, password),
@@ -1350,7 +1425,12 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('totp/confirm'),
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
-      const { collection, record, session } = ownMfa(schema, principal, params);
+      const { collection, record, session } = ownSettings(
+        schema,
+        principal,
+        params,
+        'multi-factor sign-in',
+      );
       const { code } = await readJsonObject(request);
       return Response.json({
         recoveryCodes: await mfa.confirmTotp(
@@ -1368,7 +1448,12 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('totp'),
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
-      const { collection, record } = ownMfa(schema, principal, params);
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'multi-factor sign-in',
+      );
       const { mfaCode } = await readJsonObject(request);
       await mfa.removeTotp(db, collection, record, mfaCode);
       return new Response(null, { status: 204 });
@@ -1379,7 +1464,12 @@ export const ROUTES: readonly Route[] = [
     pattern: ofRecord('recovery-codes'),
     tags: ['auth'],
     async handler({ request, params, db, schema, principal, mfa }) {
-      const { collection, record } = ownMfa(schema, principal, params);
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'multi-factor sign-in',
+      );
       const { mfaCode } = await readJsonObject(request);
       return Response.json({
         recoveryCodes: await mfa.regenerateRecoveryCodes(
@@ -1389,6 +1479,115 @@ export const ROUTES: readonly Route[] = [
           mfaCode,
         ),
       });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: ofRecord('passkeys'),
+    tags: ['auth'],
+    async handler({ params, db, schema, principal, passkeys }) {
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'passkeys',
+      );
+      return Response.json(
+        await passkeys.list(db, collection, record.id as string),
+      );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: ofRecord('passkeys/options'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa, passkeys }) {
+      const { collection, record, session } = ownSettings(
+        schema,
+        principal,
+        params,
+        'passkeys',
+      );
+      // A new way into the account, so a stolen session alone cannot add one.
+      const { password, mfaCode } = await readOptionalJsonObject(request);
+      await checkRecentOrPassword(
+        db,
+        collection,
+        record,
+        session,
+        password,
+        'add a passkey',
+      );
+      await mfa.stepUp(db, collection, record, mfaCode);
+      return Response.json(
+        await passkeys.registrationOptions(db, collection, record, session),
+      );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: ofRecord('passkeys'),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, passkeys }) {
+      const { collection, record, session } = ownSettings(
+        schema,
+        principal,
+        params,
+        'passkeys',
+      );
+      const input = await readJsonObject(request);
+      return Response.json(
+        await passkeys.add(db, collection, record, session, input),
+      );
+    },
+  },
+  {
+    method: 'PATCH',
+    pattern: ofRecord(`passkeys/${segment}`),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, passkeys }) {
+      const { collection, record } = ownSettings(
+        schema,
+        principal,
+        params,
+        'passkeys',
+      );
+      const { name } = await readJsonObject(request);
+      return Response.json(
+        await passkeys.rename(
+          db,
+          collection,
+          record.id as string,
+          params[2] as string,
+          name,
+        ),
+      );
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: ofRecord(`passkeys/${segment}`),
+    tags: ['auth'],
+    async handler({ request, params, db, schema, principal, mfa, passkeys }) {
+      const { collection, record, session } = ownSettings(
+        schema,
+        principal,
+        params,
+        'passkeys',
+      );
+      // Removing the owner's passkeys could lock them out.
+      const { password, mfaCode } = await readOptionalJsonObject(request);
+      await checkRecentOrPassword(
+        db,
+        collection,
+        record,
+        session,
+        password,
+        'remove a passkey',
+      );
+      await mfa.stepUp(db, collection, record, mfaCode);
+      await passkeys.remove(db, collection, record, params[2] as string);
+      return new Response(null, { status: 204 });
     },
   },
   ...flow('request-email-verification', (ctx, collection, input) =>
@@ -2605,20 +2804,21 @@ function ownRecord(
 }
 
 /**
- * The caller's own record and session, for MFA settings: never a superuser for
+ * The caller's own record and session, for sign-in settings: never a superuser for
  * another, never while impersonating, as each could leave a way into the account.
  */
-function ownMfa(
+function ownSettings(
   schema: Schema,
   principal: Principal,
   params: string[],
+  settings: string,
 ): { collection: AuthCollection; record: Row; session: Session } {
   const collection = authCollection(schema, params[0] as string);
   const { record, session } = principal;
   if (!record || !session) {
-    throw new ApiError(401, 'Sign in to manage multi-factor sign-in.');
+    throw new ApiError(401, `Sign in to manage ${settings}.`);
   }
-  forbidImpersonated(principal, 'manage multi-factor sign-in');
+  forbidImpersonated(principal, `manage ${settings}`);
   if (principal.collection?.id !== collection.id || record.id !== params[1]) {
     throw new ApiError(404, 'Record not found.');
   }

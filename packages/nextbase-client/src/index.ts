@@ -36,6 +36,7 @@ export type { CollectionInput, CollectionService } from './collections.ts';
 export type { FileService, FileUrlOptions } from './files.ts';
 export { type FilterValue, filter } from './filter.ts';
 export type { LogListOptions, LogService, LogStatsOptions } from './logs.ts';
+export { passkeyAutofillAvailable } from './passkeys.ts';
 export type {
   RealtimeAction,
   RealtimeEvent,
@@ -50,6 +51,7 @@ export type {
   ListOptions,
   OAuth2LinkOptions,
   OAuth2Options,
+  RecentStepUpOptions,
   RecordOptions,
   RecordService,
   SecondStepOptions,
@@ -72,6 +74,7 @@ export type {
   LogStat,
   MfaRequired,
   MfaStatus,
+  PasskeyModel,
   RecordModel,
   RecoveryCodes,
   SessionModel,
