@@ -575,6 +575,30 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: '0016_otps',
+    async up(tx) {
+      // Codes emailed for a sign-in without a password, kept hashed.
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table('_otps')}}} (
+             id_hash       text PRIMARY KEY,
+             collection_id text NOT NULL,
+             record_id     text NOT NULL,
+             email         text NOT NULL,
+             code_hash     text NOT NULL,
+             attempts      integer NOT NULL DEFAULT 0,
+             expires       timestamptz NOT NULL
+           )`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_otps_expires" ON {{${table('_otps')}}} (expires)`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**

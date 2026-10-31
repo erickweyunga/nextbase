@@ -6,6 +6,7 @@ import type {
   Field,
   Index,
   MfaConfig,
+  OtpConfig,
   Rule,
   TokenConfig,
   TokenType,
@@ -58,6 +59,12 @@ const MFA_DURATION = { min: 60, max: 3600, fallback: 300 } as const;
 /** The settings of a collection stored before MFA existed. */
 export function defaultMfa(): MfaConfig {
   return { enabled: false, rule: null, duration: MFA_DURATION.fallback };
+}
+
+const OTP_DURATION = { min: 60, max: 3600, fallback: 180 };
+
+export function defaultOtp(): OtpConfig {
+  return { enabled: false, duration: OTP_DURATION.fallback };
 }
 
 export function defaultEmailVerification(): EmailVerificationConfig {
@@ -180,6 +187,7 @@ export function parseCollection(
         id === '_superusers'
           ? defaultEmailVerification()
           : parseEmailVerification(r, previous?.emailVerification),
+      otp: parseOtp(r, previous?.otp),
     };
   }
 
@@ -211,6 +219,7 @@ export function superusersCollection(): AuthCollection {
     tokens,
     mfa: defaultMfa(),
     emailVerification: defaultEmailVerification(),
+    otp: defaultOtp(),
   };
 }
 
@@ -692,6 +701,25 @@ function parseTokens(
     configs[type] = { secret, duration };
   }
   return configs;
+}
+
+function parseOtp(r: Reader, existing: OtpConfig | undefined): OtpConfig {
+  const previous = existing ?? defaultOtp();
+  const input: unknown = r.has('otp') ? r.input.otp : {};
+  if (!isRecord(input)) {
+    r.fail('otp', 'validation_invalid_type', 'Must be an object.');
+    return previous;
+  }
+  const or = new Reader(input, ['otp'], r.issues);
+  return {
+    enabled: or.boolean('enabled', previous.enabled),
+    duration: or.integer(
+      'duration',
+      previous.duration,
+      OTP_DURATION.min,
+      OTP_DURATION.max,
+    ),
+  };
 }
 
 function parseEmailVerification(

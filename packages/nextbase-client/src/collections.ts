@@ -7,6 +7,7 @@ import type {
   Field,
   Index,
   MfaConfig,
+  OtpConfig,
   TokenConfig,
   TokenType,
 } from './shared/schema.ts';
@@ -18,7 +19,13 @@ import type {
 export type CollectionInput = Partial<
   Omit<
     AuthCollection,
-    'type' | 'fields' | 'indexes' | 'tokens' | 'mfa' | 'emailVerification'
+    | 'type'
+    | 'fields'
+    | 'indexes'
+    | 'tokens'
+    | 'mfa'
+    | 'emailVerification'
+    | 'otp'
   >
 > & {
   type?: Collection['type'];
@@ -29,6 +36,7 @@ export type CollectionInput = Partial<
   tokens?: Partial<Record<TokenType, Partial<TokenConfig>>>;
   mfa?: Partial<MfaConfig>;
   emailVerification?: Partial<EmailVerificationConfig>;
+  otp?: Partial<OtpConfig>;
 };
 
 /** Collection definitions. Every method needs a superuser. */

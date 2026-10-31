@@ -1920,6 +1920,7 @@ async function deleteRows(
       '_totp',
       '_recovery_codes',
       '_password_origins',
+      '_otps',
     ]) {
       await tx
         .newQuery(

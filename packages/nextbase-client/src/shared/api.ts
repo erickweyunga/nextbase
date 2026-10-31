@@ -131,6 +131,10 @@ export interface AuthMethods {
   phone: {
     enabled: boolean;
   };
+  /** Sign-in by a code emailed to the account, with no password. */
+  otp: {
+    enabled: boolean;
+  };
   /** A second sign-in step, for the accounts the collection's settings name. */
   mfa: {
     enabled: boolean;

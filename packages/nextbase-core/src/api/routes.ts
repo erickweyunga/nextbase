@@ -55,6 +55,7 @@ import {
   OAuth2Error,
   setStateCookie,
 } from '../auth/oauth2.ts';
+import { type OtpContext, requestOtp, signInWithOtp } from '../auth/otp.ts';
 import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
@@ -640,6 +641,43 @@ export const ROUTES: readonly Route[] = [
     },
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/request-otp$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, schema } = context;
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readJsonObject(request);
+      const otpId = await requestOtp(
+        otpContext(context),
+        collection,
+        input.email,
+      );
+      return Response.json({ otpId });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/auth-with-otp$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins } = context;
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readJsonObject(request);
+      const cookie = input.cookie === true;
+      // Another site must not sign the browser in to an account of its choosing.
+      if (cookie && !inProcess) checkSameOrigin(request, origins);
+      const record = await signInWithOtp(
+        otpContext(context),
+        collection,
+        input.otpId,
+        input.code,
+      );
+      await checkAuthRule(db, schema, collection, record.id as string);
+      return completeSignIn(context, collection, record, 'emailCode', cookie);
+    },
+  },
+  {
     method: 'GET',
     pattern: new RegExp(`^/collections/${segment}/auth-methods$`),
     async handler({ params, schema, oauth2 }) {
@@ -659,6 +697,9 @@ export const ROUTES: readonly Route[] = [
             collection.authRule !== null &&
             collection.phoneSignIn &&
             collection.id !== SUPERUSERS,
+        },
+        otp: {
+          enabled: collection.authRule !== null && collection.otp.enabled,
         },
         mfa: {
           enabled: collection.authRule !== null && collection.mfa.enabled,
@@ -1871,6 +1912,11 @@ function parseBatch(input: Record<string, unknown>): BatchWrite[] {
       query: parsed.searchParams,
     };
   });
+}
+
+function otpContext(context: Context): OtpContext {
+  const { db, schema, mailer, effects, hooks } = context;
+  return { db, schema, mailer, effects, hooks };
 }
 
 function flowContext(context: Context): FlowContext {

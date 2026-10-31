@@ -313,6 +313,36 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
+   * Emails a sign-in code to the account with `email`, for a sign-in with
+   * no password, and returns the id to sign in with. Never reveals whether
+   * an account exists: an unknown email gets an id no code matches.
+   */
+  async requestOtp(email: string, options?: SendOptions): Promise<string> {
+    const { otpId } = await this.#client.send<{ otpId: string }>(
+      `/collections/${encodeURIComponent(this.#collection)}/request-otp`,
+      { ...options, method: 'POST', body: { email } },
+    );
+    return otpId;
+  }
+
+  /**
+   * Signs in with the code `requestOtp` emailed, and saves the session like
+   * `signInWithPassword`. The email counts as verified.
+   */
+  async signInWithOtp(
+    otpId: string,
+    code: string,
+    options: AuthOptions = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, ...rest } = options;
+    return this.#signIn('/auth-with-otp', rest, {
+      otpId,
+      code,
+      ...(cookie && { cookie: true }),
+    });
+  }
+
+  /**
    * Signs in with an ID token from a provider's native SDK, such as Google
    * Sign-In or Sign in with Apple on iOS and Android, and saves the session
    * like `signInWithPassword`. `nonce` is the one given to the SDK, if any.

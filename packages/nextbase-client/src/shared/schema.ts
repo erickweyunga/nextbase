@@ -188,6 +188,14 @@ export interface AuthCollection extends CollectionBase {
   mfa: MfaConfig;
   /** When the email must be verified, and when the verification email goes out. */
   emailVerification: EmailVerificationConfig;
+  /** Sign-in by a code emailed to the account, with no password. */
+  otp: OtpConfig;
+}
+
+export interface OtpConfig {
+  enabled: boolean;
+  /** Seconds a code works, 60 to 3600. */
+  duration: number;
 }
 
 export interface EmailVerificationConfig {
