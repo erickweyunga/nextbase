@@ -174,6 +174,11 @@ export function parseCollection(
       manageRule: parseRule(r, 'manageRule', previous),
       identityFields: parseIdentityFields(r, fields, indexes, previous),
       phoneSignIn: r.boolean('phoneSignIn', previous?.phoneSignIn ?? false),
+      // Superusers never sign in with a passkey.
+      passkeySignIn:
+        id === '_superusers'
+          ? false
+          : r.boolean('passkeySignIn', previous?.passkeySignIn ?? false),
       // Superusers never sign in through a provider.
       implicitLinking:
         id === '_superusers'
@@ -215,6 +220,7 @@ export function superusersCollection(): AuthCollection {
     manageRule: null,
     identityFields: ['email'],
     phoneSignIn: false,
+    passkeySignIn: false,
     implicitLinking: false,
     tokens,
     mfa: defaultMfa(),

@@ -174,6 +174,8 @@ export interface AuthCollection extends CollectionBase {
   identityFields: string[];
   /** Sign-in with SMS codes; records may then have a phone instead of an email. */
   phoneSignIn: boolean;
+  /** Sign-in with passkeys; needs the server's `appUrl`, whose host they are bound to. */
+  passkeySignIn: boolean;
   /**
    * Links a provider sign-in to an account with the same verified email, never one with
    * a second step. `false`: it answers `account_exists` and the owner links it instead.

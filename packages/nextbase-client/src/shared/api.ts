@@ -37,6 +37,7 @@ export type SignInMethod =
   | 'emailCode'
   | 'totp'
   | 'recoveryCode'
+  | 'passkey'
   | 'impersonation';
 
 /** A sign-in that needs a second step. */
@@ -135,6 +136,10 @@ export interface AuthMethods {
   otp: {
     enabled: boolean;
   };
+  /** Sign-in with a passkey; false without the server's `appUrl`. */
+  passkey: {
+    enabled: boolean;
+  };
   /** A second sign-in step, for the accounts the collection's settings name. */
   mfa: {
     enabled: boolean;
@@ -187,6 +192,20 @@ export interface LogStat {
   /** The start of the hour, in UTC. */
   date: string;
   total: number;
+}
+
+/** A passkey of an auth record; its private key never leaves the device. */
+export interface PasskeyModel {
+  id: string;
+  /** The owner's label for it, or empty. */
+  name: string;
+  /** The authenticator model, such as a password manager; zeros when it does not say. */
+  aaguid: string;
+  /** Synced to other devices, such as by a password manager. */
+  backedUp: boolean;
+  created: string;
+  /** Empty until it signs in. */
+  lastUsed: string;
 }
 
 /** A provider account linked to an auth record. */

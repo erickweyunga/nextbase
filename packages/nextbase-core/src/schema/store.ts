@@ -32,6 +32,7 @@ type AuthOptions = Pick<
   | 'manageRule'
   | 'identityFields'
   | 'phoneSignIn'
+  | 'passkeySignIn'
   | 'implicitLinking'
   | 'tokens'
   | 'mfa'
@@ -62,6 +63,7 @@ export async function saveCollectionRow(
           manageRule: collection.manageRule,
           identityFields: collection.identityFields,
           phoneSignIn: collection.phoneSignIn,
+          passkeySignIn: collection.passkeySignIn,
           implicitLinking: collection.implicitLinking,
           tokens: collection.tokens,
           mfa: collection.mfa,
@@ -131,12 +133,14 @@ function fromRow(row: CollectionRow): Collection {
     type: 'auth',
     // Collections stored before these options existed.
     phoneSignIn: false,
+    passkeySignIn: false,
     implicitLinking: true,
     mfa: defaultMfa(),
     emailVerification: defaultEmailVerification(),
     otp: defaultOtp(),
     ...(row.options as Partial<AuthOptions>),
     ...(row.id === '_superusers' && {
+      passkeySignIn: false,
       implicitLinking: false,
       emailVerification: defaultEmailVerification(),
     }),

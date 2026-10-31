@@ -36,8 +36,9 @@ SDK's `signUp()` returns, so the app can ask to verify the email; an
 
 ## How strong each step is
 
-Only an authenticator app, or its recovery codes, stays safe when someone
-takes over the account's inbox or phone. Email and phone codes stop a leaked
+Only an authenticator app, its recovery codes, or a
+[passkey](/docs/guides/auth/passkeys) stays safe when someone takes over the
+account's inbox or phone. Email and phone codes stop a leaked
 or reused password from signing in, but whoever controls that inbox or phone
 can read them. For accounts that matter most, require an app: superusers
 always use one.
@@ -84,10 +85,12 @@ records both, such as `["password", "totp"]`.
 | `emailCode` | | `requestEmailCode({ mfaId })`, then `signInWithEmailCode(code, { mfaId })`. Emailed to the account's verified email. |
 | `totp` | | `signInWithTotp(code, { mfaId })` |
 | `recoveryCode` | | `signInWithRecoveryCode(code, { mfaId })` |
+| `passkey` | `signInWithPasskey` | `signInWithPasskey({ mfaId })`, with a passkey of the account |
 
-Once an account has an authenticator app, only `totp` and `recoveryCode`
-count as its second step: an email or a text is easier to intercept than the
-app.
+Once an account has an authenticator app, only `totp`, `recoveryCode` and
+`passkey` count as its second step: an email or a text is easier to intercept
+than the app. A passkey the device unlocked, by fingerprint, face or PIN, is
+two factors in one and needs no second step at all.
 
 Two steps never come from the same place:
 

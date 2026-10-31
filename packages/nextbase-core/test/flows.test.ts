@@ -73,6 +73,7 @@ describe('email verification, password reset and email change', () => {
       oauth2: { enabled: false, providers: [] },
       phone: { enabled: false },
       otp: { enabled: false },
+      passkey: { enabled: false },
       mfa: { enabled: false, duration: 300 },
     });
     await admin.collections.create({

@@ -3,14 +3,24 @@ import { authSync } from './auth-sync.ts';
 import { ClientError } from './client-error.ts';
 import { hasFiles, toFormData } from './files.ts';
 import type { NextBaseClient, SendOptions } from './index.ts';
+import {
+  createPasskey,
+  forgetPasskey,
+  getPasskey,
+  type PasskeyRequest,
+  passkeyAutofillAvailable,
+  webAuthn,
+} from './passkeys.ts';
 import type { RealtimeEvent, SubscribeOptions } from './realtime.ts';
 import type {
   AuthMethods,
   AuthResponse,
+  ErrorData,
   ImpersonateResponse,
   LinkedAccountModel,
   ListResult,
   MfaStatus,
+  PasskeyModel,
   RecordModel,
   RecoveryCodes,
   SignInMethod,
@@ -43,6 +53,15 @@ export interface SecondStepOptions extends AuthOptions {
  */
 export interface StepUpOptions extends SendOptions {
   password: string;
+  mfaCode?: string;
+}
+
+/**
+ * Proof for a sensitive change: the password, unless the session signed in within
+ * the last day, and with an authenticator app a code from it.
+ */
+export interface RecentStepUpOptions extends SendOptions {
+  password?: string;
   mfaCode?: string;
 }
 
@@ -238,10 +257,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * Deleting the signed-in record signs out and needs `password` (unless signed in
    * within a day) plus `mfaCode` with an app. Otherwise see `requestAccountDeletion`.
    */
-  async delete(
-    id: string,
-    options: SendOptions & { password?: string; mfaCode?: string } = {},
-  ): Promise<void> {
+  async delete(id: string, options: RecentStepUpOptions = {}): Promise<void> {
     const { password, mfaCode, ...rest } = options;
     const body = stepUp({ password, mfaCode });
     await this.#send(`/records/${encodeURIComponent(id)}`, {
@@ -324,6 +340,128 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
+   * Signs in with a passkey, in the browser. `autofill` waits for one picked from the
+   * suggestions of an input with `autocomplete="username webauthn"`; abort it with `signal`.
+   */
+  async signInWithPasskey(
+    options: SecondStepOptions & { autofill?: boolean } = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, autofill, ...rest } = options;
+    webAuthn();
+    if (autofill && !(await passkeyAutofillAvailable())) {
+      throw new Error('This browser cannot offer passkeys in autofill.');
+    }
+    const { expand, fields, ...send } = rest;
+    for (;;) {
+      const passkey = await this.#client.send<{
+        challengeId: string;
+        options: PasskeyRequest;
+      }>(
+        `/collections/${encodeURIComponent(this.#collection)}/passkey-options`,
+        {
+          ...send,
+          method: 'POST',
+          body: mfaId === undefined ? {} : { mfaId },
+        },
+      );
+      const credential = await getPasskey(passkey.options, {
+        ...(autofill && { autofill }),
+        signal: send.signal ?? undefined,
+      });
+      try {
+        return await this.#signIn('/auth-with-passkey', rest, {
+          challengeId: passkey.challengeId,
+          credential,
+          ...(mfaId !== undefined && { mfaId }),
+          ...(cookie && { cookie: true }),
+        });
+      } catch (error) {
+        const data = error instanceof ClientError ? error.data : {};
+        // Autofill may wait past the challenge's minutes: wait again for a pick.
+        if (
+          autofill &&
+          fieldCode(data, 'challengeId') === 'validation_invalid_challenge'
+        ) {
+          continue;
+        }
+        if (
+          fieldCode(data, 'credential') === 'passkey_not_found' &&
+          passkey.options.rpId
+        ) {
+          forgetPasskey(passkey.options.rpId, credential.id);
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Creates a passkey on this device for the signed-in record, in the browser, and
+   * emails the owner. A cancelled dialog still uses up the `mfaCode`.
+   */
+  async addPasskey(
+    recordId: string,
+    options: RecentStepUpOptions & { name?: string } = {},
+  ): Promise<PasskeyModel> {
+    const { password, mfaCode, name, ...rest } = options;
+    webAuthn();
+    const passkey = await this.#client.send<{
+      challengeId: string;
+      options: unknown;
+    }>(this.#recordPath(recordId, '/passkeys/options'), {
+      ...rest,
+      method: 'POST',
+      body: stepUp({ password, mfaCode }),
+    });
+    const credential = await createPasskey(passkey.options, {
+      signal: rest.signal ?? undefined,
+    });
+    return this.#client.send(this.#recordPath(recordId, '/passkeys'), {
+      ...rest,
+      method: 'POST',
+      body: {
+        challengeId: passkey.challengeId,
+        credential,
+        ...(name !== undefined && { name }),
+      },
+    });
+  }
+
+  /** The signed-in record's passkeys. */
+  listPasskeys(
+    recordId: string,
+    options?: SendOptions,
+  ): Promise<PasskeyModel[]> {
+    return this.#client.send(this.#recordPath(recordId, '/passkeys'), options);
+  }
+
+  /** Relabels a passkey of the signed-in record; an empty name clears it. */
+  renamePasskey(
+    recordId: string,
+    passkeyId: string,
+    name: string,
+    options?: SendOptions,
+  ): Promise<PasskeyModel> {
+    return this.#client.send(
+      this.#recordPath(recordId, `/passkeys/${encodeURIComponent(passkeyId)}`),
+      { ...options, method: 'PATCH', body: { name } },
+    );
+  }
+
+  /** Removes a passkey of the signed-in record, and emails the owner. */
+  async deletePasskey(
+    recordId: string,
+    passkeyId: string,
+    options: RecentStepUpOptions = {},
+  ): Promise<void> {
+    const { password, mfaCode, ...rest } = options;
+    await this.#client.send(
+      this.#recordPath(recordId, `/passkeys/${encodeURIComponent(passkeyId)}`),
+      { ...rest, method: 'DELETE', body: stepUp({ password, mfaCode }) },
+    );
+  }
+
+  /**
    * Signs in with an ID token from a native SDK such as Sign in with Apple. `nonce` is
    * the one given to the SDK; a new account goes through `mapProfile` with `data`.
    */
@@ -399,7 +537,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     password: string,
     options?: SendOptions,
   ): Promise<TotpSetup> {
-    return this.#client.send(this.#mfaPath(recordId, '/totp'), {
+    return this.#client.send(this.#recordPath(recordId, '/totp'), {
       ...options,
       method: 'POST',
       body: { password },
@@ -411,7 +549,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
    * sign-ins, for an owner who lost their app. The owner is emailed.
    */
   async clearMfa(recordId: string, options?: SendOptions): Promise<void> {
-    await this.#client.send(this.#mfaPath(recordId, '/mfa'), {
+    await this.#client.send(this.#recordPath(recordId, '/mfa'), {
       ...options,
       method: 'DELETE',
     });
@@ -434,7 +572,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options?: SendOptions,
   ): Promise<string[]> {
     const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
-      this.#mfaPath(recordId, '/totp/confirm'),
+      this.#recordPath(recordId, '/totp/confirm'),
       { ...options, method: 'POST', body: { code } },
     );
     return recoveryCodes;
@@ -446,7 +584,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     mfaCode: string,
     options?: SendOptions,
   ): Promise<void> {
-    await this.#client.send(this.#mfaPath(recordId, '/totp'), {
+    await this.#client.send(this.#recordPath(recordId, '/totp'), {
       ...options,
       method: 'DELETE',
       body: { mfaCode },
@@ -460,7 +598,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     options?: SendOptions,
   ): Promise<string[]> {
     const { recoveryCodes } = await this.#client.send<RecoveryCodes>(
-      this.#mfaPath(recordId, '/recovery-codes'),
+      this.#recordPath(recordId, '/recovery-codes'),
       { ...options, method: 'POST', body: { mfaCode } },
     );
     return recoveryCodes;
@@ -887,7 +1025,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
   }
 
-  #mfaPath(recordId: string, path: string): string {
+  #recordPath(recordId: string, path: string): string {
     return `/collections/${encodeURIComponent(this.#collection)}/records/${encodeURIComponent(recordId)}${path}`;
   }
 
@@ -918,6 +1056,11 @@ export class RecordService<T extends RecordModel = RecordModel> {
       { ...rest, query: { ...rest.query, expand, fields } },
     );
   }
+}
+
+/** The code of an error's field, such as `credential`. */
+function fieldCode(data: ErrorData, field: string): unknown {
+  return (data[field] as { code?: unknown } | undefined)?.code;
 }
 
 /** The record a link's token was made for: its JWT payload's `id`. */
