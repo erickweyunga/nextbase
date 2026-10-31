@@ -1,5 +1,13 @@
 # nextbasejs
 
+## 0.2.3
+
+### Patch Changes
+
+- 4f9f269: Migrations for the app's collections. Pass the generated index of `nextbase/migrations` as the new `migrations` option. In development, each collection create, update or delete writes a migration file and counts it as applied; updates are diffs, with fields matched by id. Token secrets never go into a file. `nextbase.migrate()` and the first request run the migrations a database has not run, each in its own transaction under the schema lock, and `nextbase.revertMigrations(count)` runs their `down`. A migration gets `app.collections` (`get`, `create`, `change`, `delete`, `import`), a superuser client in its transaction as `app.nextbase`, and the transaction as `app.db`. The CLI adds `migrate create NAME`, `migrate collections` (a snapshot, imported with `app.collections.import`) and `migrate history-sync`.
+- dd39247: With the `migrations` option set, the API refuses to create, change or delete collections where automigrate is off, such as in production, with a 409 (`schema_managed_by_migrations`), so the schema cannot drift from the migrations. Migrations, reads and records are not affected; `schemaChanges: true` in the option allows API changes anyway.
+- @nextbasejs/client@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes

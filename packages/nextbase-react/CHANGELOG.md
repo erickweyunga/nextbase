@@ -1,5 +1,11 @@
 # @nextbasejs/react
 
+## 0.2.3
+
+### Patch Changes
+
+- @nextbasejs/client@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes
