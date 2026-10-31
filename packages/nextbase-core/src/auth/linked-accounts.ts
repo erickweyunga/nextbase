@@ -22,6 +22,11 @@ import {
   type OAuth2ProviderOptions,
 } from './oauth2.ts';
 import { setPasswordOrigin } from './password-origins.ts';
+import {
+  checkSignIn,
+  type SignInAction,
+  type ValidateSignIn,
+} from './validate.ts';
 
 // Sign-ins find their record by the provider's permanent account id, never by
 // email. A new provider account is auto-linked to an existing record by email
@@ -38,6 +43,7 @@ export interface AccountContext {
   schema: Schema;
   effects: Effects;
   hooks: Hooks;
+  validateSignIn?: ValidateSignIn;
 }
 
 export interface Account {
@@ -94,10 +100,23 @@ async function findAccount(
   linkRecordId: string | null,
 ): Promise<Account> {
   const provider = policy.name;
+  // The app's check, with what the provider says about the account now.
+  const check = (
+    action: SignInAction,
+    record: Record<string, unknown>,
+  ): Promise<void> =>
+    checkSignIn(ctx.validateSignIn, {
+      action,
+      method: 'oauth2',
+      collection: collection.name,
+      record,
+      oauth2: { provider, profile: identity.profile },
+    });
   const linked = await findLinked(tx, collection, provider, identity.id);
   if (linkRecordId !== null) {
     if (linked) {
       if (linked.id !== linkRecordId) throw alreadyLinked();
+      await check('link', linked);
       return { record: linked };
     }
     const record = await findRecord(tx, collection, linkRecordId);
@@ -112,10 +131,14 @@ async function findAccount(
         "Verify this account's email before linking a provider.",
       );
     }
+    await check('link', record);
     await link(tx, collection, record.id as string, provider, identity.id);
     return { record, linkedTo: record.email as string };
   }
-  if (linked) return { record: linked };
+  if (linked) {
+    await check('sign-in', linked);
+    return { record: linked };
+  }
   if (identity.email === undefined) {
     throw new OAuth2Error(
       'email_required',
@@ -148,6 +171,7 @@ async function findAccount(
         'An account with this email exists. Sign in to it, then link this provider.',
       );
     }
+    await check('link', existing);
     await link(tx, collection, existing.id as string, provider, identity.id);
     return { record: existing, linkedTo: existing.email as string };
   }
@@ -157,7 +181,13 @@ async function findAccount(
       'This provider signs in existing accounts only. Sign up another way first.',
     );
   }
-  const record = await signUp({ ...ctx, tx }, collection, identity, policy);
+  const record = await signUp(
+    { ...ctx, tx },
+    collection,
+    identity,
+    policy,
+    (values) => check('sign-up', values),
+  );
   await link(tx, collection, record.id as string, provider, identity.id);
   return { record };
 }
@@ -301,6 +331,7 @@ async function signUp(
   collection: AuthCollection,
   identity: Identity,
   policy: SignUpPolicy,
+  check: (values: Record<string, unknown>) => Promise<void>,
 ): Promise<Row> {
   const id = newId();
   const password = randomPassword(collection);
@@ -318,6 +349,7 @@ async function signUp(
     password,
     passwordConfirm: password,
   };
+  await check(input);
   const { tx, db: pool, schema, effects, hooks } = ctx;
   try {
     await newRecord(
