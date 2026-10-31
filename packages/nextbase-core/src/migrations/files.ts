@@ -1,4 +1,4 @@
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { MIGRATION_NAME } from './define.ts';
 import { indexTemplate } from './templates.ts';
@@ -41,11 +41,31 @@ export async function writeMigration(
   await mkdir(folder, { recursive: true });
   const path = join(folder, `${name}.ts`);
   await writeFile(path, source, { flag: 'wx' });
+  try {
+    await writeIndex(folder, dir);
+  } catch (error) {
+    await rm(path, { force: true });
+    throw error;
+  }
+  return path;
+}
+
+/** Takes back a migration whose change did not commit. */
+export async function removeMigration(
+  root: string,
+  dir: string,
+  name: string,
+): Promise<void> {
+  const folder = resolve(root, dir);
+  await rm(join(folder, `${name}.ts`), { force: true });
+  await writeIndex(folder, dir);
+}
+
+async function writeIndex(folder: string, dir: string): Promise<void> {
   await writeFile(
     join(folder, 'index.ts'),
     indexTemplate(dir, await migrationNames(folder)),
   );
-  return path;
 }
 
 function slug(words: string): string {

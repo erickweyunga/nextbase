@@ -67,7 +67,7 @@ export function changeTemplate(
   if (!before || !after) return undefined;
   const up = diff(before, after);
   if (up.length === 0) return undefined;
-  return file(change(before.id, up), change(after.id, diff(after, before)));
+  return file(change(before, up), change(after, diff(after, before)));
 }
 
 function file(up: string, down: string): string {
@@ -83,8 +83,8 @@ export default migration({
 `;
 }
 
-function change(id: string, lines: readonly string[]): string {
-  return `await app.collections.change(${JSON.stringify(id)}, (c) => {
+function change(collection: Collection, lines: readonly string[]): string {
+  return `await app.collections.change<${JSON.stringify(collection.type)}>(${JSON.stringify(collection.id)}, (c) => {
 ${lines.map((line) => `      ${line}`).join('\n')}
     });`;
 }
@@ -99,16 +99,8 @@ function diff(from: Collection, to: Collection): string[] {
     const value = b[key];
     const old = a[key];
     if (same(old, value)) continue;
-    // One setting of an object, such as mfa.duration, so changes to others combine.
-    if (isPlain(value) && isPlain(old)) {
-      for (const sub of Object.keys(value)) {
-        if (!same(old[sub], value[sub])) {
-          lines.push(`c.${key}.${sub} = ${literal(value[sub], 6)};`);
-        }
-      }
-    } else {
-      lines.push(`c.${key} = ${literal(value, 6)};`);
-    }
+    // Single settings, such as mfa.duration, so changes to others combine.
+    assign(lines, `c.${key}`, old, value);
   }
   if (from.type === 'view') return lines;
   const fromFields = new Map(from.fields.map((f, i) => [f.id, { f, i }]));
@@ -120,11 +112,28 @@ function diff(from: Collection, to: Collection): string[] {
   }
   to.fields.forEach((field: Field, i) => {
     const old = fromFields.get(field.id);
-    // A field that only moved is left where it is.
+    // Order is not migrated: a field that only moved is left where it is.
     if (old && same(old.f, field)) return;
     lines.push(`c.fields.addAt(${i}, ${literal(field, 6)});`);
   });
   return lines;
+}
+
+/** Statements that set `path` from `old` to `value`, setting by setting for objects. */
+function assign(
+  lines: string[],
+  path: string,
+  old: unknown,
+  value: unknown,
+): void {
+  if (same(old, value)) return;
+  if (isPlain(value) && isPlain(old)) {
+    for (const key of Object.keys(value)) {
+      assign(lines, `${path}.${key}`, old[key], value[key]);
+    }
+    return;
+  }
+  lines.push(`${path} = ${literal(value, 6)};`);
 }
 
 /** The index of a folder's migrations, sorted by name. */
@@ -150,8 +159,19 @@ function literal(value: unknown, indent: number): string {
   );
 }
 
+/** Equal values, whatever order their keys come in, as jsonb keeps its own. */
 function same(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!isPlain(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonical(value[key])]),
+  );
 }
 
 function isPlain(value: unknown): value is Record<string, unknown> {

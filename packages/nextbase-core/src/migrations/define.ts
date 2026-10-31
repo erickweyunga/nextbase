@@ -16,17 +16,18 @@ export interface FieldList extends Array<Field> {
 }
 
 /** A collection as `change` hands it over, to edit in place. */
-export type CollectionDraft = Omit<Collection, 'fields'> & {
-  fields: FieldList;
-} & Record<string, unknown>;
+export type CollectionDraft<C extends Collection = Collection> =
+  C extends Collection ? Omit<C, 'fields'> & { fields: FieldList } : never;
 
 export interface MigrationCollections {
   get(idOrName: string): Promise<Collection>;
   create(input: CollectionInput): Promise<Collection>;
-  /** Loads the collection, lets `edit` change it, and saves it. */
-  change(
+  /** Loads the collection, lets `edit` change it, and saves it; `T` names its type. */
+  change<T extends Collection['type'] = Collection['type']>(
     idOrName: string,
-    edit: (collection: CollectionDraft) => void | Promise<void>,
+    edit: (
+      collection: CollectionDraft<Extract<Collection, { type: T }>>,
+    ) => void | Promise<void>,
   ): Promise<Collection>;
   delete(idOrName: string): Promise<void>;
   /**

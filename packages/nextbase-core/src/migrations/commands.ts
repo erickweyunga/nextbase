@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { DB } from '@nextbasejs/dbx';
 import { lockSchema, table } from '../db/system.ts';
 import { loadCollections } from '../schema/store.ts';
@@ -41,7 +42,14 @@ export async function syncHistory(
   root: string,
   dir: string,
 ): Promise<string[]> {
-  const names = await migrationNames(resolve(root, dir));
+  const folder = resolve(root, dir);
+  const names = await migrationNames(folder);
+  // A wrong folder would forget every migration, and the next start run them all again.
+  if (!existsSync(join(folder, 'index.ts')) || names.length === 0) {
+    throw new Error(
+      `${folder} has no migrations. Pass the folder they are in with --dir.`,
+    );
+  }
   return db
     .newQuery(
       `DELETE FROM {{${table('_app_migrations')}}}

@@ -31,41 +31,66 @@ import {
 // Each schema change is one transaction under the schema lock (load, validate,
 // DDL, store, bump version). DDL is transactional, so a failure changes nothing.
 
-/** Runs in a schema change's transaction once it is done; a throw undoes it. */
+/**
+ * Runs in a schema change's transaction once it is done; a throw undoes it. What it
+ * returns runs if the transaction fails after, such as to remove a file it wrote.
+ */
 export type OnSchemaChange = (
   tx: Tx,
   before: Collection | undefined,
   after: Collection | undefined,
-) => Promise<void>;
+) => Promise<(() => Promise<void>) | undefined>;
+
+/** Runs `change`, and the undo of its onChange if the transaction fails. */
+async function undoable<T>(
+  change: (onChange: OnSchemaChange | undefined) => Promise<T>,
+  onChange: OnSchemaChange | undefined,
+): Promise<T> {
+  if (!onChange) return change(undefined);
+  let undo: (() => Promise<void>) | undefined;
+  try {
+    return await change(async (tx, before, after) => {
+      undo = await onChange(tx, before, after);
+      return undo;
+    });
+  } catch (error) {
+    await undo?.();
+    throw error;
+  }
+}
 
 export async function newCollection(
   db: DB | Tx,
   input: unknown,
   onChange?: OnSchemaChange,
 ): Promise<Collection> {
-  return db.transaction(async (tx) => {
-    await lockSchema(tx);
-    const others = await loadCollections(tx);
-    let collection = parseCollection(input, { others });
-    if (collection.type === 'view') {
-      const role = await ensureViewRole(tx);
-      await grantViewRole(tx, role, others);
-      // Its fields come from the query, so rules are checked after.
-      collection = {
-        ...collection,
-        fields: await createView(tx, role, collection),
-      };
-      checkRules(collection, others);
-    } else {
-      checkRules(collection, others);
-      await createCollectionTable(tx, collection, others);
-      await refreshViewGrants(tx, [...others, collection]);
-    }
-    await saveCollectionRow(tx, collection);
-    await bumpSchemaVersion(tx);
-    await onChange?.(tx, undefined, collection);
-    return collection;
-  });
+  return undoable(
+    (onChange) =>
+      db.transaction(async (tx) => {
+        await lockSchema(tx);
+        const others = await loadCollections(tx);
+        let collection = parseCollection(input, { others });
+        if (collection.type === 'view') {
+          const role = await ensureViewRole(tx);
+          await grantViewRole(tx, role, others);
+          // Its fields come from the query, so rules are checked after.
+          collection = {
+            ...collection,
+            fields: await createView(tx, role, collection),
+          };
+          checkRules(collection, others);
+        } else {
+          checkRules(collection, others);
+          await createCollectionTable(tx, collection, others);
+          await refreshViewGrants(tx, [...others, collection]);
+        }
+        await saveCollectionRow(tx, collection);
+        await bumpSchemaVersion(tx);
+        await onChange?.(tx, undefined, collection);
+        return collection;
+      }),
+    onChange,
+  );
 }
 
 export async function updateCollection(
@@ -75,38 +100,42 @@ export async function updateCollection(
   obsoleteFiles: string[] = [],
   onChange?: OnSchemaChange,
 ): Promise<Collection> {
-  return db.transaction(async (tx) => {
-    await lockSchema(tx);
-    const all = await loadCollections(tx);
-    const existing = find(all, idOrName);
-    const others = all.filter((c) => c !== existing);
-    let collection = parseCollection(input, { existing, others });
-    if (existing.type === 'view' && collection.type === 'view') {
-      const role = (await readViewRole(tx)) as string;
-      if (collection.name !== existing.name) {
-        await renameView(tx, role, existing.name, collection.name);
-      }
-      if (collection.viewQuery !== existing.viewQuery) {
-        collection = {
-          ...collection,
-          fields: await createView(tx, role, collection, {
-            previous: existing.fields,
-            replace: true,
-          }),
-        };
-      }
-      checkRules(collection, others);
-    } else {
-      checkRules(collection, others);
-      obsoleteFiles.push(...(await removedFiles(tx, existing, collection)));
-      await alterCollectionTable(tx, existing, collection, others);
-      await refreshViewGrants(tx, [...others, collection]);
-    }
-    await saveCollectionRow(tx, collection);
-    await bumpSchemaVersion(tx);
-    await onChange?.(tx, existing, collection);
-    return collection;
-  });
+  return undoable(
+    (onChange) =>
+      db.transaction(async (tx) => {
+        await lockSchema(tx);
+        const all = await loadCollections(tx);
+        const existing = find(all, idOrName);
+        const others = all.filter((c) => c !== existing);
+        let collection = parseCollection(input, { existing, others });
+        if (existing.type === 'view' && collection.type === 'view') {
+          const role = (await readViewRole(tx)) as string;
+          if (collection.name !== existing.name) {
+            await renameView(tx, role, existing.name, collection.name);
+          }
+          if (collection.viewQuery !== existing.viewQuery) {
+            collection = {
+              ...collection,
+              fields: await createView(tx, role, collection, {
+                previous: existing.fields,
+                replace: true,
+              }),
+            };
+          }
+          checkRules(collection, others);
+        } else {
+          checkRules(collection, others);
+          obsoleteFiles.push(...(await removedFiles(tx, existing, collection)));
+          await alterCollectionTable(tx, existing, collection, others);
+          await refreshViewGrants(tx, [...others, collection]);
+        }
+        await saveCollectionRow(tx, collection);
+        await bumpSchemaVersion(tx);
+        await onChange?.(tx, existing, collection);
+        return collection;
+      }),
+    onChange,
+  );
 }
 
 export async function deleteCollection(
@@ -114,67 +143,72 @@ export async function deleteCollection(
   idOrName: string,
   onChange?: OnSchemaChange,
 ): Promise<void> {
-  await db.transaction(async (tx) => {
-    await lockSchema(tx);
-    const all = await loadCollections(tx);
-    const existing = find(all, idOrName);
-    if (existing.system) {
-      throw new ApiError(400, 'System collections cannot be deleted.');
-    }
-    const references = all.flatMap((c) =>
-      c === existing
-        ? []
-        : c.fields
-            .filter(
-              (f) => f.type === 'relation' && f.collectionId === existing.id,
-            )
-            .map((f) => `${c.name}.${f.name}`),
-    );
-    if (references.length > 0) {
-      throw new ApiError(
-        400,
-        `The collection is referenced by ${references.join(', ')}. Remove those relation fields first.`,
-      );
-    }
-    // Such as `@collection.<name>` or `<name>_via_<field>` in another rule.
-    const broken = ruleProblems(all.filter((c) => c !== existing)).map(
-      ({ collection, key }) => `the ${key} of ${collection.name}`,
-    );
-    if (broken.length > 0) {
-      throw new ApiError(
-        400,
-        `The collection is used by ${broken.join(', ')}. Change those rules first.`,
-      );
-    }
-    if (existing.type === 'view') {
-      await dropView(tx, (await readViewRole(tx)) as string, existing.name);
-    } else
-      await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
-    await deleteCollectionRow(tx, existing.id);
-    if (existing.type === 'auth') {
-      for (const name of [
-        '_sessions',
-        '_linked_accounts',
-        '_oauth2_states',
-        '_mfas',
-        '_totp',
-        '_recovery_codes',
-        '_password_origins',
-        '_otps',
-        '_passkeys',
-        '_webauthn_challenges',
-      ]) {
-        await tx
-          .newQuery(
-            `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
-          )
-          .bind({ collectionId: existing.id })
-          .execute();
-      }
-    }
-    await bumpSchemaVersion(tx);
-    await onChange?.(tx, existing, undefined);
-  });
+  await undoable(
+    (onChange) =>
+      db.transaction(async (tx) => {
+        await lockSchema(tx);
+        const all = await loadCollections(tx);
+        const existing = find(all, idOrName);
+        if (existing.system) {
+          throw new ApiError(400, 'System collections cannot be deleted.');
+        }
+        const references = all.flatMap((c) =>
+          c === existing
+            ? []
+            : c.fields
+                .filter(
+                  (f) =>
+                    f.type === 'relation' && f.collectionId === existing.id,
+                )
+                .map((f) => `${c.name}.${f.name}`),
+        );
+        if (references.length > 0) {
+          throw new ApiError(
+            400,
+            `The collection is referenced by ${references.join(', ')}. Remove those relation fields first.`,
+          );
+        }
+        // Such as `@collection.<name>` or `<name>_via_<field>` in another rule.
+        const broken = ruleProblems(all.filter((c) => c !== existing)).map(
+          ({ collection, key }) => `the ${key} of ${collection.name}`,
+        );
+        if (broken.length > 0) {
+          throw new ApiError(
+            400,
+            `The collection is used by ${broken.join(', ')}. Change those rules first.`,
+          );
+        }
+        if (existing.type === 'view') {
+          await dropView(tx, (await readViewRole(tx)) as string, existing.name);
+        } else
+          await tx.newQuery(`DROP TABLE {{${table(existing.name)}}}`).execute();
+        await deleteCollectionRow(tx, existing.id);
+        if (existing.type === 'auth') {
+          for (const name of [
+            '_sessions',
+            '_linked_accounts',
+            '_oauth2_states',
+            '_mfas',
+            '_totp',
+            '_recovery_codes',
+            '_password_origins',
+            '_otps',
+            '_passkeys',
+            '_webauthn_challenges',
+          ]) {
+            await tx
+              .newQuery(
+                `DELETE FROM {{${table(name)}}} WHERE collection_id = {:collectionId}`,
+              )
+              .bind({ collectionId: existing.id })
+              .execute();
+          }
+        }
+        await bumpSchemaVersion(tx);
+        await onChange?.(tx, existing, undefined);
+      }),
+    onChange,
+  );
 }
 
 async function removedFiles(

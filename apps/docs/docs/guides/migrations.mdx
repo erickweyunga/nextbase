@@ -31,9 +31,10 @@ or `nextbase.client()`, writes a migration to the folder and updates its
 `index.ts`:
 
 - `1730370000_created_posts.ts` creates the collection.
-- `1730370100_updated_posts.ts` changes it: the settings that changed, and
+- `1730370100_updated_posts.ts` changes it: each setting that changed, and
   its fields, added, changed or removed by id, so a renamed field keeps its
-  column and data.
+  column and data, and changes from two branches to one collection combine.
+  The order of fields is not migrated.
 - `1730370200_deleted_posts.ts` deletes it.
 
 Each counts as applied in your development database, as the change is there
@@ -46,7 +47,8 @@ a file: each database keeps its own. Automigrate is off outside development;
 The first request after a deploy runs the migrations a database has not run,
 after NextBase upgrades its own tables, under a lock, so instances starting
 together run each once. To do it before traffic arrives, run it from a deploy
-script:
+script, with a TypeScript runner such as `npx tsx scripts/migrate.ts`, as the
+index imports the files the way bundlers do:
 
 ```ts title="scripts/migrate.ts"
 import { nextbase } from "../lib/nextbase";
@@ -97,7 +99,8 @@ alike, so a record it creates can belong to a collection it just created.
 `npx nextbase migrate collections` writes a migration with every collection
 of the database, counted as applied there. Run on another database, it lays
 the collections over the ones it has, matched by id, then name, and creates
-the rest; collections and fields it leaves out are kept. With
+the rest. Tables change first, then views, then every rule, so collections
+may refer to one another in any order; collections and fields it leaves out are kept. With
 `{ deleteMissing: true }` on its `import` call, it deletes them instead,
 system collections aside, with their records. Use one to start from a database
 that has collections already, or to squash many migrations into one.
@@ -106,7 +109,8 @@ that has collections already, or to squash many migrations into one.
 
 To squash, delete the files you no longer want, write a snapshot, and run
 `npx nextbase migrate history-sync` to forget the applied migrations whose
-file is gone.
+file is gone. It refuses a folder without migrations, so a wrong `--dir`
+forgets nothing.
 
 `await nextbase.revertMigrations(count)` runs `down` of the last `count`
 applied migrations, newest first, each in its own transaction. A migration

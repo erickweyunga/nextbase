@@ -66,8 +66,8 @@ export async function migrationRun(
       async change(idOrName, edit) {
         const existing = await find(idOrName);
         const draft = structuredClone(existing) as unknown as CollectionDraft;
-        draft.fields = fieldList(draft.fields);
-        await edit(draft);
+        draft.fields = fieldList(draft.fields, existing.fields);
+        await edit(draft as Parameters<typeof edit>[0]);
         return updateCollection(
           tx,
           existing.id,
@@ -101,8 +101,11 @@ export async function migrationRun(
   };
 }
 
-/** The fields as an array with the by-id helpers generated migrations use. */
-function fieldList(fields: Field[]): FieldList {
+/**
+ * The fields as an array with the by-id helpers generated migrations use. A field of
+ * another database's id is this one's of the same name and type, such as `created`.
+ */
+function fieldList(fields: Field[], stored: readonly Field[]): FieldList {
   const list = [...fields] as FieldList;
   Object.defineProperties(list, {
     getById: {
@@ -115,7 +118,12 @@ function fieldList(fields: Field[]): FieldList {
       },
     },
     addAt: {
-      value: (index: number, field: Partial<Field>) => {
+      value: (index: number, input: Partial<Field>) => {
+        const twin =
+          typeof input.id === 'string' && !stored.some((f) => f.id === input.id)
+            ? stored.find((f) => f.name === input.name && f.type === input.type)
+            : undefined;
+        const field = twin ? { ...input, id: twin.id } : input;
         if (typeof field.id === 'string') list.removeById(field.id);
         list.splice(
           Math.min(Math.max(index, 0), list.length),

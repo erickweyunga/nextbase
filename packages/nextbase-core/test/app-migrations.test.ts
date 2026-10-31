@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClientError, type NextBaseClient } from '@nextbasejs/client';
@@ -178,6 +178,199 @@ describe("the app's migrations", () => {
       expect(
         (await admin.collections.getFullList()).map((c) => c.name),
       ).not.toContain('unsaved');
+    });
+  });
+
+  describe('review fixes', () => {
+    it('writes only what changed when the whole collection is sent back', async () => {
+      const t = await database();
+      const dir = await folder();
+      const { admin } = await dev(t, dir);
+      await admin.collections.create({
+        name: 'notes',
+        fields: [
+          { name: 'a', type: 'text' },
+          { name: 'b', type: 'text' },
+        ],
+        indexes: [{ name: 'notes_a', fields: [], unique: false }].slice(0, 0),
+      });
+      const stored = await admin.collections.getOne('notes');
+      await admin.collections.update('notes', {
+        indexes: [
+          {
+            name: 'notes_a',
+            fields: [stored.fields.find((f) => f.name === 'a')?.id ?? ''],
+            unique: false,
+          },
+        ],
+      });
+      const current = await admin.collections.getOne('notes');
+      // As an admin page sends it: everything, with one rule changed.
+      await admin.collections.update('notes', {
+        listRule: '',
+        fields: current.fields,
+        indexes: current.indexes,
+      });
+      const last = (await migrationNames(dir)).at(-1) as string;
+      const source = await readFile(join(dir, `${last}.ts`), 'utf8');
+      expect(source).toContain('c.listRule = "";');
+      expect(source).not.toContain('c.indexes');
+      expect(source).not.toContain('addAt');
+    });
+
+    it('replays snapshots and changes to superusers on a database whose default fields have other ids', async () => {
+      const t = await database();
+      const dir = await folder();
+      const { admin } = await dev(t, dir);
+      await admin.collections.create({ name: 'pages' });
+      const superusers = await admin.collections.getOne('_superusers');
+      await admin.collections.update('_superusers', {
+        fields: superusers.fields,
+        mfa: { enabled: true },
+      });
+      await admin.collections.update('_superusers', {
+        mfa: { duration: 600 },
+      });
+      const out: string[] = [];
+      const io: Io = {
+        env: {},
+        out: (l) => out.push(l),
+        err: (l) => out.push(l),
+        prompt: async () => '',
+      };
+      expect(
+        await run(
+          ['migrate', 'collections', '--database', t.url, '--dir', dir],
+          io,
+        ),
+      ).toBe(0);
+      const other = await database();
+      const replay = instance(other, await load(dir));
+      await replay.migrate();
+      const replayed = await replay
+        .client({ superuser: true })
+        .collections.getOne('_superusers');
+      expect(replayed.fields.map((f) => f.name).sort()).toEqual(
+        superusers.fields.map((f) => f.name).sort(),
+      );
+      expect((replayed as { mfa: { duration: number } }).mfa.duration).toBe(
+        600,
+      );
+    });
+
+    it('imports rules that refer to what later items add, and views over changed tables', async () => {
+      const t = await database();
+      const before: Migration = {
+        async up(app) {
+          await app.collections.create({
+            id: 'ppppppppppppppp',
+            name: 'posts',
+            fields: [
+              { name: 'title', type: 'text' },
+              { name: 'old', type: 'text' },
+            ],
+          });
+          await app.collections.create({
+            name: 'pv',
+            type: 'view',
+            viewQuery: 'SELECT id, old FROM nextbase.posts',
+          });
+        },
+      };
+      const files: Record<string, Migration> = {
+        '1700000001_before': before,
+        '1700000002_import': {
+          async up(app) {
+            await app.collections.import(
+              [
+                {
+                  id: 'uuuuuuuuuuuuuuu',
+                  name: 'users',
+                  type: 'auth',
+                  listRule: 'posts_via_author.title != ""',
+                },
+                {
+                  id: 'ppppppppppppppp',
+                  name: 'posts',
+                  listRule: '@collection.users.id != ""',
+                  fields: [
+                    { name: 'title', type: 'text' },
+                    {
+                      name: 'author',
+                      type: 'relation',
+                      collectionId: 'uuuuuuuuuuuuuuu',
+                    },
+                  ],
+                },
+                // By name, with another id, reading a column the import keeps.
+                {
+                  id: 'zzzzzzzzzzzzzzz',
+                  name: 'pv',
+                  type: 'view',
+                  viewQuery: 'SELECT id, title FROM nextbase.posts',
+                },
+              ],
+              { deleteMissing: true },
+            );
+          },
+        },
+      };
+      const nextbase = instance(t, { dir: 'x', files, automigrate: false });
+      await nextbase.migrate();
+      const admin = nextbase.client({ superuser: true });
+      expect((await admin.collections.getOne('users')).listRule).toBe(
+        'posts_via_author.title != ""',
+      );
+      expect(
+        (await admin.collections.getOne('posts')).fields.map((f) => f.name),
+      ).not.toContain('old');
+      expect(
+        (await admin.collections.getOne('pv')).fields.map((f) => f.name),
+      ).toContain('title');
+    });
+
+    it('refuses to forget the history of a folder without migrations', async () => {
+      const t = await database();
+      await instance(t, undefined).migrate();
+      await t.pool.query(
+        "INSERT INTO nextbase._app_migrations (name) VALUES ('1700000001_kept')",
+      );
+      const out: string[] = [];
+      const code = await run(
+        [
+          'migrate',
+          'history-sync',
+          '--database',
+          t.url,
+          '--dir',
+          await folder(),
+        ],
+        {
+          env: {},
+          out: (l) => out.push(l),
+          err: (l) => out.push(l),
+          prompt: async () => '',
+        },
+      );
+      expect(code).toBe(1);
+      expect(out.join('\n')).toMatch(/has no migrations/);
+      expect(await applied(t)).toEqual(['1700000001_kept']);
+    });
+
+    it('takes the file back when the index cannot be written', async () => {
+      const t = await database();
+      const dir = await folder();
+      const { admin } = await dev(t, dir);
+      await admin.collections.create({ name: 'first' });
+      await rm(join(dir, 'index.ts'));
+      await mkdir(join(dir, 'index.ts'));
+      const failed = await admin.collections
+        .create({ name: 'second' })
+        .catch((e: unknown) => e);
+      expect(failed).toBeInstanceOf(ClientError);
+      expect(
+        (await migrationNames(dir)).map((n) => n.replace(/^\d+_/, '')),
+      ).toEqual(['created_first']);
     });
   });
 
