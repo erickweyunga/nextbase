@@ -16,9 +16,8 @@ const REALTIME_LOCK = 7_163_845_122_002;
 
 interface Migration {
   /**
-   * Unique and permanent: never rename or remove a released migration. Change
-   * what one does only so it succeeds where it failed, since databases that
-   * applied it never run it again.
+   * Unique and permanent: never rename or remove a released migration. Change one only so
+   * it succeeds where it failed, since databases that applied it never run it again.
    */
   name: string;
   up(tx: Tx): Promise<void>;
@@ -344,9 +343,8 @@ const MIGRATIONS: readonly Migration[] = [
   {
     name: '0009_expiry_indexes',
     async up(tx) {
-      // Expired rows are deleted on every sign-in attempt, OAuth2 sign-in and
-      // texted code. These indexes let each delete find them without reading
-      // the whole table.
+      // Expired rows are deleted on every sign-in attempt, OAuth2 sign-in and texted code;
+      // these indexes let each delete find them without reading the whole table.
       await tx
         .newQuery(
           `CREATE INDEX "_auth_attempts_window_end" ON {{${table('_auth_attempts')}}} (window_end)`,
@@ -392,10 +390,8 @@ const MIGRATIONS: readonly Migration[] = [
           record         jsonb NOT NULL,
           PRIMARY KEY (transaction_id, seq)
         )`);
-      // Runs as the transaction commits, after its other work. The lock is
-      // held until the commit is done, so the next transaction takes the
-      // next position only once this one is visible: positions are taken,
-      // and become visible, in commit order.
+      // Runs as the transaction commits, holding the lock until the commit is done, so
+      // positions are taken, and become visible, in commit order.
       await exec(`
         CREATE FUNCTION {{${table('_realtime_commit')}}}() RETURNS trigger
         LANGUAGE plpgsql SET search_path = '' AS $$
@@ -449,9 +445,8 @@ const MIGRATIONS: readonly Migration[] = [
     async up(tx) {
       const exec = (sql: string): Promise<unknown> =>
         tx.newQuery(sql).execute();
-      // Requests per caller and rule in the current window. Unlogged: the
-      // counts are short-lived, and a crash only resets them. Free space in
-      // each page lets updates stay HOT, in place.
+      // Requests per caller and rule in the current window. Unlogged, since a crash only resets
+      // short-lived counts; free page space lets updates stay HOT, in place.
       await exec(`
         CREATE UNLOGGED TABLE {{${table('_rate_limits')}}} (
           key        text PRIMARY KEY,
@@ -575,14 +570,35 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: '0016_otps',
+    async up(tx) {
+      // Codes emailed for a sign-in without a password, kept hashed.
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table('_otps')}}} (
+             id_hash       text PRIMARY KEY,
+             collection_id text NOT NULL,
+             record_id     text NULL,
+             email         text NOT NULL,
+             code_hash     text NOT NULL,
+             attempts      integer NOT NULL DEFAULT 0,
+             expires       timestamptz NOT NULL
+           )`,
+        )
+        .execute();
+      await tx
+        .newQuery(
+          `CREATE INDEX "_otps_expires" ON {{${table('_otps')}}} (expires)`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**
- * Before a migration gives auth collections the system field `name`, moves a
- * user field of that name, which older releases allowed, out of the way:
- * column, definition, identity fields and the rules that use it all become
- * `user_<name>`. Names that differ only in case count, since field names are
- * unique regardless of case. Nothing is lost, and the log says what changed.
+ * Before auth collections get the system field `name`, moves a user field of that name
+ * (case-insensitively) to `user_<name>`: column, definition, identity fields and rules.
  */
 async function renameClashingUserFields(
   tx: Tx,

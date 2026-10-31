@@ -107,9 +107,8 @@ describe('round trips per request', () => {
   });
 
   /**
-   * A second NextBase, like another server process. Its first request is
-   * made here, because that one also loads the schema and checks that a
-   * superuser exists.
+   * A second NextBase, like another server process. Its first request, made
+   * here, also loads the schema and checks that a superuser exists.
    */
   const another = async () => {
     const { pool, trips } = counting(t.pool);
@@ -250,9 +249,8 @@ describe('round trips per request', () => {
       .client({ superuser: true })
       .collection('threads')
       .delete(thread?.id ?? '');
-    // The schema version, BEGIN, the thread's lock and COMMIT, plus a lookup
-    // per relation and a delete or update per level: the same for 3 replies
-    // as for 30.
+    // The schema version, BEGIN, the thread's lock, COMMIT, a lookup per relation
+    // and a write per level: the same for 3 replies as for 30.
     expect(trips()).toBe(11);
     expect((await admin.collection('replies').getList()).totalItems).toBe(1);
     expect((await admin.collection('likes').getList()).totalItems).toBe(0);

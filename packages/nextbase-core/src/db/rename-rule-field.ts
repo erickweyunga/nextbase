@@ -1,9 +1,7 @@
 import type { Collection } from '@nextbasejs/client';
 
-// For migrations: renames a field of some auth collections inside rules.
-// String literals are untouched, and a segment is renamed only where it
-// resolves to the field of a collection `owns` accepts; same-named fields
-// elsewhere are left alone. `@request.auth.<from>` is always renamed.
+// For migrations: renames an auth collection field inside rules, outside string literals and
+// only where a segment resolves to that field. `@request.auth.<from>` is always renamed.
 
 const IDENTIFIER =
   /@?[A-Za-z_][A-Za-z0-9_]*(:[A-Za-z_][A-Za-z0-9_]*)?(\.[A-Za-z0-9_]+(:[A-Za-z_][A-Za-z0-9_]*)?)*/y;

@@ -41,6 +41,7 @@ import {
   insertSuperuser,
   setupToken,
 } from './auth/superusers.ts';
+import type { ValidateSignIn } from './auth/validate.ts';
 import {
   type ClientIp,
   type ClientIpOption,
@@ -138,6 +139,11 @@ export type {
   SmsOptions,
   SmsTemplate,
 } from './auth/sms.ts';
+export type {
+  SignInCheck,
+  SignInRefusal,
+  ValidateSignIn,
+} from './auth/validate.ts';
 export type { ClientIpOption } from './client-ip.ts';
 export { ApiError } from './errors.ts';
 export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
@@ -202,11 +208,8 @@ export interface NextBaseOptions<C extends Collections = Collections> {
   /** Sends phone sign-in codes. Without it, production answers 400; dev logs them. */
   sms?: SmsOptions;
   /**
-   * Encrypts secrets NextBase must read back, such as authenticator apps'
-   * secrets: the base64 of 32 random bytes (`openssl rand -base64 32`). Pass
-   * several to rotate: the first encrypts, every one decrypts. Defaults to
-   * `NEXTBASE_SECRET_KEY`, which may list several separated by commas.
-   * Without one, authenticator apps cannot be set up.
+   * Encrypts secrets NextBase reads back: base64 of 32 random bytes. Pass several to
+   * rotate (first encrypts). Defaults to `NEXTBASE_SECRET_KEY`, comma-separated.
    */
   secretKey?: string | string[];
   /**
@@ -214,6 +217,11 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    * 5-character SHA-1 prefix is sent; accepts if unreachable). Defaults to false.
    */
   rejectBreachedPasswords?: boolean;
+  /**
+   * Decides who may sign up, link OAuth2, or sign in, by every method: return
+   * `{ error, message }` to refuse. OAuth2 sees the current profile at each sign-in.
+   */
+  validateSignIn?: ValidateSignIn;
   /**
    * OAuth2 providers by name: `google`, `github`, or any OpenID Connect `issuer`.
    * Requires `appUrl`; the redirect URI is `{appUrl origin}{basePath}/callback/{name}`.
@@ -225,9 +233,8 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    */
   waitUntil?: (promise: Promise<unknown>) => void;
   /**
-   * Code to run when records are created, updated or deleted, by collection
-   * name, or `"*"` for every collection: before the write is checked, in its
-   * transaction, or in the background after it is committed.
+   * Hooks on record writes by collection, or `"*"`: before the write is checked,
+   * in its transaction, or in the background after commit.
    */
   hooks?: RecordHooks<NoInfer<C>>;
   /**
@@ -236,23 +243,18 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    */
   realtime?: true | RealtimeOptions<NoInfer<keyof C & string>>;
   /**
-   * Keeps a log of HTTP requests and background failures in the database,
-   * for superusers to read through `/logs`. On by default, kept 7 days;
-   * `false` turns it off.
+   * Logs HTTP requests and background failures, for superusers via `/logs`.
+   * On by default, kept 7 days; `false` turns it off.
    */
   logs?: false | LogsOptions;
   /**
-   * Where the client's IP comes from, for logs (with `logs.ip`) and rate
-   * limits. Defaults to `"vercel"` on Vercel; elsewhere the IP is unknown
-   * unless you name the header your proxy sets. Never used to decide who is
-   * signed in.
+   * Where the client's IP comes from, for logs and rate limits. Defaults to
+   * `"vercel"` on Vercel; elsewhere unknown unless you name your proxy's header.
    */
   clientIp?: ClientIpOption;
   /**
-   * Limits HTTP requests per caller, counted in the database: signed-in
-   * callers per record, guests per IP from `clientIp`. On by default, with
-   * rules for sign-ins, creates, batches and every other route; `false`
-   * turns it off.
+   * Limits requests per caller, counted in the database: signed-in callers per
+   * record, guests per IP from `clientIp`. On by default; `false` turns it off.
    */
   rateLimits?: false | RateLimitsOptions;
 }
@@ -291,9 +293,8 @@ export interface ServerClientOptions {
 export type RouteHandler = (request: Request) => Promise<Response>;
 
 /**
- * NextBase in your app. `C` maps collection names to record types (e.g. the
- * `Collections` type from `nextbase typegen`), which types its hooks and
- * clients.
+ * NextBase in your app. `C` maps collection names to record types, such as
+ * `Collections` from `nextbase typegen`.
  */
 export class NextBase<C extends Collections = Collections> {
   readonly #basePath: string;
@@ -305,6 +306,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #sms: Sms;
   readonly #mfa: Mfa;
   readonly #rejectBreachedPasswords: boolean;
+  readonly #validateSignIn: ValidateSignIn | undefined;
   readonly #storage: Storage;
   readonly #thumbs: Thumbs;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
@@ -337,6 +339,13 @@ export class NextBase<C extends Collections = Collections> {
     this.#basePath = basePath.replace(/\/+$/, '');
     this.#database = options.database;
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
+    if (
+      options.validateSignIn !== undefined &&
+      typeof options.validateSignIn !== 'function'
+    ) {
+      throw new TypeError('validateSignIn must be a function.');
+    }
+    this.#validateSignIn = options.validateSignIn;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#waitUntil = keepingAlive(
@@ -437,10 +446,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Waits for the work running after responses, such as after hooks, emails
-   * and file deletes, then writes the log entries still waiting, including
-   * those of that work's failures. Call it before ending a pool you passed
-   * in, or before the process exits, so no entry is lost. Never rejects.
+   * Waits for work running after responses, then writes pending log entries. Call it
+   * before ending a pool you passed in or before exit, so no entry is lost.
    */
   async flush(): Promise<void> {
     for (;;) {
@@ -482,10 +489,8 @@ export class NextBase<C extends Collections = Collections> {
     );
   }
 
-  // The setup token goes to server logs, which only the owner can read, so a
-  // stranger who finds a fresh deployment first cannot claim it. The URL in
-  // the log comes from the options, never from the request: its Host header
-  // is the sender's to choose, and could send the token to their server.
+  // The setup token goes to server logs, which only the owner can read. The URL comes
+  // from the options, never from the spoofable Host header.
   async #announceSetup(db: DB): Promise<void> {
     if (this.#superuserExists) return;
     if (await hasSuperuser(db)) {
@@ -504,9 +509,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Removes a superuser's authenticator app and recovery codes, for one who
-   * lost them; they sign in with their password again. Returns false when
-   * no superuser has that email. For scripts; never expose it to untrusted input.
+   * Removes a superuser's authenticator app and recovery codes; false when no such
+   * email. For scripts; never expose it to untrusted input.
    */
   async resetSuperuserMfa(email: string): Promise<boolean> {
     const found = await this.#superuser(email);
@@ -516,9 +520,7 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Starts setting up a superuser's authenticator app without their
-   * password, for one who must take a second step and has no app yet.
-   * Undefined when no superuser has that email. Confirm it with
+   * Starts a superuser's authenticator app setup without their password; confirm with
    * `confirmSuperuserTotp`. For scripts; never expose it to untrusted input.
    */
   async startSuperuserTotp(email: string): Promise<TotpSetup | undefined> {
@@ -544,9 +546,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * The access token of a record's linked account at a provider with
-   * `storeTokens`, refreshed when due or when `refresh`, for server code
-   * that calls the provider's API, such as a scheduled job.
+   * The access token of a linked account at a provider with `storeTokens`, refreshed
+   * when due or when `refresh`, for server code that calls the provider's API.
    */
   async getAccessToken(
     collectionName: string,
@@ -570,10 +571,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Whether `password` is the record's current password, for server code
-   * that confirms a sensitive action of its own, as `delete` does. Counted
-   * against the account like a sign-in: too many wrong ones throw a 429.
-   * False for an auth collection's record that does not exist.
+   * Whether `password` is the record's current one, for confirming sensitive actions.
+   * Counted like a sign-in: too many wrong ones throw a 429.
    */
   async verifyPassword(
     collectionName: string,
@@ -613,9 +612,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * The verified session of a request's cookie or Bearer token, or null; for
-   * `proxy.ts`. Never extends the session or sets cookies. It hits the database,
-   * so match only routes that need it; `hasSessionCookie()` does not.
+   * The verified session of a request, or null, for `proxy.ts`. Never extends it or
+   * sets cookies; it hits the database, unlike `hasSessionCookie()`.
    */
   async getSession(request: Request): Promise<CurrentSession | null> {
     const token = sessionCookie(request) ?? bearerToken(request);
@@ -631,17 +629,13 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * An in-process client with the same routing, rules and output as HTTP. With
-   * `cookies`, it acts as that session's user; sign-in, sign-out and session
-   * renewal update the cookie where the page can set it, so not in server
-   * components. Create one per request; never share a signed-in client
-   * between users.
+   * An in-process client with the same routing, rules and output as HTTP. Create one
+   * per request; never share a signed-in client between users.
    */
   client(options: ServerClientOptions = {}): NextBaseClient<C> {
     const principal = options.superuser ? SUPERUSER : undefined;
-    // In-process requests take the page's scheme, so they read and set the
-    // cookie the browser sends. As for HTTP requests, production always uses
-    // the secure one.
+    // In-process requests take the page's scheme, so they read and set the cookie the
+    // browser sends.
     const secure =
       process.env.NODE_ENV === 'production' ||
       (options.secure ??
@@ -691,12 +685,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * The superuser client of an on hook, whose requests join its transaction.
-   * They run one at a time, in the order they were sent: each runs in a
-   * savepoint, and savepoints of one transaction nest, so two at once would
-   * undo or release each other's. Once the hook returns the client is closed,
-   * so no request outlasts the hook and writes after the transaction ended,
-   * or into the rest of the write.
+   * The superuser client of an on hook. Requests run one at a time, since savepoints
+   * of one transaction nest, and it closes once the hook returns.
    */
   #joined(join: Join): JoinedClient {
     let queue: Promise<unknown> = Promise.resolve();
@@ -738,9 +728,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * The superuser client of an after hook. Its requests run as any other
-   * server code's, but carry the hooks that led to them, so an after hook
-   * that writes the records that fire it stops as an on hook would.
+   * The superuser client of an after hook. Requests carry the hooks that led to them,
+   * so an after hook that fires itself stops as an on hook would.
    */
   #chained(chain: readonly string[]): NextBaseClient<Collections> {
     const client = new NextBaseClient<C>({
@@ -797,9 +786,8 @@ export class NextBase<C extends Collections = Collections> {
     this.#waitUntil(
       (async () => {
         await storage.delete(keys);
-        // Thumbnails after their files: one made meanwhile either is deleted
-        // here or finds its file gone and deletes itself. On disk, the
-        // record's directory goes with the last of them, once empty.
+        // Thumbnails after their files: one made meanwhile is either deleted here or finds
+        // its file gone and deletes itself.
         await Promise.all(
           keys
             .filter(hasThumbs)
@@ -829,9 +817,8 @@ export class NextBase<C extends Collections = Collections> {
   };
 
   /**
-   * Logs an HTTP request, unless it is a successful health check, admin
-   * page or read of the logs themselves, which would fill the log with
-   * itself.
+   * Skips successful health checks, admin pages and log reads, which would fill
+   * the log with itself.
    */
   #logRequest(
     request: Request,
@@ -876,9 +863,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * What a request is limited by. Its collection is looked up only when a
-   * rule could need it, in the cached schema if there is one: outdated by
-   * a rename at worst until the next request reads it.
+   * Looks up the collection only when a rule needs it, in the cached schema if any:
+   * outdated by a rename at worst until the next request reads it.
    */
   async #limited(
     db: DB,
@@ -912,6 +898,7 @@ export class NextBase<C extends Collections = Collections> {
       sms: this.#sms,
       oauth2: this.#oauth2,
       mfa: this.#mfa,
+      validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
       thumbs: this.#thumbs,
@@ -922,10 +909,8 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   /**
-   * Runs a request from an on hook's `e.nextbase` in a savepoint of the
-   * hook's transaction, as a superuser. A request that fails undoes only its
-   * own writes, so the hook may go on; one that succeeds leaves what follows
-   * its writes, such as after hooks, to the outer write's commit.
+   * Runs an on hook's `e.nextbase` request in a savepoint, as a superuser. A failure
+   * undoes only its own writes; after hooks wait for the outer write's commit.
    */
   async #joinRoute(
     route: Route,
@@ -967,11 +952,7 @@ export class NextBase<C extends Collections = Collections> {
   }
 
   // Only `client()` passes a `principal`; HTTP requests always use their own
-  // credentials. In-process requests write the session cookie through
-  // `writeCookie`, when the page can set cookies. Requests from an on hook's
-  // `e.nextbase` pass the hook's `join`, and those from an after hook's the
-  // `chain` of hooks that led to them. HTTP requests pass a `trace`, which
-  // learns what their log entry needs.
+  // credentials.
   async #dispatch(
     request: Request,
     {
@@ -1061,9 +1042,7 @@ export class NextBase<C extends Collections = Collections> {
           };
           let caller = principal;
           if (!caller) {
-            // With a token, this also reads the schema, in the same query as
-            // the session. In-process requests renew a cookie session only
-            // where the cookie can be written, so not in server components.
+            // In-process requests renew a cookie session only where the cookie can be written.
             // A stream's response is sent before it ends, so it renews none.
             const resolved = await resolvePrincipal(request, db, this.#schema, {
               extend: http && !stream,
@@ -1082,9 +1061,8 @@ export class NextBase<C extends Collections = Collections> {
             if (http) setCookie = resolved.setCookie;
             signedOut = http && !caller.record;
           }
-          // Once the caller is known and before the route's transaction
-          // opens, in its own autocommit statement, so refusals stay
-          // counted whatever the route would have done.
+          // Before the route's transaction, in its own autocommit statement, so refusals
+          // stay counted whatever the route would have done.
           const counted = caller;
           if (!matched.countsItself) await rateLimit(counted);
           // In-process requests come from the app itself, not from someone
@@ -1151,9 +1129,8 @@ export class NextBase<C extends Collections = Collections> {
       if (setCookie && !setsSession) {
         response.headers.append('set-cookie', setCookie);
       }
-      // A browser with a cookie session cannot see when it ends, since the
-      // cookie is HttpOnly and an ended one is just ignored. This tells it
-      // the request had no session.
+      // The cookie is HttpOnly and an ended one is just ignored, so this tells the
+      // browser the request had no session.
       if (signedOut && !setsSession) {
         response.headers.set(SESSION_HEADER, 'none');
       }
@@ -1211,12 +1188,8 @@ function quietRoute(method: string, route: string): boolean {
 }
 
 /**
- * No caching: responses depend on the cookie, which shared caches cannot see.
- * Setting a cookie does not stop a shared cache from storing the response
- * (RFC 9111, section 7.3), so one that sets a cookie, such as a public file
- * sent with a renewed session, is never stored: the cache would hand the
- * session to everyone. No sniffing: it could turn a JSON response into a page
- * that runs scripts.
+ * No caching: responses depend on the cookie, and a shared cache may store one
+ * that sets a cookie (RFC 9111 7.3). No sniffing: JSON could run as a page.
  */
 function api(response: Response): Response {
   if (response.headers.getSetCookie().length > 0) {
@@ -1317,9 +1290,8 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /**
- * `waitUntil` that never throws: the work is already running, so a
- * `waitUntil` that cannot take it, such as Next.js's `after()` outside a
- * request, only means it may be cut short on serverless.
+ * Never throws: the work is already running, so a `waitUntil` that cannot take
+ * it only means it may be cut short on serverless.
  */
 function keepingAlive(
   waitUntil: (promise: Promise<unknown>) => void,

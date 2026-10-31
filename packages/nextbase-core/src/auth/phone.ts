@@ -24,13 +24,10 @@ import {
   phoneKey,
   smsKey,
 } from './throttle.ts';
+import { checkSignIn, type ValidateSignIn } from './validate.ts';
 
-// Sign-in and verification with codes texted to a phone.
-// - Six-digit, single-use codes valid for 10 minutes.
-// - Wrong guesses are limited per phone across all its codes, so requesting a
-//   new code does not reset the count.
-// - Answers are the same whether or not an account exists.
-// - Texts per phone are capped, since each one costs money.
+// Wrong guesses are limited per phone across all its codes, so a new code does not
+// reset the count. Answers are the same whether or not an account exists.
 
 export interface PhoneContext {
   db: DB;
@@ -41,6 +38,7 @@ export interface PhoneContext {
   effects: Effects;
   hooks: Hooks;
   mfa: Mfa;
+  validateSignIn?: ValidateSignIn;
 }
 
 /** A code is accepted only for the purpose it was sent for. */
@@ -94,9 +92,8 @@ async function sendCode(
 }
 
 /**
- * Texts a new sign-in code to a record's verified phone and returns it, for
- * a second sign-in step that keeps the code itself. Texts per phone are
- * capped as for every code.
+ * Texts a new sign-in code to a record's verified phone and returns it, for a
+ * second sign-in step that keeps the code itself.
  */
 export async function textSignInCode(
   ctx: Pick<PhoneContext, 'db' | 'sms'>,
@@ -133,6 +130,12 @@ export async function authWithPhoneCode(
   await consumeCode(ctx.db, collection, phone, 'signIn', codeInput);
   const existing = await findByPhone(ctx.db, collection, phone);
   if (existing) {
+    await checkSignIn(ctx.validateSignIn, {
+      action: 'sign-in',
+      method: 'phoneCode',
+      collection: collection.name,
+      record: existing,
+    });
     if (existing.phoneVerified !== true) {
       await privilegedUpdate(ctx, collection, existing, {
         phoneVerified: true,
@@ -149,6 +152,12 @@ export async function authWithPhoneCode(
     password,
     passwordConfirm: password,
   };
+  await checkSignIn(ctx.validateSignIn, {
+    action: 'sign-up',
+    method: 'phoneCode',
+    collection: collection.name,
+    record: input,
+  });
   await newRecord(
     {
       db: ctx.db,
@@ -194,9 +203,8 @@ export async function confirmPasswordResetByPhone(
 }
 
 /**
- * Setting or changing the phone needs the current password, and with an
- * authenticator app a code from it: a stolen session cannot move the
- * account to the thief's phone.
+ * Changing the phone needs the current password and any authenticator code, so a
+ * stolen session cannot move the account to the thief's phone.
  */
 export async function requestPhoneVerification(
   ctx: PhoneContext,

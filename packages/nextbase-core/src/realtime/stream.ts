@@ -38,9 +38,8 @@ export interface RealtimeOptions<N extends string = string> {
   /** The collections that send events, by name, or `true` for all of them. */
   collections: true | readonly N[];
   /**
-   * A direct connection string to listen for new events on, not one through
-   * a transaction pooler, which cannot listen. Defaults to the `database`
-   * string or `DATABASE_URL`.
+   * A direct connection string to listen on, not a transaction pooler, which cannot listen.
+   * Defaults to the `database` string or `DATABASE_URL`.
    */
   listenUrl?: string;
   /**
@@ -167,9 +166,8 @@ export class Realtime {
   }
 
   /**
-   * A write logged events: deletes those too old to keep, at most once per
-   * `purgeMs` per instance, in the background. Events come only from writes,
-   * so the log stays small even with no stream open.
+   * A write logged events: deletes those too old, at most once per `purgeMs` per instance, in the
+   * background. Events come only from writes, so the log stays small even with no stream open.
    */
   logged(): void {
     const now = Date.now();
@@ -230,13 +228,17 @@ export class Realtime {
         );
       }
     });
-    const weight = topics.reduce(
-      (sum, topic) => sum + 1 + relations(topic.query.get('expand')),
-      0,
-    );
-    if (weight > MAX_TOPIC_WEIGHT) {
-      throw new ApiError(
-        400,
+    // Only the topics past the limit are refused, so the client keeps the rest.
+    let weight = 0;
+    const heavy: number[] = [];
+    topics.forEach((topic, i) => {
+      weight += 1 + relations(topic.query.get('expand'));
+      if (weight > MAX_TOPIC_WEIGHT) heavy.push(i);
+    });
+    if (heavy.length > 0) {
+      throw overLimit(
+        heavy,
+        'realtime_topics_too_heavy',
         `The topics weigh ${weight}, more than ${MAX_TOPIC_WEIGHT}: each counts 1, and 1 more for each relation it expands.`,
       );
     }
@@ -306,9 +308,8 @@ export class Realtime {
   }
 
   /**
-   * Each stream costs a little work per write, so their number is capped:
-   * per instance, for signed-out callers together, who cannot be told
-   * apart, and per signed-in record.
+   * Each stream costs a little work per write, so their number is capped per instance, for
+   * signed-out callers together (who cannot be told apart), and per signed-in record.
    */
   #checkLimits(caller: string): void {
     let open = 0;
@@ -381,17 +382,30 @@ interface TopicInput {
   fields?: string;
 }
 
+/** Refuses the topics at `indexes`, as a refused topic is. */
+function overLimit(indexes: number[], code: string, message: string): ApiError {
+  return new ApiError(400, message, {
+    topics: Object.fromEntries(indexes.map((i) => [i, { code, message }])),
+  });
+}
+
 // `{ topics: [{ collection, id?, filter?, expand?, fields? }] }`
 function parseTopics(body: Record<string, unknown>): TopicInput[] {
   const { topics } = body;
-  if (
-    !Array.isArray(topics) ||
-    topics.length === 0 ||
-    topics.length > MAX_TOPICS
-  ) {
+  if (!Array.isArray(topics) || topics.length === 0) {
     throw new ApiError(
       400,
       `topics must be an array of 1 to ${MAX_TOPICS} topics.`,
+    );
+  }
+  if (topics.length > MAX_TOPICS) {
+    throw overLimit(
+      Array.from(
+        { length: topics.length - MAX_TOPICS },
+        (_, i) => MAX_TOPICS + i,
+      ),
+      'realtime_too_many_topics',
+      `There are ${topics.length} topics, more than ${MAX_TOPICS}.`,
     );
   }
   return topics.map((topic: unknown, i) => {
@@ -435,10 +449,8 @@ function topicContext(
 }
 
 /**
- * Errors a stored record causes when read back, such as a value that no
- * longer fits a field changed since it was written: Postgres's data
- * exceptions and type mismatches. The page is skipped with a reset rather
- * than failing the stream on every reconnect.
+ * Errors a stored record causes when read back, such as a value that no longer fits a changed field.
+ * The page is skipped with a reset rather than failing the stream on every reconnect.
  */
 function unreadable(error: unknown): boolean {
   const { code } = error as { code?: unknown };
@@ -450,11 +462,8 @@ function unreadable(error: unknown): boolean {
 const encoder = new TextEncoder();
 
 /**
- * One subscriber's stream. It follows the hub, which reads each new page of
- * events once for every caught-up stream, or reads pages after its own
- * cursor until it catches up. It checks their records against its topics
- * and sends those it may see. Between pages it holds no transaction and no
- * connection.
+ * One subscriber's stream: follows the hub, or reads pages after its own cursor until caught up,
+ * and sends what its topics may see. Between pages it holds no transaction and no connection.
  */
 class Stream implements HubStream {
   readonly body: ReadableStream<Uint8Array>;
@@ -709,10 +718,8 @@ class Stream implements HubStream {
         messages = await this.#messagesFor(events);
       } catch (error) {
         if (!unreadable(error)) throw error;
-        // One record that cannot be read back, such as one written before
-        // its field changed, or that today's rule cannot read, fails the
-        // whole query: each is tried alone, and only those that fail are
-        // left out.
+        // One record that cannot be read back, or that today's rule cannot read, fails the whole
+        // query, so each is tried alone and only those that fail are left out.
         console.warn(
           '[nextbase] realtime: left out events whose records cannot be read back, such as after a field changed:',
           error,
@@ -842,9 +849,8 @@ class Stream implements HubStream {
   }
 
   /**
-   * Reads the session again: ends the stream when it ended, and otherwise
-   * checks rules from now on with the signed-in record as it is now. False
-   * when the stream ended.
+   * Reads the session again: ends the stream if the session ended, else checks rules from now on
+   * with the signed-in record as it is now. False when the stream ended.
    */
   async #checkSession(): Promise<boolean> {
     if (this.#done || this.session === undefined) return !this.#done;
@@ -883,10 +889,8 @@ class Stream implements HubStream {
   }
 
   /**
-   * Keeps proxies from closing an idle stream, and moves the client's
-   * cursor on. Ids are signed for the signed-in record, so before sending
-   * a new one it reads the session, and the id matches the record as it
-   * is now.
+   * Keeps proxies from closing an idle stream and moves the client's cursor on. Ids are signed for
+   * the signed-in record, so it reads the session first and the id matches the record as it is now.
    */
   async #heartbeat(): Promise<void> {
     if (

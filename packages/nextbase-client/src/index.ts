@@ -96,6 +96,7 @@ export type {
   JsonField,
   MfaConfig,
   NumberField,
+  OtpConfig,
   PasswordField,
   PhoneField,
   RelationField,
@@ -220,9 +221,8 @@ export class NextBaseClient<
   }
 
   /**
-   * The current session and record, or null when signed out. Updates the auth
-   * store, so call it on startup with cookie sessions, which scripts cannot read.
-   * The store is left as it is if it changed meanwhile, as by a sign-in.
+   * The current session, or null. Updates the auth store, so call it on startup with
+   * cookie sessions, which scripts cannot read; a store changed meanwhile is kept.
    */
   async getSession<T extends RecordModel = RecordModel>(
     options?: SendOptions,
@@ -239,10 +239,8 @@ export class NextBaseClient<
   }
 
   /**
-   * Ends the session on the server, removes its cookie, and clears the auth
-   * store, unless a sign-in started meanwhile has saved a new session.
-   * Ending a cookie impersonation signs the superuser back in, and the store
-   * then holds their record.
+   * Clears the auth store unless a sign-in started meanwhile saved a new session.
+   * Ending a cookie impersonation signs the superuser back in.
    */
   async signOut(options?: SendOptions): Promise<void> {
     const apply = authSync(this.authStore).intent();
@@ -338,9 +336,8 @@ export class NextBaseClient<
       );
     }
 
-    // A cookie session that ended. Scripts cannot read its cookie, so the
-    // server says the request had no session. Skipped, as below, if the store
-    // changed while the request was in flight.
+    // A cookie session that ended: scripts cannot read its cookie, so the server
+    // says so. Skipped if the store changed while the request was in flight.
     if (
       unchanged() &&
       token === '' &&

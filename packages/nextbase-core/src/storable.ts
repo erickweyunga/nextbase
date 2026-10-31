@@ -5,9 +5,8 @@ export function hasNul(value: string): boolean {
 }
 
 /**
- * Why Postgres cannot store `value` as sent, if it cannot. Besides NULs, that
- * is a lone UTF-16 surrogate, which has no UTF-8 encoding: text would be
- * stored with U+FFFD in its place, and jsonb rejects it.
+ * Why Postgres cannot store `value`, if it cannot. A lone surrogate has no UTF-8
+ * form: text would store U+FFFD instead, and jsonb rejects it.
  */
 export function unstorableText(value: string): string | undefined {
   if (hasNul(value)) return 'Cannot contain NUL characters.';
@@ -22,17 +21,14 @@ export function isStorableTime(time: number): boolean {
   return Number.isFinite(time) && time >= MIN_TIME;
 }
 
-// An ISO 8601 date, with an optional time and zone. The time may follow a
-// space instead of `T`, as Postgres writes it, and the zone may be `+0300` or
-// `+03` as well as `+03:00`.
+// ISO 8601 with optional time and zone. The time may follow a space, as Postgres
+// writes it, and the zone may be `+0300` or `+03` as well as `+03:00`.
 const ISO_8601 =
   /^([+-]\d{6}|\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d:\d\d(?::\d\d(?:\.\d+)?)?)(Z|[+-]\d\d(?::?\d\d)?)?)?$/i;
 
 /**
- * Parses an ISO 8601 date, and NaN for anything else. A date and time with no
- * zone is read as UTC. `Date.parse` would read it, and the other formats it
- * guesses at, such as `1/2/2024`, in the server's local time, so the same
- * input would mean a different moment on each server.
+ * Parses ISO 8601, or NaN. No zone means UTC: `Date.parse` would use the server's
+ * local time, so the same input would mean a different moment on each server.
  */
 export function parseDate(text: string): number {
   const m = ISO_8601.exec(text);

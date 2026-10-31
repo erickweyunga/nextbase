@@ -1,0 +1,55 @@
+---
+title: Email code
+---
+
+# Email code
+
+Users sign in with a code emailed to them, with no password. It needs
+[email sending](/docs/guides/auth/email), and the collection's `otp` option:
+
+```ts
+await superuser.collections.update("users", { otp: { enabled: true } });
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `otp.enabled` | Turns it on. Off by default. |
+| `otp.duration` | Seconds a code works, 60 to 3600. Default 180. |
+
+## Sign in
+
+Ask for a code, then sign in with it:
+
+```ts
+const users = nb.collection("users");
+const otpId = await users.requestOtp("ann@example.com");
+// The user types the six-digit code from the email.
+const { record } = await users.signInWithOtp(otpId, code, { cookie: true });
+```
+
+`requestOtp` answers an id whether or not the account exists, so it reveals
+nothing about who has signed up: an unknown email gets an id no code
+matches. Keep the id on the page that asks for the code; the code alone
+signs in nothing.
+
+A code works once, until `otp.duration` runs out. Five wrong codes end its
+id, and wrong codes are capped per address, the same for an address no
+account has, so guessing reveals nothing either. Emails to one address are
+capped as for every account email. Signing in counts the email as verified,
+and, as the [verification link](/docs/guides/auth/verification) does, drops
+providers linked before anyone proved it. A code sent before the account's
+email changed signs in nothing.
+
+It signs in existing accounts. A new user signs up first, for example with
+a password, or through [OAuth2](/docs/guides/auth/oauth2).
+
+## With multi-factor sign-in
+
+An email code is the `emailCode` method. With
+[multi-factor sign-in](/docs/guides/auth/mfa) it is the first step, and the
+second is another method, such as the password; once the account has an
+authenticator app, that app. A password reset by email within the last day
+does not pair with an email code, as both prove the same inbox.
+
+The email is the `signInCode` kind, which
+[templates](/docs/guides/auth/email#custom-templates) can replace.

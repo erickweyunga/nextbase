@@ -71,14 +71,13 @@ function parseJsonObject(bytes: Buffer): Record<string, unknown> {
 /** Larger files use direct uploads to the bucket. */
 const MAX_MULTIPART_BODY = 32 * 1024 * 1024;
 /**
- * As in Django, PHP (max_input_vars) and formidable. Without a limit, 32 MiB
- * of tiny parts takes the parser seconds; long lists can go in `@jsonPayload`.
+ * Without a limit, 32 MiB of tiny parts takes the parser seconds.
+ * Long lists can go in `@jsonPayload`.
  */
 const MAX_MULTIPART_PARTS = 1000;
 
-// JSON, or form data where repeated parts become a list and `@jsonPayload`
-// holds typed values. The size and part limits are enforced while streaming,
-// before anything is parsed.
+// JSON, or form data where repeated parts become a list and `@jsonPayload` holds
+// typed values. Size and part limits are enforced while streaming, before parsing.
 export async function readRecordBody(
   request: Request,
 ): Promise<Record<string, unknown>> {
@@ -148,10 +147,8 @@ export async function readRecordBody(
 }
 
 /**
- * Counts a multipart body's delimiters (RFC 2046, section 5.1.1: CRLF, two
- * hyphens and the boundary) across the chunks it is given, so far. The body
- * may begin with a delimiter without the CRLF, so one is assumed before it.
- * Without a boundary, it counts nothing, and parsing fails anyway.
+ * Counts multipart delimiters (RFC 2046 5.1.1) across chunks so far. The body may
+ * start with a delimiter lacking the CRLF, so one is assumed before it.
  */
 function partCounter(type: string): (chunk: Uint8Array) => number {
   const boundary = /;\s*boundary=(?:"([^"]+)"|([^\s;]+))/i.exec(type);

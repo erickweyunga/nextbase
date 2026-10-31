@@ -3,11 +3,8 @@ import type { Principal } from '../auth/principal.ts';
 import type { Cursor } from './events.ts';
 
 /**
- * Event ids are cursors signed for one caller and one schema version:
- * `{position}.{seq}.{schemaVersion}.{signature}`. Only the caller a stream
- * sent an id to can resume from it, and only while its signed-in record and
- * the collections are as they were: resuming replays past events against
- * today's rules, which may now let the caller see what they once hid.
+ * Event ids are cursors signed for one caller and schema version: `{position}.{seq}.{schemaVersion}.{signature}`.
+ * Resuming needs the same caller, record and collections, since replays use today's rules, which may reveal more.
  */
 export class CursorSigner {
   readonly #key: Buffer;
@@ -58,9 +55,8 @@ export class CursorSigner {
 }
 
 /**
- * Who a cursor is for: the session and the signed-in record as it is, so a
- * changed record, such as one given a new role, cannot resume; superuser
- * server code; or anyone signed out.
+ * Who a cursor is for: the session and the signed-in record as it is, so a changed record (given a
+ * new role, say) cannot resume; superuser server code; or anyone signed out.
  */
 function binding(principal: Principal): string {
   if (principal.session && principal.record) {

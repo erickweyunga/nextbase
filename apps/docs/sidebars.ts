@@ -44,6 +44,7 @@ const sidebars: SidebarsConfig = {
         doc('guides/auth/email-password', 'Email & Password', 'mail'),
         doc('guides/auth/oauth2', 'OAuth2', 'key'),
         doc('guides/auth/phone', 'Phone', 'phone'),
+        doc('guides/auth/email-code', 'Email code', 'mail'),
         doc('guides/auth/mfa', 'Multi-factor', 'key'),
         doc('guides/auth/impersonation', 'Impersonation', 'user'),
       ],

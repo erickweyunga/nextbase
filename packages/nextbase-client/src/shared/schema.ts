@@ -88,10 +88,8 @@ export interface FileField extends FieldBase<'file'> {
   /** Served only with a file token to callers that pass the view rule. */
   protected: boolean;
   /**
-   * Thumbnail sizes images may be requested in, such as `300x200`: `WxH`
-   * crops from the centre, `WxHt` and `WxHb` from the top or bottom, `WxHf`
-   * fits inside, `0xH` and `Wx0` keep the aspect ratio. `100x100` is always
-   * allowed.
+   * Allowed thumbnail sizes: `WxH` crops centre, `WxHt`/`WxHb` top/bottom, `WxHf` fits,
+   * `0xH`/`Wx0` keep the aspect ratio. `100x100` is always allowed.
    */
   thumbs: string[];
 }
@@ -177,10 +175,8 @@ export interface AuthCollection extends CollectionBase {
   /** Sign-in with SMS codes; records may then have a phone instead of an email. */
   phoneSignIn: boolean;
   /**
-   * Links a provider account to an existing account with the same email when
-   * both verified it, at the first sign-in with it. `false`: such a sign-in
-   * answers `account_exists`, and the owner links the provider from their
-   * account. Never done for an account that takes a second sign-in step.
+   * Links a provider sign-in to an account with the same verified email, never one with
+   * a second step. `false`: it answers `account_exists` and the owner links it instead.
    */
   implicitLinking: boolean;
   tokens: Record<TokenType, TokenConfig>;
@@ -188,13 +184,20 @@ export interface AuthCollection extends CollectionBase {
   mfa: MfaConfig;
   /** When the email must be verified, and when the verification email goes out. */
   emailVerification: EmailVerificationConfig;
+  /** Sign-in by a code emailed to the account, with no password. */
+  otp: OtpConfig;
+}
+
+export interface OtpConfig {
+  enabled: boolean;
+  /** Seconds a code works, 60 to 3600. */
+  duration: number;
 }
 
 export interface EmailVerificationConfig {
   /**
-   * Accounts with an unverified email cannot sign in. A sign-up with an
-   * email that is already registered answers as a new one does, and the
-   * owner is told.
+   * Unverified accounts cannot sign in. A sign-up with a registered email answers
+   * as a new one does, and the owner is told.
    */
   required: boolean;
   /** Sends the verification email when an account signs up. */

@@ -32,11 +32,8 @@ export class ApiError extends Error {
 }
 
 /**
- * When Postgres refused an index entry for not fitting in a page, the index
- * it names, if any; otherwise undefined. Postgres says so in one of two
- * messages, and names the index only in the second:
- * `index row requires 9016 bytes, maximum size is 8191`, or
- * `index row size 2720 exceeds btree version 4 maximum 2704 for index "x"`.
+ * When Postgres refused an index entry too large for a page, the index it names.
+ * Only one of its two "index row ..." messages names the index.
  */
 export function indexRowTooLarge(
   error: unknown,
@@ -51,7 +48,6 @@ export function indexRowTooLarge(
   return { index: /for index "(.+)"$/.exec(message)?.[1] };
 }
 
-/** The message of a record write that failed. */
 export function writeFailed(creating: boolean): string {
   return creating
     ? 'Failed to create the record.'

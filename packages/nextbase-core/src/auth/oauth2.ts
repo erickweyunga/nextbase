@@ -10,20 +10,13 @@ import type { SecretKeys } from './secret-keys.ts';
 import { isSecure, readCookie } from './sessions.ts';
 import { spendToken } from './used-tokens.ts';
 
-// OAuth2 / OpenID Connect sign-in (protocol details via oauth4webapi):
-// 1. start() redirects to the provider with a PKCE challenge and a random
-//    `state`, also kept in a short-lived cookie.
-// 2. consumeState() matches the returned `state` to the cookie, so only the
-//    browser that started a sign-in can finish it.
-// 3. identify() exchanges the code with the PKCE verifier, checks the ID
-//    token's nonce, and reads the account.
-// Redirects are built from the configured app URL only.
+// OAuth2 / OpenID Connect sign-in with PKCE. The returned `state` must match a cookie,
+// so only the browser that started a sign-in can finish it.
 
 export interface OAuth2ProviderOptions {
   /**
-   * From the provider's OAuth app. Several, such as your web, iOS and
-   * Android apps', accept ID tokens issued to any of them; the first is the
-   * one the browser sign-in uses.
+   * From the provider's OAuth app. ID tokens issued to any of several are accepted;
+   * the first is the one the browser sign-in uses.
    */
   clientId: string | string[];
   clientSecret: string;
@@ -48,10 +41,8 @@ export interface OAuth2ProviderOptions {
    */
   storeTokens?: boolean;
   /**
-   * The fields of an account this provider creates, from its profile: the
-   * ID token's claims, or GitHub's user. `data` is what the app passed to the
-   * sign-in, untrusted. Sign-in fields (email, password, phone, verification)
-   * are never taken from it; the create rule and field checks still apply.
+   * The fields of an account this provider creates, from its profile and the untrusted
+   * `data` the app passed. Sign-in fields such as email and password are never taken.
    */
   mapProfile?: (
     profile: Record<string, unknown>,
@@ -377,9 +368,8 @@ export class OAuth2 {
   }
 
   /**
-   * Keeps a linked account's tokens, at a provider with `storeTokens`; a
-   * refresh token left out keeps the last. At another provider, it clears
-   * any it kept before `storeTokens` was turned off.
+   * Keeps a linked account's tokens with `storeTokens`; a refresh token left out keeps
+   * the last. Without `storeTokens`, it clears any kept before.
    */
   async saveTokens(
     q: Builder,
@@ -429,11 +419,8 @@ export class OAuth2 {
   }
 
   /**
-   * The access token of a record's linked account, refreshed first when it
-   * expires within a minute, or when `refresh` and it was not refreshed in
-   * the last few seconds. One request claims the refresh for a while; the
-   * others wait for its result. No connection or lock is held while the
-   * provider answers.
+   * A linked account's access token, refreshed first when it expires within a minute or
+   * on `refresh`. One request claims the refresh; no lock is held while the provider answers.
    */
   async accessToken(
     db: DB,
@@ -463,6 +450,7 @@ export class OAuth2 {
       const [row] = await db
         .newQuery(
           `SELECT access_token, refresh_token, token_expires, scopes,
+             tokens_saved::text AS saved,
              tokens_saved > now() - make_interval(secs => ${FORCED_REFRESH_GAP}) AS fresh,
              token_expires < now() + make_interval(secs => ${REFRESH_AHEAD}) AS due,
              refreshing_until > now() AS claimed
@@ -493,16 +481,18 @@ export class OAuth2 {
     const wanted = (r: TokenRow): boolean =>
       r.due === true || (refresh && r.fresh !== true);
     for (let waited = 0; wanted(row); waited += CLAIM_POLL_MS) {
-      // One request refreshes; the rest wait for it, a few seconds at most.
+      // One request refreshes while the tokens are still those it read; the rest
+      // wait for it, a few seconds at most.
       const [claimed] = await db
         .newQuery(
           `UPDATE {{${table('_linked_accounts')}}}
            SET refreshing_until = now() + make_interval(secs => ${CLAIM_SECONDS})
            WHERE ${where} AND access_token IS NOT NULL
              AND (refreshing_until IS NULL OR refreshing_until <= now())
+             AND tokens_saved::text IS NOT DISTINCT FROM {:saved}
            RETURNING refresh_token`,
         )
-        .bind(keys)
+        .bind({ ...keys, saved: row.saved })
         .all<{ refresh_token: string | null }>();
       if (claimed) {
         if (claimed.refresh_token === null) {
@@ -620,10 +610,8 @@ export class OAuth2 {
   }
 
   /**
-   * The account of an ID token a native app got from the provider's own
-   * SDK, such as Google's or Apple's: signed by the provider, issued to one
-   * of its client ids, unexpired, and accepted once. With `nonce`, the token
-   * must carry it, as is or as its SHA-256 hex, which Apple's SDK sends.
+   * The account of an ID token from a provider's native SDK, accepted once. With `nonce`,
+   * the token must carry it as is or as its SHA-256 hex, which Apple's SDK sends.
    */
   async verifyIdToken(
     q: Builder,
@@ -675,9 +663,8 @@ export class OAuth2 {
         invalid('The ID token was issued for another sign-in.');
       }
     }
-    // Once: a token seen elsewhere, such as in a log, cannot sign in again.
-    // Keyed by what the signature covers: the signature's own last
-    // character has spare bits, so other spellings of it verify too.
+    // Keyed by what the signature covers, not the signature: its last character has
+    // spare bits, so other spellings of it verify too.
     const signed = token.split('.').slice(0, 2).join('.');
     const id = `id-token:${server.issuer}:${claims.jti ?? stateHash(signed)}`;
     if (!(await spendToken(q, id, claims.exp))) {
@@ -760,6 +747,8 @@ const CLAIM_POLL_MS = 200;
 
 interface TokenRow {
   access_token: string | null;
+  /** When the tokens were saved, as text, to compare exactly. */
+  saved: string | null;
   refresh_token: string | null;
   token_expires: Date | null;
   scopes: string[] | null;
@@ -903,9 +892,8 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
 }
 
 /**
- * Parameters for a provider's authorization page: strings, none of those
- * NextBase sets. Throws a TypeError naming `what`, for options, or an
- * ApiError on `field`, for a request's.
+ * Parameters for a provider's authorization page, none of those NextBase sets. Throws a
+ * TypeError naming `what` for options, or an ApiError on `field` for a request's.
  */
 export function checkParams(
   value: unknown,

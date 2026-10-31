@@ -22,22 +22,21 @@ import {
   type OAuth2ProviderOptions,
 } from './oauth2.ts';
 import { setPasswordOrigin } from './password-origins.ts';
+import {
+  checkSignIn,
+  type SignInAction,
+  type ValidateSignIn,
+} from './validate.ts';
 
-// Sign-ins find their record by the provider's permanent account id, never by
-// email. A new provider account is auto-linked to an existing record by email
-// only if both sides verified that email, and the owner is told; anything
-// weaker hands your account to whoever registers your email at a provider.
-// An email nobody proved is never trusted either: a provider's unverified
-// email creates no account, a record with an unverified email links no
-// provider, and links made before the owner proved the email are dropped
-// then. Otherwise someone could set up an account under your email before
-// you sign up, and keep a way into it after you take it over.
+// Sign-ins find their record by the provider's account id, never by email. Auto-linking
+// by email needs both sides to have verified it, or anyone could claim your account.
 
 export interface AccountContext {
   db: DB;
   schema: Schema;
   effects: Effects;
   hooks: Hooks;
+  validateSignIn?: ValidateSignIn;
 }
 
 export interface Account {
@@ -46,12 +45,6 @@ export interface Account {
   linkedTo?: string;
 }
 
-/**
- * New records go through the collection's create rule, as a sign-up does.
- * The work that follows its writes, such as after hooks, joins `ctx.effects`
- * only once they are committed: a failed sign-in is answered with a
- * redirect, not an error, so the request would otherwise still do it.
- */
 /** How a provider makes accounts: see `OAuth2ProviderOptions`. */
 export interface SignUpPolicy {
   name: string;
@@ -61,6 +54,10 @@ export interface SignUpPolicy {
   data: Record<string, unknown> | null;
 }
 
+/**
+ * Effects such as after hooks join `ctx.effects` only once committed: a failed
+ * sign-in is a redirect, not an error, so the request would still run them.
+ */
 export async function accountFor(
   ctx: AccountContext,
   collection: AuthCollection,
@@ -94,10 +91,23 @@ async function findAccount(
   linkRecordId: string | null,
 ): Promise<Account> {
   const provider = policy.name;
+  // The app's check, with what the provider says about the account now.
+  const check = (
+    action: SignInAction,
+    record: Record<string, unknown>,
+  ): Promise<void> =>
+    checkSignIn(ctx.validateSignIn, {
+      action,
+      method: 'oauth2',
+      collection: collection.name,
+      record,
+      oauth2: { provider, profile: identity.profile },
+    });
   const linked = await findLinked(tx, collection, provider, identity.id);
   if (linkRecordId !== null) {
     if (linked) {
       if (linked.id !== linkRecordId) throw alreadyLinked();
+      await check('link', linked);
       return { record: linked };
     }
     const record = await findRecord(tx, collection, linkRecordId);
@@ -112,10 +122,14 @@ async function findAccount(
         "Verify this account's email before linking a provider.",
       );
     }
+    await check('link', record);
     await link(tx, collection, record.id as string, provider, identity.id);
     return { record, linkedTo: record.email as string };
   }
-  if (linked) return { record: linked };
+  if (linked) {
+    await check('sign-in', linked);
+    return { record: linked };
+  }
   if (identity.email === undefined) {
     throw new OAuth2Error(
       'email_required',
@@ -130,9 +144,8 @@ async function findAccount(
   }
   const existing = await findByEmail(tx, collection, identity.email);
   if (existing) {
-    // A provider linked here would be a second factor proven by the same
-    // inbox as an email code or reset password, so an account with a second
-    // step links one only from inside, after re-entering its password.
+    // A provider linked here would be proven by the same inbox as an email code,
+    // so an account with a second step links one only from inside.
     if (
       existing.emailVerified !== true ||
       !collection.implicitLinking ||
@@ -148,6 +161,7 @@ async function findAccount(
         'An account with this email exists. Sign in to it, then link this provider.',
       );
     }
+    await check('link', existing);
     await link(tx, collection, existing.id as string, provider, identity.id);
     return { record: existing, linkedTo: existing.email as string };
   }
@@ -157,7 +171,13 @@ async function findAccount(
       'This provider signs in existing accounts only. Sign up another way first.',
     );
   }
-  const record = await signUp({ ...ctx, tx }, collection, identity, policy);
+  const record = await signUp(
+    { ...ctx, tx },
+    collection,
+    identity,
+    policy,
+    (values) => check('sign-up', values),
+  );
   await link(tx, collection, record.id as string, provider, identity.id);
   return { record };
 }
@@ -282,7 +302,6 @@ async function link(
   if (inserted.length === 0) throw alreadyLinked();
 }
 
-// The random password is never shown; the owner can set one via password reset.
 /** Sign-in fields NextBase sets itself, never from a provider's profile. */
 const SIGN_IN_FIELDS = new Set([
   'id',
@@ -301,6 +320,7 @@ async function signUp(
   collection: AuthCollection,
   identity: Identity,
   policy: SignUpPolicy,
+  check: (values: Record<string, unknown>) => Promise<void>,
 ): Promise<Row> {
   const id = newId();
   const password = randomPassword(collection);
@@ -318,6 +338,7 @@ async function signUp(
     password,
     passwordConfirm: password,
   };
+  await check(input);
   const { tx, db: pool, schema, effects, hooks } = ctx;
   try {
     await newRecord(

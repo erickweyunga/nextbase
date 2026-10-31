@@ -9,10 +9,8 @@ import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
 import { isMultiple } from '../schema/fields.ts';
 import type { Presentation, Storage } from './storage.ts';
 
-// A file field holds generated file names; the files live in storage at
-// `<collection id>/<record id>/<name>`. Files arrive with the record as form
-// data, or as `upload:<id>` tokens of direct uploads to the bucket, which
-// keep large files out of size-capped serverless requests.
+// A file field holds generated names; files live at `<collection id>/<record id>/<name>`.
+// Direct uploads (`upload:<id>` tokens) keep large files out of size-capped requests.
 
 export const UPLOAD_PREFIX = 'upload:';
 
@@ -67,9 +65,8 @@ function isDetectable(type: string): boolean {
 }
 
 /**
- * The type from the file's bytes; the browser's label counts only for
- * formats without recognizable bytes (plain text, CSV...), which are served
- * with `nosniff` and, unless safe, as downloads.
+ * The type from the file's bytes; the browser's label counts only for formats without
+ * recognizable bytes (plain text, CSV...), served with `nosniff` and, unless safe, as downloads.
  */
 async function detectType(
   head: Uint8Array,
@@ -143,9 +140,8 @@ export interface FileProblem {
 }
 
 /**
- * Reads the new files a write brings: form data files, and direct uploads
- * named by `upload:<id>` tokens. Runs before the write's transaction, so
- * reading them holds no lock and no connection.
+ * Reads a write's new files: form data files and `upload:<id>` direct uploads. Runs before
+ * the write's transaction, so reading them holds no lock and no connection.
  */
 export async function readNewFiles(
   q: Builder,
@@ -186,9 +182,8 @@ export async function readNewFiles(
 }
 
 /**
- * Puts a write's new files in storage under the record, before its
- * transaction starts. Each goes in `effects.newFiles`, so it is deleted
- * again if the write fails.
+ * Stores a write's new files under the record before its transaction starts. Each goes in
+ * `effects.newFiles`, so it is deleted again if the write fails.
  */
 export async function storeNewFiles(
   storage: Storage,
@@ -224,10 +219,8 @@ export function fileKeys(name: string): {
 }
 
 /**
- * The field's new value from `field` (replace, listing names to keep),
- * `+field`/`field+` (prepend/append) and `field-` (remove names), with the
- * new files `readNewFiles` read. Undefined when the input does not touch the
- * field.
+ * The field's new value from `field` (replace, keeping listed names), `+field`/`field+`
+ * (prepend/append) and `field-` (remove names). Undefined when the input does not touch it.
  */
 export function prepareFileField(
   field: FileField,
@@ -316,9 +309,8 @@ export function fileNames(field: FileField, value: unknown): string[] {
 }
 
 /**
- * Called in the write's transaction once the write is allowed, after
- * `storeNewFiles` stored the new files. Each direct upload is claimed, so it
- * makes one file only. Removed files are deleted once the write succeeds.
+ * Runs in the write's transaction once it is allowed, after `storeNewFiles`. Each direct upload
+ * is claimed so it makes one file only; removed files are deleted once the write succeeds.
  */
 export async function claimFiles(
   q: Builder,

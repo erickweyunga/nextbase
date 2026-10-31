@@ -25,11 +25,8 @@ const parseTimestamp = TYPES.getTypeParser(TIMESTAMPTZ_OID) as TextParser;
 const parseFloat8 = TYPES.getTypeParser(FLOAT8_OID) as TextParser;
 
 /**
- * Turns a record read with `to_json(row)` into the same object a normal
- * select returns. JSON already keeps the columns in order and most values
- * as they are. Two kinds differ: timestamps arrive as strings such as
- * `2026-01-02T03:04:05+00:00`, and NaN or Infinity as strings such as
- * `"NaN"`. Those are parsed with the same parsers a select uses.
+ * Turns a record read with `to_json(row)` into what a normal select returns: timestamps
+ * and NaN/Infinity arrive as strings, so they get the parsers a select uses.
  */
 export function decodeRecordJson(collection: Collection, json: Row): Row {
   const record: Row = { ...json };

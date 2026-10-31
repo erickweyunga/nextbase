@@ -16,11 +16,8 @@ import type { Schema } from '../schema/cache.ts';
 import { serverRecord } from './serialize.ts';
 
 /**
- * What made a write: `request` for the records API, from HTTP, `client()` or
- * a batch; `system` for NextBase's own writes, such as a sign-up through
- * OAuth2 or a phone code, or a verified email; `cascade` for records deleted
- * by a cascading relation, or changed because a deleted record was taken out
- * of their relation.
+ * What made a write: `request` for the records API (HTTP, `client()` or a batch); `system` for
+ * NextBase's own writes, such as an OAuth2 sign-up; `cascade` for changes a deleted record causes.
  */
 export type HookSource = 'request' | 'system' | 'cascade';
 
@@ -30,9 +27,8 @@ export type HookAuthCollection = Omit<AuthCollection, 'tokens'> & {
 };
 
 /**
- * A collection as hooks see it, frozen: changing it would change the
- * collection for every request. Auth collections leave out their token
- * secrets.
+ * A collection as hooks see it, frozen, since changing it would change it for every request.
+ * Auth collections leave out their token secrets.
  */
 export type HookCollection =
   | Exclude<Collection, AuthCollection>
@@ -345,9 +341,8 @@ export class Hooks {
   }
 
   /**
-   * Logs the realtime event of a written record and runs its on hooks, in
-   * its transaction, then queues its after hooks for once the request's
-   * changes are committed.
+   * Logs the realtime event of a written record and runs its on hooks, in its transaction,
+   * then queues its after hooks for once the request's changes are committed.
    */
   async wrote(
     tx: Tx,
@@ -362,9 +357,8 @@ export class Hooks {
   }
 
   /**
-   * `wrote` for several records of one collection, in order. Without on
-   * hooks, which may write records of their own in between, their events
-   * are logged with one statement.
+   * `wrote` for several records of one collection, in order. Without on hooks, which may write
+   * records of their own in between, their events are logged with one statement.
    */
   async wroteAll(
     tx: Tx,
@@ -422,9 +416,8 @@ export class Hooks {
       record: serverRecord(collection, record),
       ...(original && { original: serverRecord(collection, original) }),
     });
-    // Queued before the on hooks run, so after hooks run in the order of the
-    // writes, this one before those its on hooks make. If an on hook fails,
-    // the write fails, and what it queued is dropped with it.
+    // Queued before the on hooks run, so after hooks run in write order, this one before those its
+    // on hooks make. If an on hook fails, the write fails and what it queued is dropped with it.
     if (after.length > 0) {
       // Taken now: later writes of the request may change the record.
       const e = event();

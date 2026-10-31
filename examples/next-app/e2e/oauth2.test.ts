@@ -4,9 +4,8 @@ import { type Account, type Provider, startProvider } from './provider.ts';
 import { type Server, startServer } from './server.ts';
 import { firstSuperuser } from './setup.ts';
 
-// OAuth2 sign-in through the built example app, as a browser does it: the
-// cookies, redirects and pages Next.js serves, against an OpenID Connect
-// provider over HTTPS.
+// OAuth2 sign-in through the built example app as a browser does it, against
+// an OpenID Connect provider over HTTPS.
 
 const PASSWORD = 'password 123 456';
 

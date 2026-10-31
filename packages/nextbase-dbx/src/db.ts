@@ -29,9 +29,8 @@ export interface TxOptions {
   /** Only affects serializable read-only transactions. */
   deferrable?: boolean;
   /**
-   * How long each statement in the transaction may run, in milliseconds.
-   * It is set with `SET LOCAL`, so it ends with the transaction. 0 means no
-   * limit.
+   * Per-statement limit in milliseconds, set with `SET LOCAL` so it ends with the
+   * transaction. 0 means no limit.
    */
   statementTimeout?: number;
   /**
@@ -57,10 +56,8 @@ export class TxDoneError extends Error {
 }
 
 /**
- * Thrown by `commit()` when Postgres rolled the transaction back instead,
- * because a statement in it failed and the error was caught. A nested
- * transaction whose callback resolves after such a failure is rolled back to
- * its savepoint and throws it too.
+ * Thrown by `commit()` when Postgres rolled back instead because a statement failed
+ * and its error was caught. A nested transaction in that state throws it too.
  */
 export class TxAbortedError extends Error {
   constructor(options?: ErrorOptions) {
@@ -183,9 +180,8 @@ export class Tx extends Builder {
   }
 
   /**
-   * Runs `fn` in a savepoint. On reject only its changes are rolled back and the
-   * outer transaction stays usable. The same happens when `fn` resolves after a
-   * statement in it failed, which then throws TxAbortedError.
+   * Runs `fn` in a savepoint; on reject only its changes roll back. If `fn` resolves
+   * after a statement in it failed, it also rolls back and throws TxAbortedError.
    */
   async transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const name = `dbx_savepoint_${++this.#savepoints}`;
@@ -211,9 +207,8 @@ export class Tx extends Builder {
     try {
       await this.newQuery(`RELEASE SAVEPOINT ${name}`).execute();
     } catch (releaseError) {
-      // A failed statement whose error `fn` caught leaves the transaction
-      // aborted, so RELEASE fails too. Rolling back to the savepoint undoes
-      // `fn` and makes the outer transaction usable again.
+      // A caught failure leaves the transaction aborted, so RELEASE would fail.
+      // Rolling back to the savepoint makes the outer transaction usable again.
       try {
         await this.newQuery(`ROLLBACK TO SAVEPOINT ${name}`).execute();
         await this.newQuery(`RELEASE SAVEPOINT ${name}`).execute();

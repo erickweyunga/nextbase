@@ -206,10 +206,8 @@ export function draftWrite(
     }
     if (!changed || value === INVALID) continue;
     if (validate(field, value, issues)) {
-      // Only managers change a record's email, phone and whether they are
-      // verified, or NextBase itself once a link or a code proved them. So
-      // nobody can take someone else's address or number. A new record may
-      // still set its own email, which is then unverified.
+      // Only managers, or NextBase once a link or code proved them, change email, phone and whether they are
+      // verified, so nobody can take someone else's address. A new record may set its own, unverified email.
       if (
         collection.type === 'auth' &&
         field.system &&
@@ -469,9 +467,8 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
 
 const MAX_JSON_DEPTH = 64;
 
-// Strings Postgres cannot store, anywhere in the value, and deep JSON, which
-// it rejects. An explicit stack keeps hostile nesting from overflowing the
-// call stack.
+// Strings Postgres cannot store, anywhere in the value, and deep JSON, which it rejects.
+// An explicit stack keeps hostile nesting from overflowing the call stack.
 function unstorable(value: unknown): string | undefined {
   const stack: [unknown, number][] = [[value, 0]];
   for (let next = stack.pop(); next; next = stack.pop()) {
@@ -717,9 +714,8 @@ function passwordProblem(
 }
 
 /**
- * Checks that the records the drafts' relation fields point at exist, and
- * locks them until commit, so a concurrent delete cannot leave a dangling
- * reference. Takes one query per target collection, however many drafts.
+ * Checks that relation targets exist and locks them until commit, so a concurrent delete cannot
+ * leave a dangling reference. One query per target collection, however many drafts.
  */
 export async function checkRelations(
   q: Builder,

@@ -5,12 +5,8 @@ import {
   randomBytes,
 } from 'node:crypto';
 
-// AES-256-GCM for secrets NextBase must read back, such as TOTP secrets.
-// - A random 12-byte IV per value.
-// - The additional data binds a value to its row, so ciphertext copied to
-//   another row does not decrypt.
-// - Stored as `v1.<key id>.<iv>.<ciphertext>.<tag>`, base64url parts. The key
-//   id is a hash of the key, so keys can be reordered or retired freely.
+// AES-256-GCM as `v1.<key id>.<iv>.<ciphertext>.<tag>`. The AAD binds a value to
+// its row, and the key id is a hash so keys can be reordered or retired freely.
 
 const VERSION = 'v1';
 const KEY_BYTES = 32;

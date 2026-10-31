@@ -41,8 +41,45 @@ is a filter the request must match.
   OpenID Connect provider.
 - [Phone](/docs/guides/auth/phone): sign in with a code texted to a phone, or
   with a phone and password.
+- [Email code](/docs/guides/auth/email-code): sign in with a code emailed to
+  the account, with no password.
 - [Multi-factor](/docs/guides/auth/mfa): a second step after any of these,
   with an authenticator app, a recovery code, or a code sent by email or text.
+
+## Decide who may sign in
+
+`validateSignIn` runs at every sign-up, OAuth2 link and sign-in, by every
+method, and refuses by answering an error code:
+
+```ts title="lib/nextbase.ts"
+export const nextbase = new NextBase({
+  validateSignIn({ action, method, collection, record, oauth2 }) {
+    // Your provider's email, as it is now, or the account's.
+    const email = String(oauth2?.profile.email ?? record.email ?? "");
+    if (collection === "users" && !email.endsWith("@example.com")) {
+      return { error: "email_not_allowed", message: "Use your example.com email." };
+    }
+  },
+});
+```
+
+| Field | Description |
+| ----- | ----------- |
+| `action` | `sign-up`, `link` (an OAuth2 provider linked to an existing account by its email) or `sign-in`. Each starts a session, so a check on existing accounts handles `link` and `sign-in`. |
+| `method` | `password`, `oauth2`, `phoneCode` or `emailCode`. |
+| `collection` | The auth collection's name. |
+| `record` | The account as stored; for a sign-up, the values it is to be created with. Never the password or `tokenKey`. |
+| `oauth2` | For OAuth2: `provider`, and `profile`, what the provider says about the account at this sign-in. |
+
+A refusal answers `403` with the message, and the code in
+`data.account.code`; an OAuth2 sign-in in the browser comes back with
+`?error=` and the code. Accounts callers create through the records API, or
+in a batch, are checked as sign-ups too; a superuser's are not. A sign-up is
+refused before anything is written, and
+the same whether or not the email is registered, so it reveals nothing. The
+second step of a [multi-factor](/docs/guides/auth/mfa) sign-in and session
+refreshes are not checked again. For rules that only read the stored account,
+the collection's `authRule` does the same.
 
 ## Account emails
 

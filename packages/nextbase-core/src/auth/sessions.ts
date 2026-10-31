@@ -159,10 +159,8 @@ interface SessionRow {
 }
 
 /**
- * Reads the schema version, the session and the signed-in record with a
- * single query. The record can be in any auth collection, so the query has
- * one branch per auth collection in `schema`. It always returns one row, so
- * the schema version comes back even when the token is unknown.
+ * Reads the schema version, session and record in one query, with one branch per auth
+ * collection. It always returns a row, so the version comes back for an unknown token.
  */
 async function readSession(
   db: DB,
@@ -223,11 +221,8 @@ async function readSessions(
 }
 
 /**
- * Finds the token's session and returns it with the current schema. This
- * takes one query. When the schema changed since it was cached, the schema
- * is reloaded and the record is read again, which takes a few more. With
- * `extend`, a session due for it is extended; a function is first given the
- * new end, and the session is extended only if it returns true.
+ * Finds the token's session with the current schema, in one query unless the schema
+ * changed. An `extend` function gets the new end and allows the extension by returning true.
  */
 export async function findSession(
   db: DB,
@@ -341,10 +336,8 @@ export async function sessionById(
 }
 
 /**
- * The session of a row `readSessions` read, if it is still valid: its
- * record exists in an auth collection and its key matches the record's.
- * An impersonation session also needs its superuser, with the key they had
- * when it started, so deleting them or changing their password ends it.
+ * The session of a row `readSessions` read, if its key still matches the record's.
+ * An impersonation session also needs its superuser with the key they had at its start.
  */
 async function activeSession(
   db: DB,
@@ -639,9 +632,8 @@ export interface OriginPolicy {
 }
 
 /**
- * Browsers attach the cookie to requests other sites make, so writes must come
- * from this host or a trusted one (`Sec-Fetch-Site`, else `Origin`). Hosts,
- * not full origins, are compared since proxies often change the scheme.
+ * Browsers attach the cookie to other sites' requests, so writes must come from this
+ * host or a trusted one. Hosts are compared, not origins, as proxies change the scheme.
  */
 export function checkSameOrigin(request: Request, policy: OriginPolicy): void {
   const site = request.headers.get('sec-fetch-site');

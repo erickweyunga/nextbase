@@ -74,41 +74,37 @@ All subscriptions of a client share one streamed request. Subscribing or
 unsubscribing starts it over, so subscribe together where you can, such as
 in one effect.
 
-In React, subscribe in an effect and unsubscribe in its cleanup:
+Load in `onReset`: it is called once the subscription is live, so a record
+written while the list loads is not missed. Writes made between
+`subscribe()` and that call are not sent.
+
+## In React
+
+`@nextbasejs/react` keeps a list, or one record, current for you:
 
 ```tsx title="app/rooms/[id]/messages.tsx"
 "use client";
-import { NextBaseClient, type RecordModel } from "@nextbasejs/client";
-import { useEffect, useState } from "react";
+import type { ListResult, RecordModel } from "@nextbasejs/client";
+import { useNextBase, useRecords } from "@nextbasejs/react";
 
-const nb = new NextBaseClient();
-
-export function Messages({ room }: { room: string }) {
-  const [messages, setMessages] = useState<RecordModel[]>([]);
-
-  useEffect(() => {
-    const filter = nb.filter("room = {:room}", { room });
-    const load = () =>
-      nb
-        .collection("messages")
-        .getFullList({ filter, sort: "created" })
-        .then(setMessages);
-    const unsubscribe = nb.collection("messages").subscribe(
-      "*",
-      ({ action, record }) =>
-        setMessages((list) => {
-          const others = list.filter((m) => m.id !== record.id);
-          return action === "delete" ? others : [...others, record];
-        }),
-      // Loads once the subscription is live, and again after a reset.
-      { filter, onReset: load },
-    );
-    return unsubscribe;
-  }, [room]);
-
+export function Messages({
+  room,
+  initial,
+}: {
+  room: string;
+  initial?: ListResult<RecordModel>;
+}) {
+  const nb = useNextBase();
+  const { data, isPending, error } = useRecords("messages", {
+    filter: nb.filter("room = {:room}", { room }),
+    sort: "created",
+    initial,
+  });
+  if (error) return <p>{error.message}</p>;
+  if (isPending) return <p>Loading...</p>;
   return (
     <ul>
-      {messages.map((m) => (
+      {data?.items.map((m) => (
         <li key={m.id}>{String(m.text)}</li>
       ))}
     </ul>
@@ -116,10 +112,46 @@ export function Messages({ room }: { room: string }) {
 }
 ```
 
-Load in `onReset`, as above. It is called once the subscription is live,
-so a record written while the list loads is not missed: a record that comes
-both ways replaces itself. Writes made between `subscribe()` and that call
-are not sent.
+`useRecords(collection, options)` takes the options of `getList`
+(`filter`, `sort`, `expand`, `fields`, `page`, `perPage`, `skipTotal`) and
+returns `{ data, isPending, error, refetch }`, `data` being the page. It
+subscribes first, then loads once the subscription is live, and again after
+a [reset](#resets). An update or delete changes the page at once; then any
+change in the collection loads the page again, changes close together once,
+so its filter, order and count stay right, even for a record updated out of
+the filter, which sends no event of the filter's own. On a busy collection,
+that is a load per subscriber per burst of changes.
+
+`useRecord(collection, id, options)` keeps one record current, with
+`expand` and `fields`; `data` is `null` once it is deleted, or when the
+caller may not view it. Its events carry the record, so it does not load
+again.
+
+Both take `initial`, what a server component loaded, for the first render,
+and `enabled: false` to wait, such as for an id that is not known yet:
+
+```tsx title="app/rooms/[id]/page.tsx"
+import { nb } from "@/lib/nextbase";
+import { Messages } from "./messages";
+
+export default async function Room({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const client = await nb();
+  const initial = await client.collection("messages").getList(1, 30, {
+    filter: client.filter("room = {:room}", { room: id }),
+    sort: "created",
+  });
+  return <Messages room={id} initial={initial} />;
+}
+```
+
+The server component loads with the same filter and sort as the hook, so
+the page renders at once. The hook still loads it again once its
+subscription is live, so no change made in between is missed.
+
+A client's subscriptions share one stream, and identical ones share a topic.
+Past the limits on [streams](#limits), the newest subscriptions are refused
+with their `error` and the others go on.
 
 ## What subscribers get
 
@@ -203,9 +235,10 @@ connection breaks before that.
   realtime collections, this caps throughput. Other writes are not affected.
 - **Streams.** An instance serves at most 1000 streams, of which callers who
   are not signed in may hold 500 together, and a signed-in record at most
-  10. A stream's topics may weigh at most 100: each counts 1, and 1 more for
-  each relation it expands. Past these, the server answers 503 or 429, and
-  the client tries again later.
+  10. Past these, the server answers 503 or 429, and the client tries again
+  later. A stream has at most 50 topics, weighing at most 100: each counts
+  1, and 1 more for each relation it expands. Past these, the topics over
+  the limit are refused, and the client ends just their subscriptions.
 
 ## Deploying
 

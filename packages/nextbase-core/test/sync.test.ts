@@ -96,6 +96,7 @@ describe('migrate', () => {
       '0013_impersonation',
       '0014_mfa',
       '0015_oauth2',
+      '0016_otps',
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

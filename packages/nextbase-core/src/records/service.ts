@@ -21,6 +21,7 @@ import {
 import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
 import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
+import { checkSignIn, type ValidateSignIn } from '../auth/validate.ts';
 import { table } from '../db/system.ts';
 import type { Effects } from '../effects.ts';
 import { ApiError, indexRowTooLarge, writeFailed } from '../errors.ts';
@@ -67,9 +68,8 @@ export interface RecordsContext {
   effects?: Effects;
   storage?: Storage;
   /**
-   * The collections, by name, that a batch wrote before this write. Its
-   * checks before the transaction would not see those writes, so the checks
-   * that read them are left to the transaction.
+   * The collections, by name, a batch wrote before this write. Checks before the transaction would
+   * not see those writes, so the checks that read them are left to the transaction.
    */
   written?: ReadonlySet<string>;
   /** The app's record hooks; writes that run some need `effects`. */
@@ -86,12 +86,13 @@ export interface RecordsContext {
   deletionConfirmed?: boolean;
   /** What a delete's body brought to confirm the caller's own account goes. */
   deletionCredentials?: { password: unknown; mfaCode: unknown };
+  /** The app's check of sign-ups, for auth records callers create. */
+  validateSignIn?: ValidateSignIn;
 }
 
 /**
- * The context of an update NextBase makes itself, such as marking an email
- * verified once a link proved it. It has superuser rights. A signed-in
- * `principal` is kept, so its own session survives a new token key.
+ * An update NextBase makes itself with superuser rights, such as marking an email verified.
+ * A signed-in `principal` is kept, so its own session survives a new token key.
  */
 export function systemContext(
   ctx: {
@@ -137,11 +138,8 @@ function hookScope(
 }
 
 /**
- * The record as stored, for a before hook: a plain read, which locks
- * nothing. It must also match `rule`, the write's rule, so a hook never runs
- * for, nor tells anything to, a caller the rule refuses. Throws `notFound`,
- * as the write would, when there is no such record. The transaction checks
- * the rule again either way.
+ * The stored record for a before hook, read without a lock. It must match the write's `rule`, so a
+ * hook never runs for a caller the rule refuses; throws `notFound` as the write would.
  */
 async function storedRecord(
   ctx: RecordsContext,
@@ -218,9 +216,8 @@ async function list(
     .orderBy(...sortColumns(ctx, collection, query.get('sort') ?? ''))
     .limit(perPage)
     .offset((page - 1) * perPage);
-  // The total is read in the same query as the page, as an extra column.
-  // Postgres counts once for the query, not once per row. Field names start
-  // with a letter, so `_total` cannot clash with a field.
+  // The total is read with the page as an extra column, which Postgres counts once per query.
+  // Field names start with a letter, so `_total` cannot clash with a field.
   if (counted) {
     select.andSelect(`(${count.sql}) AS ${TOTAL}`).andBind(count.params);
   }
@@ -298,11 +295,8 @@ export function outputRecords(
 }
 
 /**
- * The condition the records a realtime subscriber gets must meet: the list
- * rule and the `filter` of `query`, as a list request checks them, or the
- * view rule and the id, for one record. Throws as such a request would: 403
- * for a null rule, 400 for a bad filter, `expand` or `fields`, 404 for an id
- * no record can have.
+ * The condition a realtime subscriber's records must meet: the list rule and `filter`, or the view rule
+ * and id. Throws as such a request would: 403 for a null rule, 400 for a bad query, 404 for a bad id.
  */
 export function subscriptionCondition(
   ctx: RecordsContext,
@@ -362,6 +356,15 @@ export async function planNewRecord(
 ): Promise<PlannedCreate> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
+  // An account a caller creates is a sign-up, whatever route it came by.
+  if (collection.type === 'auth' && !ctx.principal.superuser) {
+    await checkSignIn(ctx.validateSignIn, {
+      action: 'sign-up',
+      method: 'password',
+      collection: collection.name,
+      record: input,
+    });
+  }
   if (ctx.hooks?.hasBefore(collection, 'create')) {
     input = { ...input };
     await ctx.hooks.before(hookScope(ctx), collection, 'create', {
@@ -383,11 +386,8 @@ export async function planNewRecord(
 }
 
 /**
- * Checks the create rule with a plain read before the slow work of a create,
- * such as storing its files or hashing its password, so a caller the rule
- * refuses causes none of it. Only a create that passes its own checks is
- * checked here; the rest fail on those first. The transaction checks the rule
- * again either way.
+ * Checks the create rule with a plain read before slow work such as storing files or hashing a
+ * password, so a caller the rule refuses causes none of it. The transaction checks it again.
  */
 async function checkCreateRuleFirst(
   ctx: RecordsContext,
@@ -465,12 +465,8 @@ export class CreateFailed extends Error {
 }
 
 /**
- * Splits consecutive creates into runs that `applyCreates` can do together.
- * A run is one collection and one URL query, so the records come back the
- * same way. A create starts a new run when it points at a record created
- * earlier in the run, which does not exist until the run is inserted. A
- * create whose rules read its own collection runs alone, as when each is done
- * in turn, since those rules could see records the run inserts.
+ * Splits consecutive creates into runs `applyCreates` does together: one collection and URL query each.
+ * A create pointing at a record of the run starts a new run; one whose rules read its collection runs alone.
  */
 export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
   const runs: PlannedCreate[][] = [];
@@ -498,13 +494,8 @@ export function createRuns(plans: readonly PlannedCreate[]): PlannedCreate[][] {
 }
 
 /**
- * False when the create or view rule reads the collection being created,
- * through `@collection`, a back-relation or a relation path. A run writes
- * only its own collection, and the batch's earlier writes are done before it
- * starts, so only such a rule could see records the run inserts. False too
- * when the collection has on or after hooks: each create's hooks then run
- * before the next create, and see its record as stored, as in turn. Realtime
- * events alone do not split runs: they are logged together.
+ * False when the create or view rule reads the collection being created, since only such a rule could
+ * see the run's records, or when it has on or after hooks, which see each create's record in turn.
  */
 function runsWithOthers({ ctx, collection }: PlannedCreate): boolean {
   if (ctx.hooks?.hasOnOrAfter(collection, 'create')) return false;
@@ -537,12 +528,8 @@ function referencesAny(
 }
 
 /**
- * Finishes creates of one collection in one transaction, with a few queries
- * for all of them: one per relation target, one for the create rule, the
- * insert, and one to read them back. Each create is checked as it would be
- * alone: its own problems first, then the create rule. Throws `CreateFailed`
- * for the first that fails. Returns each record, or undefined when the caller
- * may not view it.
+ * Finishes creates of one collection in one transaction, with a few queries for all. Each is checked as
+ * alone (its own problems, then the create rule); throws `CreateFailed` for the first that fails.
  */
 export async function applyCreates(
   tx: Tx,
@@ -557,9 +544,8 @@ export async function applyCreates(
       passwordHash: plan.passwordHash,
     }),
   );
-  // The create rule is checked before the relations, and before anything is
-  // inserted, so a caller it refuses learns nothing about other records,
-  // either from a missing related record or from a constraint error.
+  // The create rule is checked before relations and inserts, so a caller it refuses learns nothing
+  // about other records from a missing related record or a constraint error.
   const refused = new Set<number>();
   if (!ctx.principal.superuser && collection.createRule !== '') {
     // Compiled once when no row's own body can change it.
@@ -646,11 +632,8 @@ export async function applyCreates(
 }
 
 /**
- * One INSERT for all rows, in chunks under Postgres's 65535 parameters per
- * statement. When an index refuses a row, because it duplicates a unique
- * value or is too long to index, Postgres does not say which row, so the
- * rows are then inserted one at a time to find the first that fails. With
- * `returning`, returns the stored rows in order; otherwise none.
+ * One INSERT for all rows, chunked under Postgres's 65535 parameters. Postgres does not say which row
+ * an index refused, so the rows are then inserted one at a time to find it.
  */
 async function insertRows(
   tx: Tx,
@@ -868,9 +851,8 @@ export async function planUpdateRecord(
           to: existing.email as string,
         });
       }
-      // How it was set, for MFA: a reset by email or text does not pair
-      // with a code sent to the same place for a while. Kept while MFA is
-      // off too, so turning it on just after a reset still holds.
+      // How it was set, for MFA: a reset by email or text does not pair with a code sent to the same
+      // place for a while. Kept while MFA is off, so turning it on just after a reset still holds.
       if (
         password &&
         prepared.values[password.name] !== undefined &&
@@ -985,11 +967,8 @@ export async function planDeleteRecord(
 const FRESH_SESSION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Deleting one's own account needs more than a session, which may be stolen:
- * the current password in `password`, or a session signed in within the last
- * day; with an authenticator app, a code from it in `mfaCode` too. An emailed
- * link (`request-account-deletion`) is the third way. Deletes by superusers,
- * or of other records, are left to the delete rule alone.
+ * Deleting one's own account needs more than a possibly stolen session: the password, a sign-in within
+ * a day, or an emailed link, plus an app code with MFA. Other deletes are left to the delete rule.
  */
 async function checkOwnDeletion(
   ctx: RecordsContext,
@@ -1059,9 +1038,8 @@ async function readFiles(
 }
 
 /**
- * Stores a write's new files under the record, before its transaction
- * starts, so storing holds neither a lock nor a connection. Files the write
- * turns out not to keep, because it fails, are deleted again.
+ * Stores a write's new files under the record before its transaction, so storing holds no lock
+ * or connection. Files of a write that fails are deleted again.
  */
 async function storeFiles(
   ctx: RecordsContext,
@@ -1106,9 +1084,8 @@ function checkId(collection: Collection, id: string): void {
   if (!valid) throw new ApiError(404, 'Record not found.');
 }
 
-// View queries run as the view role, whose privileges limit what they can read.
-// A read for a hook's `e.nextbase` may share the transaction of the write it
-// runs for, which goes on afterwards with its own role.
+// View queries run as the view role, whose privileges limit what they read. A hook's `e.nextbase` read
+// may share the write's transaction, which goes on afterwards with its own role.
 function reading<T>(
   ctx: RecordsContext,
   collection: Collection,
@@ -1140,12 +1117,8 @@ async function oldPasswordMatches(
 }
 
 /**
- * Checks the update rule with plain reads before the transaction starts, so
- * a caller it refuses causes no slow work, such as checking a password or
- * storing files. Throws `notFound` when it refuses. A rule that reads
- * `@request.body` is checked with the body the transaction would check,
- * drafted from the stored record. Returns false when the check is left to
- * the transaction, which checks the rule again either way.
+ * Checks the update rule with plain reads before the transaction, so a refused caller causes no slow work
+ * and gets `notFound`. False leaves the check to the transaction, which checks the rule again anyway.
  */
 async function checkUpdateRuleFirst(
   ctx: RecordsContext,
@@ -1194,9 +1167,8 @@ async function checkUpdateRuleFirst(
 }
 
 /**
- * Whether a read of `collection` with `condition`, made before the
- * transaction, sees what it would see in it: none of the collections it
- * reads was written earlier in the batch.
+ * Whether a read of `collection` with `condition` before the transaction sees what it would inside:
+ * none of the collections it reads was written earlier in the batch.
  */
 function seesEveryWrite(
   ctx: RecordsContext,
@@ -1212,14 +1184,8 @@ function seesEveryWrite(
 }
 
 /**
- * Checks the old password before the update's transaction starts, so the slow
- * check holds no lock and no connection. Call it only once
- * `checkUpdateRuleFirst` has allowed the caller, so someone the rule refuses
- * can neither guess the password nor lock the account.
- *
- * Returns the stored hash the old password matched, which the transaction
- * then confirms is still stored, or `matched: undefined` when it did not
- * match. Returns undefined when there is no old password to check.
+ * Checks the old password before the transaction, holding no lock. Call it only once `checkUpdateRuleFirst`
+ * allowed the caller, so a refused one can neither guess the password nor lock the account.
  */
 async function checkOldPasswordFirst(
   ctx: RecordsContext,
@@ -1272,9 +1238,8 @@ async function checkOldPasswordFirst(
 }
 
 /**
- * A code from the record's authenticator app, or a recovery code, when it
- * has one. Counted and spent outside the write's transaction, as the old
- * password is. Without the MFA service, a record with an app is refused.
+ * A code from the record's authenticator app, or a recovery code, counted and spent outside the write's
+ * transaction like the old password. Without the MFA service, a record with an app is refused.
  */
 async function checkStepUp(
   ctx: RecordsContext,
@@ -1374,9 +1339,8 @@ function compile(
 }
 
 /**
- * An impersonation session may change no account's way in: its password,
- * token key, email, phone, whether they are verified, or identity fields.
- * The superuser could keep using it after the session ends.
+ * An impersonation session may change no account's way in (password, token key, email, phone,
+ * verification or identity fields): the superuser could keep using it after the session ends.
  */
 function forbidSignInChanges(
   ctx: RecordsContext,
@@ -1443,10 +1407,8 @@ async function matchesStoredRow(
 }
 
 /**
- * Evaluates the create rule on pending rows in one query, as a table named
- * ALIAS with one row each. Each row comes with its own compiled rule, since a
- * rule can read that row's `@request.body`. Returns the positions of the rows
- * the rule refuses.
+ * Evaluates the create rule on pending rows in one query, as table ALIAS with one row each and each
+ * row's own compiled rule, since it can read `@request.body`. Returns the positions of refused rows.
  */
 async function refusedNewRows(
   q: Builder,
@@ -1474,11 +1436,8 @@ async function refusedNewRows(
 }
 
 /**
- * Evaluates `conditions` on rows that are not read from the collection's
- * table, such as the records of realtime events, as `refusedNewRows` does:
- * for each row, whether each condition matches it. An undefined condition
- * matches every row. Takes one query per few thousand rows, and none when
- * no condition needs one.
+ * Evaluates `conditions` on rows not read from the table, such as realtime event records: whether each
+ * matches each row (undefined matches all). One query per few thousand rows, none when none needs one.
  */
 export async function matchingRows(
   q: Builder,
@@ -1646,14 +1605,8 @@ async function viewable(
 
 // --- deletes ---------------------------------------------------------------
 
-// Cascading relations delete, others drop the reference, and a required field
-// that would be left blank blocks the delete. Every record the cascades reach
-// is found first, so that only the records that stay drop their references or
-// block the delete: the result depends neither on cycles nor on the order
-// fields are declared in. Works on every record of one level at once, so a
-// delete takes a few queries per level and collection, not per record.
-// Returns the records it wrote whose collections have on or after hooks or
-// send realtime events, in the order it wrote them, and each record once.
+// Cascading relations delete, others drop the reference, and a required field left blank blocks the delete.
+// All reached records are found first, so cycles and field order do not matter; queries go per level, not record.
 async function deleteWithReferences(
   tx: Builder,
   ctx: RecordsContext,
@@ -1696,10 +1649,8 @@ async function deleteWithReferences(
         ? `ARRAY(SELECT v FROM unnest(${col}) AS v WHERE v <> ALL({:ids}::text[]))`
         : 'NULL';
       const gone = [...(deleting.get(source.id)?.ids ?? [])];
-      // A record deleted after one it points at would leave a dangling
-      // reference until it goes, which its foreign key refuses. Only single
-      // relations have one, and rows that go in one statement are checked
-      // together.
+      // A record deleted after one it points at would leave a dangling reference its foreign key refuses.
+      // Only single relations have one, and rows deleted in one statement are checked together.
       if (
         !multiple &&
         gone.length > 0 &&
@@ -1715,9 +1666,8 @@ async function deleteWithReferences(
       // Each cascade already put all the records it reaches in `deleting`.
       if (field.cascadeDelete) continue;
       const stays = `${refers} AND id <> ALL({:gone}::text[])`;
-      // Hooks get each record as it was and as it is left, and realtime
-      // events as it is left, so then the rows are read whole and the
-      // update returns them.
+      // Hooks get each record as it was and as it is left, and realtime events as it is left, so then
+      // the rows are read whole and the update returns them.
       const observed = hooks?.observes(source, 'update') ?? false;
       // Locked in id order, so concurrent deletes lock rows in the same order.
       // Field names start with a letter, so `_kept` cannot clash with one.
@@ -1804,9 +1754,8 @@ interface Deleting {
 }
 
 /**
- * The records to delete, by collection id in the order they are reached:
- * `ids` and every record a cascading relation reaches from them, each once
- * however many cycles lead back to it. Locks those it finds.
+ * The records to delete, by collection id in the order reached: `ids` and every record cascades
+ * reach from them, each once however many cycles lead back. Locks those it finds.
  */
 async function cascade(
   tx: Builder,
@@ -1864,9 +1813,8 @@ function* relationsTo(
   }
 }
 
-// Deletes the rows, notes their files for deletion and ends their sessions.
-// With `returning`, returns the deleted rows in the order of `ids`, whose
-// files are then noted from them.
+// Deletes the rows, notes their files for deletion and ends their sessions. With `returning`,
+// returns the deleted rows in the order of `ids`, and notes the files from them.
 async function deleteRows(
   tx: Builder,
   collection: Collection,
@@ -1920,6 +1868,7 @@ async function deleteRows(
       '_totp',
       '_recovery_codes',
       '_password_origins',
+      '_otps',
     ]) {
       await tx
         .newQuery(
@@ -2217,10 +2166,8 @@ function columnValues(
 }
 
 /**
- * Runs `write` in the caller's transaction if there is one, or in a new one.
- * It makes no savepoint: when a write fails the request fails too, so the
- * whole transaction is rolled back anyway. Once a new one commits, the work
- * that follows the write is done even if the request fails later.
+ * Runs `write` in the caller's transaction, or a new one, without a savepoint: a failed write fails the
+ * request, rolling it all back. Once a new one commits, what follows runs even if the request fails.
  */
 async function inTransaction<T>(
   ctx: RecordsContext,

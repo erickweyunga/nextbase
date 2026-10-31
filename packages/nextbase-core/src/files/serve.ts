@@ -30,11 +30,8 @@ const MAX_ORIGINAL_NAME = 255;
 const UPLOAD_LIMIT: Limit = { max: 100, window: '1 hour' };
 
 /**
- * Starts a direct upload to the bucket: a signed PUT URL, and the token the
- * record's field takes afterwards. Write rules apply when the record is
- * written; an upload is not a record yet, so it cannot be checked against
- * them. Instead, someone signed out may start one only where anyone may
- * create or update records, and an account may start a limited number.
+ * Starts a direct upload: a signed PUT URL plus the token the field takes later. Rules cannot
+ * check it yet, so guests may start one only where anyone may write, and accounts are capped.
  */
 export async function createUpload(
   db: DB,
@@ -172,10 +169,8 @@ async function deleteExpiredUploads(
 }
 
 /**
- * A short-lived token for protected files, for links that cannot send an
- * Authorization header. Bound to the record's tokenKey. Minted on an
- * impersonation `session`, it names that session, lasts no longer, and
- * works only while the session does.
+ * A short-lived token for protected files, for links that cannot send an Authorization header.
+ * Bound to the record's tokenKey; minted on an impersonation session, it ends with that session.
  */
 export function fileToken(
   collection: AuthCollection,
@@ -343,9 +338,8 @@ export async function fileResponse(
 }
 
 /**
- * The requested byte range, handled as Express's `send` does: one range is
- * 206, past the end is 416, and multiple ranges, malformed headers or
- * `If-Range` (no validator is issued, so it cannot match) get the whole file.
+ * The requested byte range, as Express's `send` handles it: one range is 206, past the end 416;
+ * multiple ranges, malformed headers or `If-Range` (no validator is issued) get the whole file.
  */
 function byteRange(
   request: Request,

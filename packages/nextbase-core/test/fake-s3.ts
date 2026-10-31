@@ -5,7 +5,6 @@ import {
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-/** An object in the fake bucket. */
 interface FakeObject {
   body: Buffer;
   contentType: string;
@@ -25,9 +24,8 @@ export interface FakeS3 {
 }
 
 /**
- * Enough of the S3 API, with path-style addressing, to test storage through
- * the real AWS SDK: put (and copy), get with ranges, head, batch delete and
- * list, and signed URLs. Signatures are not checked.
+ * Enough of the S3 API, path-style, to test storage through the real AWS SDK:
+ * put, copy, ranged get, head, batch delete, list and signed URLs. No signature checks.
  */
 export async function startFakeS3(bucket = 'test-bucket'): Promise<FakeS3> {
   const objects = new Map<string, FakeObject>();
