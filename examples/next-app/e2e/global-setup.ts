@@ -8,9 +8,8 @@ const adminUrl =
 const STALE_MS = 60 * 60 * 1000;
 
 /**
- * Runs once before the suite: drops the databases interrupted runs left
- * behind, which never reached their cleanup. Only ones older than an hour,
- * so suites running at the same time against the same server keep theirs.
+ * Drops databases left by interrupted runs. Only ones older than an hour, so
+ * suites running at the same time against the same server keep theirs.
  */
 export async function setup(): Promise<void> {
   const admin = new pg.Client({ connectionString: adminUrl });

@@ -5,11 +5,8 @@ import { ApiError } from '../errors.ts';
 import { errorMessage, type Logger } from '../logs/logger.ts';
 import type { Storage } from './storage.ts';
 
-// Thumbnails of an image file live beside it, at
-// `<collection id>/<record id>/thumbs_<name>/<size>_<name>`, made on the
-// first request for a size and kept until the file is removed. A file that
-// can never be thumbed gets a `.failed` marker there instead, so no instance
-// decodes it again.
+// Thumbnails live beside the file at `<collection id>/<record id>/thumbs_<name>/<size>_<name>`, made
+// on first request. A file that can never be thumbed gets a `.failed` marker, so no instance decodes it again.
 
 const SIZE = /^(0|[1-9]\d{0,3})x(0|[1-9]\d{0,3})(t|b|f)?$/;
 const MAX_SIDE = 2500;
@@ -38,10 +35,8 @@ interface ThumbLimits {
 }
 
 /**
- * How many thumbnails are made at once in the process, how long a request
- * waits for its turn and how many may wait, the largest file read, and how
- * long a thumbnail whose making failed is not tried again. Tests lower
- * them; apps have no reason to.
+ * Thumbnail concurrency, queue wait and length, largest file read, and retry backoff.
+ * Tests lower them; apps have no reason to.
  */
 export const thumbLimits: ThumbLimits = {
   slots: availableParallelism(),
@@ -209,10 +204,8 @@ class Semaphore {
 const making = new Semaphore();
 
 /**
- * A file that will never give a thumbnail, whatever the size, found by
- * NextBase's own checks or by sharp reading its header. Errors of the resize
- * itself never count: libvips shares one error buffer between the pipelines
- * running at once, so their messages may belong to another image.
+ * A file that will never give a thumbnail, found by NextBase's checks or sharp's header read. Resize
+ * errors never count: libvips shares one error buffer, so a message may belong to another image.
  */
 class Unthumbable extends Error {}
 
@@ -237,10 +230,8 @@ export class Thumbs {
   }
 
   /**
-   * The thumbnail's key to serve for `size` of the file at `key`, made if
-   * missing, or undefined when the original is to be served instead: the
-   * size is not one of the field's, the file is not an image NextBase
-   * thumbs, or making it failed.
+   * The thumbnail key to serve for `size` of the file at `key`, made if missing. Undefined serves the
+   * original: the size is not the field's, the file is not thumbable, or making it failed.
    */
   async keyOf(
     field: FileField,
@@ -372,9 +363,8 @@ export class Thumbs {
   }
 
   /**
-   * Written while the file was being removed, after the removal deleted its
-   * thumbnails: deletes what was written, and the file is gone. When storage
-   * cannot tell, the file most likely still exists.
+   * If the file was removed meanwhile (its removal already deleted thumbnails), deletes what was
+   * written and throws 404. When storage cannot tell, the file most likely still exists.
    */
   async #checkOriginal(key: string): Promise<void> {
     try {

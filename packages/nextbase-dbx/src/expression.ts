@@ -3,9 +3,8 @@ import type { Params } from './query.ts';
 import { bindParam, mergeParams, quoteIdentifierPath } from './sql.ts';
 
 /**
- * A SQL fragment for a condition or a written value. `build` adds its values to
- * `params` and returns "" when it has no effect, so callers skip it. As a
- * condition, "" restricts nothing: it is true for every row.
+ * A SQL fragment for a condition or a written value. `build` binds its values to
+ * `params` and returns "" when it has no effect; as a condition "" matches every row.
  */
 export interface Expression {
   build(builder: Builder, params: Params): string;
@@ -120,9 +119,8 @@ class InExp implements Expression {
     this.#not = not;
   }
 
-  // `= NULL` never matches, so null becomes an explicit IS [NOT] NULL test. An
-  // Expression value gets its own IN (...), so it may be a sub-query, and one
-  // that is empty is left out.
+  // `= NULL` never matches, so null becomes IS [NOT] NULL. An Expression value
+  // gets its own IN (...) so it may be a sub-query; an empty one is left out.
   build(builder: Builder, params: Params): string {
     const col = quoteIdentifierPath(this.#col);
     let hasNull = false;

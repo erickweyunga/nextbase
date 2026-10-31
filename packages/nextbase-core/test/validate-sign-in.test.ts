@@ -129,6 +129,32 @@ describe('validateSignIn', () => {
     expect(checks).toHaveLength(before);
   });
 
+  it("answers the app's refusal before an unverified email, and sends no link", async () => {
+    await admin.collections.create({
+      name: 'staff',
+      type: 'auth',
+      emailVerification: { required: true, sendOnSignIn: true },
+    });
+    await admin.collection('staff').create({
+      email: 'new@blocked.example',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    await Promise.all(pending.splice(0));
+    const before = mails.length;
+    const error = await failure(
+      nextbase
+        .client()
+        .collection('staff')
+        .signInWithPassword('new@blocked.example', PASSWORD),
+    );
+    expect(error.data).toMatchObject({
+      account: { code: 'email_not_allowed' },
+    });
+    await Promise.all(pending.splice(0));
+    expect(mails).toHaveLength(before);
+  });
+
   it('checks a sign-in by email code', async () => {
     await admin.collection('users').create({
       email: 'otp@blocked.example',

@@ -28,15 +28,8 @@ import {
   type ValidateSignIn,
 } from './validate.ts';
 
-// Sign-ins find their record by the provider's permanent account id, never by
-// email. A new provider account is auto-linked to an existing record by email
-// only if both sides verified that email, and the owner is told; anything
-// weaker hands your account to whoever registers your email at a provider.
-// An email nobody proved is never trusted either: a provider's unverified
-// email creates no account, a record with an unverified email links no
-// provider, and links made before the owner proved the email are dropped
-// then. Otherwise someone could set up an account under your email before
-// you sign up, and keep a way into it after you take it over.
+// Sign-ins find their record by the provider's account id, never by email. Auto-linking
+// by email needs both sides to have verified it, or anyone could claim your account.
 
 export interface AccountContext {
   db: DB;
@@ -52,12 +45,6 @@ export interface Account {
   linkedTo?: string;
 }
 
-/**
- * New records go through the collection's create rule, as a sign-up does.
- * The work that follows its writes, such as after hooks, joins `ctx.effects`
- * only once they are committed: a failed sign-in is answered with a
- * redirect, not an error, so the request would otherwise still do it.
- */
 /** How a provider makes accounts: see `OAuth2ProviderOptions`. */
 export interface SignUpPolicy {
   name: string;
@@ -67,6 +54,10 @@ export interface SignUpPolicy {
   data: Record<string, unknown> | null;
 }
 
+/**
+ * Effects such as after hooks join `ctx.effects` only once committed: a failed
+ * sign-in is a redirect, not an error, so the request would still run them.
+ */
 export async function accountFor(
   ctx: AccountContext,
   collection: AuthCollection,
@@ -153,9 +144,8 @@ async function findAccount(
   }
   const existing = await findByEmail(tx, collection, identity.email);
   if (existing) {
-    // A provider linked here would be a second factor proven by the same
-    // inbox as an email code or reset password, so an account with a second
-    // step links one only from inside, after re-entering its password.
+    // A provider linked here would be proven by the same inbox as an email code,
+    // so an account with a second step links one only from inside.
     if (
       existing.emailVerified !== true ||
       !collection.implicitLinking ||
@@ -312,7 +302,6 @@ async function link(
   if (inserted.length === 0) throw alreadyLinked();
 }
 
-// The random password is never shown; the owner can set one via password reset.
 /** Sign-in fields NextBase sets itself, never from a provider's profile. */
 const SIGN_IN_FIELDS = new Set([
   'id',

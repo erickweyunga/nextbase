@@ -32,15 +32,12 @@ const TAGS: ReadonlySet<string> = new Set<RouteTag>([
 
 export interface RateLimitRule {
   /**
-   * What the rule limits: a route tag of one collection or of all
-   * (`users:auth`, `*:create`), a method and exact path (`POST /batch`), an
-   * exact path (`/files/token`), or a path prefix ending with a slash
-   * (`/collections/`). Paths are below `basePath`.
+   * A route tag (`users:auth`, `*:create`), method and path (`POST /batch`), exact
+   * path (`/files/token`), or prefix ending in `/`. Paths are below `basePath`.
    */
   label: string;
   /** Only guests, or only signed-in callers. Defaults to both. */
   audience?: 'guest' | 'auth';
-  /** Requests allowed per window. */
   max: number;
   /** Seconds, counted from the first request of the window. */
   window: number;
@@ -81,8 +78,8 @@ export const rateLimitTimings = { pruneEvery: 100 };
 // Expired counts each delete removes at most, so none holds locks for long.
 const PRUNE_BATCH = 1000;
 
-// Keys refused until their window ends, kept per instance, so repeated
-// requests over a limit are answered without the database.
+// Keys refused until their window ends, per instance, so repeated requests over
+// a limit are answered without the database.
 const MAX_REFUSED = 10_000;
 
 const RATE_LIMITS = table('_rate_limits');
@@ -102,7 +99,7 @@ interface Slot {
 
 /** What a request, or a write in a batch, is limited by. */
 export interface Limited {
-  /** The method, with HEAD as GET. */
+  /** HEAD counts as GET. */
   method: string;
   /** The path below `basePath`. */
   route: string;
@@ -118,10 +115,8 @@ export interface Caller {
 }
 
 /**
- * Limits requests per caller with fixed windows counted in Postgres, so
- * limits hold across serverless instances. Signed-in callers are counted
- * per record, guests per IP, which needs `clientIp`: guests whose IP is
- * unknown are not limited.
+ * Fixed windows counted in Postgres, so limits hold across serverless instances.
+ * Signed-in callers count per record, guests per IP; unknown IPs are not limited.
  */
 export class RateLimits {
   readonly #tags = new Map<string, Slot>();
@@ -206,9 +201,8 @@ export class RateLimits {
   }
 
   /**
-   * Counts each request against the first rule that matches it, in one
-   * autocommit upsert, and refuses them all with a 429 when any is over.
-   * Run it outside any transaction, so refused requests stay counted.
+   * Counts requests in one autocommit upsert, refusing all with a 429 when any is
+   * over. Run it outside any transaction, so refused requests stay counted.
    */
   async check(
     db: DB,
@@ -251,10 +245,8 @@ export class RateLimits {
     // their rows in the same order and cannot deadlock.
     const keys = [...counted.keys()].sort();
     const counts = keys.map((key) => counted.get(key) as Counted);
-    // A key over its limit is not written again until its window ends, so
-    // refusals add no dead rows and hold no row lock. For a key left as
-    // it was, the outer query reads when its window ends, as it was
-    // before the statement.
+    // A key over its limit is not written until its window ends, so refusals add
+    // no dead rows and hold no row lock.
     const sent = Date.now();
     const rows = await db
       .newQuery(
@@ -292,9 +284,8 @@ export class RateLimits {
       over.set(row.key, row.resetMs === null ? null : Number(row.resetMs));
     }
     if (over.size === 0) return;
-    // A row the upsert left alone was read as it was when the statement
-    // started: missing, if another statement created it meanwhile, or
-    // expired, if one started its next window. Those are read again.
+    // A row the upsert left alone was read as of the statement's start: missing or
+    // expired if another statement changed it meanwhile. Those are read again.
     const stale = [...over].filter(([, ms]) => ms === null || ms <= 0);
     if (stale.length > 0) {
       const now = await db
@@ -330,12 +321,8 @@ export class RateLimits {
   }
 
   /**
-   * The first rule that applies: the route's tags for its collection, then
-   * for all collections, then the method and path, the path, and the
-   * longest prefix. A create in an auth collection looks up the
-   * collection's `create` and `auth` rules, then `*:auth`, never
-   * `*:create`. For each label, a rule for the caller's audience comes
-   * before one for both.
+   * Tags for the collection, then for all, then method and path, path, longest
+   * prefix. An auth create uses `create`, `auth`, then `*:auth`, never `*:create`.
    */
   #find(
     { method, route, tags, collection }: Limited,
@@ -495,9 +482,8 @@ function family(ip: string): 'ipv4' | 'ipv6' {
 }
 
 /**
- * A guest's IP as counted: IPv6 by its /56, as ISPs commonly give one
- * subscriber a /56 or a /48, so changing the rest of the address does not
- * reset the count. The IP is as `clientIp` reads it, so IPv6 is compressed.
+ * IPv6 counts by its /56, as ISPs commonly give one subscriber a /56 or /48, so
+ * changing the rest of the address does not reset the count.
  */
 function ipKey(ip: string): string {
   if (isIP(ip) !== 6) return ip;

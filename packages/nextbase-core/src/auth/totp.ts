@@ -20,7 +20,6 @@ const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const RECOVERY_CODE_BYTES = 10;
 const RECOVERY_CODE_COUNT = 10;
 
-/** A new 160-bit secret. */
 export function newTotpSecret(): Buffer {
   return randomBytes(SECRET_BYTES);
 }
@@ -115,9 +114,8 @@ export function newRecoveryCodes(): string[] {
 }
 
 /**
- * A typed recovery code in its stored form, or undefined when it cannot be
- * one: case, spaces and dashes are ignored, and letters that look like digits
- * are read as those digits.
+ * A typed recovery code in its stored form, or undefined. Case, spaces and dashes
+ * are ignored, and letters that look like digits are read as those digits.
  */
 export function normalizeRecoveryCode(input: string): string | undefined {
   if (input.length > 64) return undefined;

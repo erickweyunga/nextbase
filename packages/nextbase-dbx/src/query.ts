@@ -24,9 +24,8 @@ export class NoRowsError extends Error {
 }
 
 /**
- * A reusable SQL statement. `{:name}` becomes `$n` (a repeated name reuses its
- * number); `{{table}}` and `[[column]]` become quoted identifiers. Running with
- * an unbound placeholder throws.
+ * A reusable SQL statement. `{:name}` becomes `$n`; `{{table}}` and `[[column]]`
+ * become quoted identifiers. Running with an unbound placeholder throws.
  */
 export class Query {
   /** The SQL as written, with `{:name}` placeholders. */

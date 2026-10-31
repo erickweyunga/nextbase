@@ -428,11 +428,8 @@ class Compiler {
   }
 
   /**
-   * A field of the signed-in record. The name must belong to some auth
-   * collection, so a typo, or a field renamed or deleted from under a rule,
-   * fails when the schema is saved instead of reading as blank. As elsewhere
-   * in rules, hidden fields can be read. A field with several values compares
-   * like a field of the record with several values.
+   * A field of the signed-in record. It must exist in some auth collection, so a typo or removed field
+   * fails when the schema is saved instead of reading blank. Hidden fields can be read, as in rules.
    */
   #resolveAuth(name: string, modifier: string | undefined): Resolved {
     const { principal, schema } = this.#context;
@@ -629,9 +626,8 @@ class Compiler {
       return `cardinality(${this.#column(left, left.root, leftType)}) ${op === '=' ? '=' : '>'} 0`;
     }
 
-    // A field compared with a value: `tags ?= "news"` means "has this value".
-    // It is written as array containment, which the field's GIN index can
-    // serve. Multi-value columns are never NULL, so neither is the result.
+    // `tags ?= "news"` means "has this value", written as array containment so the field's GIN
+    // index can serve it. Multi-value columns are never NULL, so neither is the result.
     if (
       any &&
       op === '=' &&
@@ -680,10 +676,8 @@ class Compiler {
       `EXISTS (SELECT 1 FROM ${from.join(', ')} WHERE ${conditions.join(' AND ') || 'TRUE'})`;
     const from = sides.flatMap((side) => side.from);
     const joins = sides.flatMap((side) => side.joins);
-    // With at most one value on each side, such as `author.name`, there is at
-    // most one pair, so "every pair matches" is the same as "a pair matches".
-    // That form is a plain lookup Postgres can serve with indexes, where the
-    // every-pair form checks every row.
+    // With at most one value per side, such as `author.name`, every pair matching is the same as one
+    // matching, so a plain lookup that indexes can serve replaces checking every row.
     const paths = right.kind === 'path' && rightValues ? [left, right] : [left];
     if (any || paths.every(isSingleValued)) {
       return exists(from, [...joins, condition]);

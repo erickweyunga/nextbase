@@ -284,7 +284,8 @@ POST /collections/{collection}/request-otp
 | ----- | ---- | ----------- |
 | `email` | string | Required. |
 
-`otp` off answers `400`; too many emails to the address, `429`.
+`otp` off, or an `authRule` of `null`, answers `400`; too many emails to
+the address, `429`.
 
 ## Sign in with an email code
 
@@ -304,7 +305,8 @@ POST /collections/{collection}/auth-with-otp
 
 Answers like [Sign in with a password](#sign-in-with-a-password), with the
 method `emailCode`. A wrong, used or expired code answers `400` with
-`data.code.code` `validation_invalid_code`.
+`data.code.code` `validation_invalid_code`; too many wrong codes for the
+address, `429`.
 
 ## Sign in with an ID token
 

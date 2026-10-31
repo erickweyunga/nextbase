@@ -59,12 +59,8 @@ interface Entry {
 }
 
 /**
- * Writes log entries to `_logs`, outside any transaction, so a request's own
- * writes never decide whether its entry is kept. Entries are buffered and
- * written together on the next tick, so a burst of requests costs one
- * insert. Inserts and deletes of expired entries run one at a time per
- * instance, so logging never takes more than one connection. Writing never
- * fails a request: errors only go to the console.
+ * Writes entries to `_logs` outside any transaction, buffered per tick so a burst costs one insert.
+ * Writes run one at a time per instance (one connection at most) and never fail a request.
  */
 export class Logger {
   readonly #config: Config | undefined;
@@ -146,9 +142,8 @@ export class Logger {
   }
 
   /**
-   * Reports work that failed, such as in the background after the
-   * response: to the console, as before logs existed, and as an entry, an
-   * error unless it is only a `warn`ing.
+   * Reports failed work, such as background work after the response: to the console and as an
+   * entry, an error unless it is only a `warn`ing.
    */
   failure(
     type: FailureType,
@@ -235,9 +230,8 @@ export class Logger {
   }
 
   /**
-   * The wall time in microseconds, as timestamptz keeps it: at least a
-   * microsecond after the last entry's, so entries of one instance sort in
-   * the order they were added.
+   * The wall time in microseconds, as timestamptz keeps it, at least one past the last entry's,
+   * so entries of one instance sort in the order they were added.
    */
   #now(): string {
     const micros = Math.max(this.#lastMicros + 1, Date.now() * 1000);
@@ -306,7 +300,6 @@ export async function purgeLogs(db: DB, maxDays: number): Promise<void> {
   }
 }
 
-/** The message of a thrown value, whatever it is. */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   try {
@@ -321,9 +314,8 @@ function capitalize(text: string): string {
 }
 
 /**
- * Text Postgres can store, in strings at any depth: jsonb refuses NUL
- * characters and unpaired surrogates, and one bad entry would fail the whole
- * insert.
+ * Strings at any depth made storable: jsonb refuses NUL characters and unpaired surrogates,
+ * and one bad entry would fail the whole insert.
  */
 function storable(value: unknown): unknown {
   if (typeof value === 'string') {

@@ -23,10 +23,8 @@ export interface SubscribeOptions {
   /** Output fields, e.g. `id,title`. */
   fields?: string;
   /**
-   * Called once the subscription is live, so events from then on arrive,
-   * and again whenever events may have been missed, such as after the
-   * client was away longer than the server keeps events. Load what you
-   * show here.
+   * Called once the subscription is live and again whenever events may have been
+   * missed, such as after a long disconnect. Load what you show here.
    */
   onReset?: () => void;
   /** Called when the server refuses the subscription, which then ends. */
@@ -57,9 +55,8 @@ const MAX_RETRY_MS = 30_000;
 const HEALTHY_MS = MAX_RETRY_MS;
 
 /**
- * Realtime subscriptions of one client, all over one streamed request. It
- * reconnects on its own, resuming after the last event it received, and
- * starts over when subscriptions or the signed-in session change.
+ * Realtime subscriptions of one client over one streamed request. It reconnects and
+ * resumes after the last event, and starts over when subscriptions or the session change.
  */
 export class RealtimeService {
   readonly #client: NextBaseClient;
@@ -83,10 +80,8 @@ export class RealtimeService {
   }
 
   /**
-   * Calls `callback` for each record of `collection` created, updated or
-   * deleted that the caller may see: any record for `"*"`, under the list
-   * rule, or one record by id, under the view rule. Returns the function
-   * that unsubscribes.
+   * Watches `"*"` (under the list rule) or one record id (under the view rule) of
+   * `collection`. Returns the function that unsubscribes.
    */
   subscribe<T extends RecordModel = RecordModel>(
     collection: string,
@@ -168,9 +163,15 @@ export class RealtimeService {
     this.#wake = undefined;
   }
 
-  /** Runs one streamed request until it ends. */
   async #stream(): Promise<Outcome> {
     const subscriptions = [...this.#subscriptions];
+    // Subscriptions to the same topic share it, as the server caps topics.
+    const groups = new Map<string, Subscription[]>();
+    for (const subscription of subscriptions) {
+      const key = JSON.stringify(topicOf(subscription));
+      groups.set(key, [...(groups.get(key) ?? []), subscription]);
+    }
+    const shared = [...groups.values()];
     const store = this.#client.authStore;
     const { token, record } = store;
     const unchanged = authSync(store).snapshot();
@@ -182,13 +183,7 @@ export class RealtimeService {
     };
     if (token) headers.authorization = `Bearer ${token}`;
     if (this.#lastEventId) headers['last-event-id'] = this.#lastEventId;
-    const topics = subscriptions.map(({ collection, id, options }) => ({
-      collection,
-      ...(id !== undefined && { id }),
-      ...(options.filter && { filter: options.filter }),
-      ...(options.expand && { expand: options.expand }),
-      ...(options.fields && { fields: options.fields }),
-    }));
+    const topics = shared.map(([first]) => topicOf(first as Subscription));
     try {
       const response = await this.#post({
         method: 'POST',
@@ -207,7 +202,7 @@ export class RealtimeService {
         await response.body?.cancel();
         return 'changed';
       }
-      if (!response.ok) return await this.#refused(response, subscriptions);
+      if (!response.ok) return await this.#refused(response, shared);
       if (!response.body) return 'failed';
       // The server answers once it knows where the stream starts.
       for (const subscription of subscriptions) {
@@ -227,7 +222,7 @@ export class RealtimeService {
           }
           return;
         }
-        this.#dispatch(subscriptions, event);
+        this.#dispatch(shared, event);
       });
       const reader = response.body
         .pipeThrough(new TextDecoderStream())
@@ -253,11 +248,11 @@ export class RealtimeService {
   }
 
   #dispatch(
-    subscriptions: readonly Subscription[],
+    shared: readonly Subscription[][],
     event: { type: string; data: string },
   ): void {
     if (event.type === 'reset') {
-      for (const subscription of subscriptions) {
+      for (const subscription of shared.flat()) {
         if (this.#subscriptions.has(subscription)) {
           call(() => subscription.options.onReset?.());
         }
@@ -275,23 +270,26 @@ export class RealtimeService {
       topics?: Record<string, RecordModel>;
     };
     for (const [index, record] of Object.entries(topics ?? {})) {
-      const subscription = subscriptions[Number(index)];
-      // Unsubscribed while the stream was open.
-      if (!subscription || !this.#subscriptions.has(subscription)) continue;
-      call(() =>
-        subscription.callback({ action: event.type as RealtimeAction, record }),
-      );
+      for (const subscription of shared[Number(index)] ?? []) {
+        // Unsubscribed while the stream was open.
+        if (!this.#subscriptions.has(subscription)) continue;
+        call(() =>
+          subscription.callback({
+            action: event.type as RealtimeAction,
+            record,
+          }),
+        );
+      }
     }
   }
 
   /**
-   * A response that refused the stream. Refused topics end their
-   * subscriptions; other client errors end all of them, as retrying cannot
-   * fix them. A 401 signs out, as `send()` does, and the stream starts over.
+   * Refused topics end their subscriptions; other client errors end all, as retrying
+   * cannot fix them. A 401 signs out, as `send()` does, and the stream starts over.
    */
   async #refused(
     response: Response,
-    subscriptions: readonly Subscription[],
+    shared: readonly Subscription[][],
   ): Promise<Outcome> {
     const body = parseJson(await response.text().catch(() => ''));
     const error = new ClientError(
@@ -318,8 +316,8 @@ export class RealtimeService {
     const refused = error.data.topics;
     const ended =
       refused && typeof refused === 'object'
-        ? Object.keys(refused).flatMap((i) => subscriptions[Number(i)] ?? [])
-        : subscriptions;
+        ? Object.keys(refused).flatMap((i) => shared[Number(i)] ?? [])
+        : shared.flat();
     for (const subscription of ended) {
       if (this.#subscriptions.delete(subscription)) {
         call(() => subscription.options.onError?.(error));
@@ -327,6 +325,17 @@ export class RealtimeService {
     }
     return 'changed';
   }
+}
+
+/** What the server is asked to send for `subscription`. */
+function topicOf({ collection, id, options }: Subscription): object {
+  return {
+    collection,
+    ...(id !== undefined && { id }),
+    ...(options.filter && { filter: options.filter }),
+    ...(options.expand && { expand: options.expand }),
+    ...(options.fields && { fields: options.fields }),
+  };
 }
 
 /** The wait before the `failures`th retry in a row, with jitter. */
@@ -369,11 +378,8 @@ interface ParsedEvent {
 }
 
 /**
- * Parses an event stream as the HTML standard's EventSource does
- * (https://html.spec.whatwg.org/multipage/server-sent-events.html). Lines
- * end with CRLF, LF or CR, which may be split across chunks; a blank line
- * dispatches the event. An event without data is not dispatched, but its id
- * still becomes the last event id. The decoder strips a leading BOM.
+ * Parses an event stream as EventSource does; CRLF may split across chunks.
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html
  */
 class EventStreamParser {
   readonly #onEvent: (event: ParsedEvent) => void;

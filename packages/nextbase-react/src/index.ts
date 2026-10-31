@@ -109,7 +109,6 @@ export interface SessionState<T extends RecordModel = RecordModel> {
   data: T | null;
   /** Whether the session is still loading. */
   isPending: boolean;
-  /** Reloads the session from the server. */
   refetch(): Promise<void>;
 }
 
@@ -240,18 +239,12 @@ export interface LiveResult<V> {
   error: ClientError | undefined;
   /** Whether the first load is still running. */
   isPending: boolean;
-  /** Loads again. */
   refetch(): Promise<void>;
 }
 
 /**
- * A page of a collection's records, kept current as they are created,
- * updated and deleted, by anyone. Needs the collection in the server's
- * `realtime` option.
- *
- * An update or delete changes the page at once; any change, wherever it
- * is, then loads the page again, so its filter, order and count stay right.
- * Changes close together load it once.
+ * A page of records kept live; any change reloads it so filter, order and count stay
+ * right. Needs the collection in the server's `realtime` option.
  */
 export function useRecords<T extends RecordModel = RecordModel>(
   collection: string,
@@ -316,8 +309,11 @@ export function useRecords<T extends RecordModel = RecordModel>(
       (event) => {
         const data = live.state.data;
         if (data) live.set({ data: patchPage(data, event) });
-        clearTimeout(timer);
-        timer = setTimeout(() => void load(), RELOAD_DELAY_MS);
+        // Not pushed back by later events, so a steady stream still reloads.
+        timer ??= setTimeout(() => {
+          timer = undefined;
+          void load();
+        }, RELOAD_DELAY_MS);
       },
       {
         expand,
@@ -345,8 +341,10 @@ function patchPage<T extends RecordModel>(
   page: ListResult<T>,
   { action, record }: RealtimeEvent<T>,
 ): ListResult<T> {
+  // Without `id` in `fields`, the reload brings the change.
+  if (action === 'create' || record.id === undefined) return page;
   const at = page.items.findIndex((item) => item.id === record.id);
-  if (at === -1 || action === 'create') return page;
+  if (at === -1) return page;
   const items = [...page.items];
   if (action === 'delete') items.splice(at, 1);
   else items[at] = record;
@@ -365,9 +363,8 @@ export interface RecordOptions<T extends RecordModel = RecordModel> {
 }
 
 /**
- * One record, kept current as it is updated, by anyone; `null` once it is
- * deleted, or when it does not exist or the caller may not view it. Needs
- * the collection in the server's `realtime` option.
+ * One record kept live; `null` once deleted, missing or not viewable. Needs the
+ * collection in the server's `realtime` option.
  */
 export function useRecord<T extends RecordModel = RecordModel>(
   collection: string,

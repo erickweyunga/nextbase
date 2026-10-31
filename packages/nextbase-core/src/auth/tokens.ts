@@ -23,9 +23,8 @@ export function signToken(
 }
 
 /**
- * Unverified decode, only to find the record whose key verifies it. Never
- * trust it before `verifyToken`. Anyone can forge these claims, so they are
- * checked to be ids before they go into a query.
+ * Unverified decode, only to find the record whose key verifies it. Anyone can
+ * forge these claims, so they are checked to be ids before they go into a query.
  */
 export function peekToken(
   token: string,

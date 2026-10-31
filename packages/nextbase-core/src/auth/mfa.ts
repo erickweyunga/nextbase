@@ -42,14 +42,8 @@ import {
   recoveryCodeHash,
 } from './totp.ts';
 
-// Multi-factor sign-in.
-// - A first step that needs a second one starts no session. It answers with
-//   an `mfaId`: random, stored hashed, single use, expiring, and tied to the
-//   record's key, so a new password or token key ends it.
-// - The second step must be another method. Once a record has an
-//   authenticator app, only its codes or a recovery code count.
-// - Wrong codes are limited per `mfaId`, which then ends, and per account
-//   across every kind of code.
+// A first step that needs a second answers a single-use `mfaId` tied to the record's key.
+// Once a record has an authenticator app, only its codes or a recovery code count.
 
 /** The method of a session a superuser started to act as the record. */
 export const IMPERSONATION: SignInMethod = 'impersonation';
@@ -384,9 +378,8 @@ export class Mfa {
   }
 
   /**
-   * Sets up an authenticator app, unconfirmed until `confirmTotp`. Needs the
-   * current password, so a stolen session cannot lock the owner out, and a
-   * verified email or phone to recover the account with.
+   * Sets up an unconfirmed app. Needs the password, so a stolen session cannot lock
+   * the owner out, and a verified email or phone to recover the account with.
    */
   async startTotp(
     db: DB,
@@ -455,9 +448,8 @@ export class Mfa {
   }
 
   /**
-   * Confirms the app set up with a code from it, and returns new recovery
-   * codes. A new token key signs out every other session; `session`, if
-   * any, is kept and counts the app as a way it signed in.
+   * Confirms the app with a code from it and returns new recovery codes. A new
+   * token key signs out every session but `session`.
    */
   async confirmTotp(
     db: DB,
@@ -565,10 +557,8 @@ export class Mfa {
   }
 
   /**
-   * For a sensitive change of a record with an authenticator app: a code
-   * from the app, or a recovery code, in `mfaCode`. Does nothing for a
-   * record without one, or while the collection has MFA off, unless
-   * `always`, as for changes to the app itself.
+   * For a sensitive change: an app or recovery code in `mfaCode`. Does nothing without
+   * an app or while MFA is off, unless `always`, as for changes to the app itself.
    */
   async stepUp(
     db: DB,
@@ -600,9 +590,8 @@ export class Mfa {
   }
 
   /**
-   * Requires the current password, and with an authenticator app a code
-   * from it, for a change that adds a way into the account, such as a new
-   * phone or provider: a stolen session alone cannot make one.
+   * The password and any app code, for a change that adds a way into the account,
+   * such as a new phone or provider: a stolen session alone cannot make one.
    */
   async reauthenticate(
     db: DB,
@@ -651,10 +640,8 @@ export class Mfa {
   }
 
   /**
-   * The ways `record` can take the step after `first`. Superusers use only
-   * an app. A password nobody chose is no step; one reset through email or
-   * a phone in the last day does not pair with a code sent there, so that
-   * inbox or phone alone never holds both steps.
+   * The ways `record` can take the step after `first`. A password reset through a
+   * channel in the last day does not pair with a code sent there.
    */
   #methods(
     collection: AuthCollection,
@@ -720,9 +707,8 @@ export class Mfa {
     }
   }
 
-  // Each step is accepted once: the step is stored only if it is later
-  // than the last one used, in one statement, so parallel requests with
-  // one code cannot both pass.
+  // A step is stored only if later than the last one used, in one statement, so
+  // parallel requests with one code cannot both pass.
   async #useTotp(
     db: Builder,
     collection: AuthCollection,
@@ -755,8 +741,7 @@ export class Mfa {
     return used.rowsAffected > 0;
   }
 
-  // Spent by deleting it, so each is used once. The owner is told, with
-  // the number left.
+  // Spent by deleting it, so each is used once.
   async #useRecoveryCode(
     db: Builder,
     collection: AuthCollection,

@@ -73,12 +73,8 @@ export interface DBOptions {
 }
 
 /**
- * Query methods shared by `DB` and `Tx`. Nothing is sent until a query is run.
- *
- * Quoting: names given to writes, models, conditions and schema statements are
- * always quoted, so any input is safe. SELECT columns, tables, ORDER BY, GROUP BY
- * and index columns containing `(` are raw SQL: never pass untrusted input there.
- * Arguments documented as SQL (types, options) are used as written.
+ * Query methods shared by `DB` and `Tx`. Write, model and condition names are quoted;
+ * SELECT columns, tables, ORDER BY, GROUP BY and names with `(` are raw SQL: never untrusted.
  */
 export class Builder {
   readonly executor: Executor;
@@ -169,10 +165,8 @@ export class Builder {
   }
 
   /**
-   * One INSERT of several rows. As in `insert`, Expression values are SQL and
-   * `undefined` values are skipped. The columns are those any row sets, and a
-   * row that leaves one out gets its default. Postgres takes at most 65535
-   * parameters per statement, so very many rows need several calls.
+   * One INSERT of several rows; a row that leaves out a column another sets gets its
+   * default. Postgres takes at most 65535 parameters, so split very large inserts.
    */
   insertMany(table: string, rows: readonly Params[]): Query {
     if (rows.length === 0)
@@ -299,7 +293,6 @@ export class Builder {
     );
   }
 
-  /** Changes a column's type. */
   alterColumn(table: string, col: string, type: string): Query {
     return this.newQuery(
       `ALTER TABLE ${quoteIdentifierPath(table)} ALTER COLUMN ${quoteIdentifier(col)} TYPE ${type}`,

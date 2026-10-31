@@ -16,11 +16,8 @@ export interface NextRouteHandlers {
 }
 
 /**
- * App Router handlers for `nextbase`. HEAD and OPTIONS are handled by Next.js.
- *
- * ```ts
- * export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
- * ```
+ * App Router handlers, e.g. `export const { GET, POST, PUT, PATCH, DELETE } =
+ * newNextHandler(nextbase)`. Next.js handles HEAD and OPTIONS.
  */
 export function newNextHandler<C extends Record<string, RecordModel>>(
   nextbase: NextBase<C>,
@@ -36,10 +33,8 @@ export function newNextHandler<C extends Record<string, RecordModel>>(
 }
 
 /**
- * A client acting as the session cookie's user. Call it per request; in server
- * actions and route handlers, sign-in with `{ cookie: true }`, sign-out and
- * session renewal update the cookie. Server components cannot set cookies.
- * It is typed like `nextbase`, as by `new NextBase<Collections>()`.
+ * A client acting as the session cookie's user; call it per request. Only server
+ * actions and route handlers can update the cookie, not server components.
  */
 export async function serverClient<C extends Record<string, RecordModel>>(
   nextbase: NextBase<C>,

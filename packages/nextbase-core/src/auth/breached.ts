@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { ApiError } from '../errors.ts';
 
-// Checks new passwords against the Have I Been Pwned breach list. Only the
-// first 5 hex chars of the SHA-1 leave the server; matching happens here, and
-// padded answers keep the response size from hinting at a match.
+// Checks new passwords against Have I Been Pwned. Only the first 5 hex chars of
+// the SHA-1 leave the server, and padded answers hide a match from the size.
 
 const RANGE_API = 'https://api.pwnedpasswords.com/range/';
 const TIMEOUT_MS = 5_000;

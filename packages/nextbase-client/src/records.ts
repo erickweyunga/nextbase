@@ -30,19 +30,16 @@ export interface AuthOptions extends RecordOptions {
 }
 
 /**
- * A sign-in step that may be the second: `mfaId` comes from
- * {@link isMfaRequired}. Without it, the second step after an OAuth2 sign-in
- * uses the id the server kept in an HttpOnly cookie, and ends with a cookie
- * session.
+ * `mfaId` comes from {@link isMfaRequired}. Without it, the step after an OAuth2
+ * sign-in uses the id kept in an HttpOnly cookie and ends with a cookie session.
  */
 export interface SecondStepOptions extends AuthOptions {
   mfaId?: string;
 }
 
 /**
- * What a change that adds or removes a way into the account needs: the
- * current password, and with an authenticator app a code from it or a
- * recovery code.
+ * Proof for a change that adds or removes a way into the account: the password,
+ * and with an authenticator app a code from it or a recovery code.
  */
 export interface StepUpOptions extends SendOptions {
   password: string;
@@ -51,7 +48,6 @@ export interface StepUpOptions extends SendOptions {
 
 /** How to link an OAuth2 provider: the step-up and where to return to. */
 export interface OAuth2LinkOptions extends Omit<OAuth2Options, 'mfaId'> {
-  /** The current password. */
   password: string;
   /** With an authenticator app, a code from it or a recovery code. */
   mfaCode?: string;
@@ -92,10 +88,7 @@ export interface OAuth2Options {
   errorRedirect?: string;
   /** Takes the second step of this sign-in, with a provider linked to the account. */
   mfaId?: string;
-  /**
-   * More parameters for the provider's authorization page, such as
-   * `{ login_hint: "ann@example.com" }`, over the provider's own.
-   */
+  /** Extra authorization page parameters, such as `{ login_hint: "ann@example.com" }`. */
   params?: Record<string, string>;
   /** Passed to the provider's `mapProfile` on the server; it cannot trust it. */
   data?: Record<string, unknown>;
@@ -176,11 +169,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Calls `callback` for each record created, updated or deleted that the
-   * caller may see: `"*"` for the collection, under its list rule and
-   * `filter`, or a record id, under its view rule. The collection must be
-   * listed in the server's `realtime` option. Returns the unsubscribe
-   * function.
+   * Watches `"*"` (under the list rule and `filter`) or one record id (under the view
+   * rule). The collection must be in the server's `realtime` option. Returns unsubscribe.
    */
   subscribe(
     topic: string,
@@ -199,7 +189,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return this.#send(`/records/${encodeURIComponent(id)}`, options);
   }
 
-  /** Creates a record. Returns null when the caller may not view it. */
+  /** Returns null when the caller may not view the new record. */
   async create(
     body: Record<string, unknown>,
     options?: RecordOptions,
@@ -213,8 +203,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Updates a record. Returns null when the caller may no longer view it.
-   * Updating the signed-in record refreshes it in the auth store.
+   * Returns null when the caller may no longer view it. Updating the signed-in
+   * record refreshes it in the auth store.
    */
   async update(
     id: string,
@@ -245,10 +235,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Deletes a record. Deleting the signed-in record signs out, and needs its
-   * current `password` unless the session signed in within the last day,
-   * plus `mfaCode` with an authenticator app. Without either, see
-   * `requestAccountDeletion`.
+   * Deleting the signed-in record signs out and needs `password` (unless signed in
+   * within a day) plus `mfaCode` with an app. Otherwise see `requestAccountDeletion`.
    */
   async delete(
     id: string,
@@ -267,10 +255,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Creates an account and signs it in, saving the session like `signInWithPassword`.
-   * Returns null when the authRule does not let it sign in yet, e.g. before
-   * email verification, and `{ mfa: "verify" }` when it must take a second
-   * sign-in step and has none yet.
+   * Creates an account and signs it in. Returns null when the authRule blocks sign-in
+   * yet (e.g. unverified email), and `{ mfa: "verify" }` when a second step has none yet.
    */
   async signUp(
     body: Record<string, unknown>,
@@ -294,9 +280,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Signs in and saves the session in the auth store. With `cookie: true` it goes
-   * in an HttpOnly cookie instead, and the response and store hold no token.
-   * Of sign-ins and sign-outs that overlap, the one started last wins.
+   * Saves the session in the auth store, or with `cookie: true` in an HttpOnly cookie
+   * and no token. Of overlapping sign-ins and sign-outs, the one started last wins.
    */
   async signInWithPassword(
     identity: string,
@@ -313,9 +298,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Emails a sign-in code to the account with `email`, for a sign-in with
-   * no password, and returns the id to sign in with. Never reveals whether
-   * an account exists: an unknown email gets an id no code matches.
+   * Emails a sign-in code and returns the id to sign in with. Never reveals whether an
+   * account exists: an unknown email gets an id no code matches.
    */
   async requestOtp(email: string, options?: SendOptions): Promise<string> {
     const { otpId } = await this.#client.send<{ otpId: string }>(
@@ -325,10 +309,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     return otpId;
   }
 
-  /**
-   * Signs in with the code `requestOtp` emailed, and saves the session like
-   * `signInWithPassword`. The email counts as verified.
-   */
+  /** Signs in with the code `requestOtp` emailed. The email counts as verified. */
   async signInWithOtp(
     otpId: string,
     code: string,
@@ -343,10 +324,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Signs in with an ID token from a provider's native SDK, such as Google
-   * Sign-In or Sign in with Apple on iOS and Android, and saves the session
-   * like `signInWithPassword`. `nonce` is the one given to the SDK, if any.
-   * A new account goes through the provider's `mapProfile` with `data`.
+   * Signs in with an ID token from a native SDK such as Sign in with Apple. `nonce` is
+   * the one given to the SDK; a new account goes through `mapProfile` with `data`.
    */
   async signInWithIdToken(
     provider: string,
@@ -412,9 +391,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Starts setting up an authenticator app for the signed-in record: show
-   * the `uri` as a QR code, then confirm with a code from the app within 15
-   * minutes. Needs the current password.
+   * Starts authenticator app setup: show `uri` as a QR code, then confirm with a code
+   * from the app within 15 minutes. Needs the current password.
    */
   startTotp(
     recordId: string,
@@ -429,9 +407,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * As a superuser, removes another record's authenticator app, recovery
-   * codes and pending sign-ins, for an owner who lost their app. The owner
-   * is emailed.
+   * As a superuser, removes a record's authenticator app, recovery codes and pending
+   * sign-ins, for an owner who lost their app. The owner is emailed.
    */
   async clearMfa(recordId: string, options?: SendOptions): Promise<void> {
     await this.#client.send(this.#mfaPath(recordId, '/mfa'), {
@@ -448,8 +425,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Turns the authenticator app on with a code from it, and returns the
-   * recovery codes to keep, shown only once. Other sessions are signed out.
+   * Turns the authenticator app on and returns recovery codes, shown only once.
+   * Other sessions are signed out.
    */
   async confirmTotp(
     recordId: string,
@@ -504,13 +481,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * As a superuser, starts a session that acts as the record, to see the app
-   * as its owner does. By default the result has a new client signed in as
-   * the record, with its own in-memory auth store: this client stays signed
-   * in as the superuser. With `cookie: true`, this browser's cookie session
-   * becomes the record's instead, and `signOut()` gives the superuser theirs
-   * back; the auth store is then saved as for a cookie sign-in. Cookie mode
-   * needs the superuser to be signed in with the cookie.
+   * As a superuser, acts as the record. By default returns a new in-memory client; with
+   * `cookie: true` this browser's cookie session switches, and `signOut()` switches back.
    */
   async impersonate(
     id: string,
@@ -572,9 +544,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Starts linking an OAuth2 provider to the signed-in account, with its
-   * password, and returns the provider's URL to open in this browser. The
-   * account needs a cookie session, which the provider's return checks.
+   * Returns the provider's URL that links it to the signed-in account. Needs a cookie
+   * session, which the provider's return checks.
    */
   async oauth2LinkUrl(
     provider: string,
@@ -627,8 +598,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * The access token of a record's linked account, at a provider with
-   * `storeTokens`: refreshed first when it is about to expire, or when
+   * For a provider with `storeTokens`; refreshed first when about to expire or with
    * `refresh`. Only its own record, unless a superuser.
    */
   async getAccessToken(
@@ -659,10 +629,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     ).items;
   }
 
-  /**
-   * Unlinks an OAuth2 provider from a record. Its owner needs the password;
-   * a superuser unlinking another record's provider does not.
-   */
+  /** Its owner needs the password; a superuser unlinking another record's does not. */
   async unlinkAccount(
     recordId: string,
     provider: string,
@@ -719,9 +686,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Asks to move the signed-in account to `newEmail`. With a verified email,
-   * the current inbox gets a link to approve it first, then `newEmail` gets
-   * its own; otherwise `newEmail` gets its link at once.
+   * With a verified email the current inbox approves the change first, then `newEmail`
+   * gets its link; otherwise `newEmail` gets it at once.
    */
   async requestEmailChange(
     newEmail: string,
@@ -739,9 +705,8 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Confirms an email change with its token and the current password, and
-   * with an authenticator app a code from it or a recovery code. Ends every
-   * session.
+   * Needs the current password, and with an authenticator app a code from it or a
+   * recovery code. Ends every session.
    */
   async confirmEmailChange(
     token: string,
@@ -757,18 +722,16 @@ export class RecordService<T extends RecordModel = RecordModel> {
   }
 
   /**
-   * Emails the signed-in account a link that deletes it, for an owner who
-   * can confirm neither with a password nor a recent sign-in. Needs a
-   * verified email.
+   * Emails a deletion link, for an owner with neither a password nor a recent sign-in.
+   * Needs a verified email.
    */
   async requestAccountDeletion(options?: SendOptions): Promise<void> {
     await this.#post('/request-account-deletion', {}, options);
   }
 
   /**
-   * Deletes the account with the token of its deletion link, and with an
-   * authenticator app a code from it or a recovery code. Its sessions end
-   * with it, and this client signs out when it was the signed-in account.
+   * Needs a code from the authenticator app or a recovery code if it has one. This
+   * client signs out when it was the signed-in account.
    */
   async confirmAccountDeletion(
     token: string,
@@ -823,10 +786,7 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.#post('/request-password-reset-by-phone', { phone }, options);
   }
 
-  /**
-   * Signs in with a code from {@link requestPhoneCode}, creating the account for a new
-   * phone. Saves the session like `signInWithPassword`.
-   */
+  /** Signs in with a code from {@link requestPhoneCode}, creating the account for a new phone. */
   async signInWithPhoneCode(
     phone: string,
     code: string,

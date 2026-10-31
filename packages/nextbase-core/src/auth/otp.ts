@@ -13,9 +13,8 @@ import { unlinkUnproven } from './linked-accounts.ts';
 import type { Mailer } from './mail.ts';
 import { clearAttempts, countAttempt, mailKey, otpKey } from './throttle.ts';
 
-// Sign-in by a code emailed to the account, with no password. A request
-// answers an id whether or not the account exists; the code is kept hashed,
-// works once, and its id ends after a few wrong ones.
+// Sign-in by an emailed code. A request answers an id whether or not the account
+// exists; the code is kept hashed, works once, and ends after a few wrong ones.
 
 export interface OtpContext {
   db: DB;
@@ -28,23 +27,26 @@ export interface OtpContext {
 /** Wrong codes an id takes before it ends; the address has its own cap. */
 const MAX_ATTEMPTS = 5;
 
+/** Whether the collection signs in by email code; an authRule of `null` turns sign-in off. */
+export function otpEnabled(collection: AuthCollection): boolean {
+  return collection.otp.enabled && collection.authRule !== null;
+}
+
 /** The id of a code: what a sign-in names it by, never the code. */
 function otpHash(otpId: string): string {
   return createHash('sha256').update(otpId).digest('hex');
 }
 
 /**
- * Emails a code to the account with `email`, if there is one, and answers
- * the id to sign in with. An unknown email gets an id too, stored the same
- * way with a code no one has, so neither the answer nor what follows reveals
- * who has an account.
+ * Emails a code to the account with `email` and answers the id to sign in with. An
+ * unknown email gets an id with a code no one has, so nothing reveals who has an account.
  */
 export async function requestOtp(
   ctx: OtpContext,
   collection: AuthCollection,
   email: unknown,
 ): Promise<string> {
-  if (!collection.otp.enabled) {
+  if (!otpEnabled(collection)) {
     throw new ApiError(400, 'Sign-in by email code is not turned on.');
   }
   if (typeof email !== 'string' || email.trim() === '') {
@@ -91,10 +93,8 @@ export async function requestOtp(
 }
 
 /**
- * The account a code signs in, once: its id is spent on success, and after
- * too many wrong codes. Wrong codes are counted per address, the same for an
- * address no account has. The caller marks the email proven with
- * `proveEmail` once it lets the sign-in go ahead.
+ * The account a code signs in, once; wrong codes count per address, known or not.
+ * The caller marks the email proven with `proveEmail` once the sign-in goes ahead.
  */
 export async function signInWithOtp(
   ctx: OtpContext,
@@ -106,7 +106,7 @@ export async function signInWithOtp(
     new ApiError(400, 'The code is wrong or has expired.', {
       code: { code: 'validation_invalid_code', message: 'Wrong or expired.' },
     });
-  if (!collection.otp.enabled) {
+  if (!otpEnabled(collection)) {
     throw new ApiError(400, 'Sign-in by email code is not turned on.');
   }
   if (typeof otpId !== 'string' || otpId === '' || otpId.length > 64) {
@@ -157,9 +157,8 @@ export async function signInWithOtp(
 }
 
 /**
- * Marks the email a code just proved verified, if it was not. As the
- * verification link does, it drops the providers linked before anyone
- * proved the email: whoever linked them may not own it.
+ * Marks the email verified and, as the verification link does, drops providers
+ * linked before anyone proved it: whoever linked them may not own the email.
  */
 export async function proveEmail(
   ctx: OtpContext,

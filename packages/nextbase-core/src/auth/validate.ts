@@ -1,7 +1,7 @@
 import type { SignInMethod } from '@nextbasejs/client';
 import { ApiError } from '../errors.ts';
 
-/** What a sign-in check runs for. */
+/** How the account signs in; each starts a session. */
 export type SignInAction = 'sign-up' | 'link' | 'sign-in';
 
 /** What the app's `validateSignIn` sees. */
@@ -9,7 +9,6 @@ export interface SignInCheck {
   action: SignInAction;
   /** How the account proved itself: `password`, `oauth2`, `phoneCode` or `emailCode`. */
   method: SignInMethod;
-  /** The auth collection's name. */
   collection: string;
   /**
    * The account signing in or linking, as stored; for a sign-up, the values

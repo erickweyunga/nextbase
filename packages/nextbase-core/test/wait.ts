@@ -2,8 +2,7 @@ import type pg from 'pg';
 
 /**
  * Resolves once `done` returns true, checking every 10 ms. Rejects after
- * `timeout` ms, naming `what` it waited for, so a test that would hang fails
- * with a clear message instead.
+ * `timeout` ms naming `what`, so a hanging test fails with a clear message.
  */
 export async function waitFor(
   done: () => boolean | Promise<boolean>,

@@ -17,9 +17,8 @@ const STATE = table('_realtime_state');
 const PER_STATEMENT = 30_000;
 
 /**
- * A position in the event log, after an event. Events are ordered by the
- * position their transaction took when it committed, then by their order in
- * it. Positions are bigints, as Postgres sequences are.
+ * A position in the event log, after an event. Events order by their transaction's commit position,
+ * then by their order in it. Positions are bigints, as Postgres sequences are.
  */
 export interface Cursor {
   position: bigint;
@@ -32,16 +31,8 @@ export function compareCursors(a: Cursor, b: Cursor): number {
 }
 
 /**
- * Logs that `records` were written, in the transaction that wrote them, so
- * an event exists exactly when its write commits.
- *
- * The transaction also gets one row in `_realtime_transactions`, whose id
- * it keeps in a transaction-local setting. A deferred trigger on that row
- * gives the transaction its position as it commits, under a lock held until
- * the commit is done, so positions are taken in commit order and become
- * visible in that order. Each statement also notifies listeners; Postgres
- * sends one notification per transaction, once it commits, and none if it
- * rolls back.
+ * Logs that `records` were written, in their transaction, so an event exists exactly when its write commits.
+ * A deferred trigger gives the transaction its position at commit, under a lock, so positions follow commit order.
  */
 export async function writeEvents(
   q: Builder,
@@ -81,9 +72,8 @@ export async function writeEvents(
 }
 
 /**
- * The record as stored, for subscribers' rules and output, without its
- * password hash and token key. Timestamps are kept as Postgres writes them,
- * so `decodeRecordJson` reads them back exactly.
+ * The record as stored, for subscribers' rules and output, without password hash and token key.
+ * Timestamps stay as Postgres writes them, so `decodeRecordJson` reads them back exactly.
  */
 function snapshot(collection: Collection, record: Row): Row {
   const out: Row = {};
@@ -134,11 +124,8 @@ interface EventRow {
 }
 
 /**
- * Reads the events after `cursor`, in order, with the records of the
- * collections in `collectionIds`, or of every collection without it. A
- * transaction has a position only once it commits, and takes it after every
- * transaction before it committed, so no event can appear later below a
- * position already read.
+ * Reads events after `cursor`, in order, with the records of `collectionIds` (or of all collections).
+ * Positions are taken at commit, after earlier commits, so no event later appears below one read.
  */
 export async function readEvents(
   q: Builder,
@@ -237,10 +224,8 @@ export async function lastPosition(q: Builder): Promise<string | undefined> {
 }
 
 /**
- * Deletes the events of transactions that committed more than `seconds`
- * ago, and remembers the last event deleted, so a reader whose cursor is
- * below it learns it may have missed events. A transaction still running
- * has no position yet and takes one above every deleted one.
+ * Deletes events of transactions committed over `seconds` ago and remembers the last one deleted, so
+ * readers below it learn they may have missed events. Running transactions get a higher position.
  */
 export async function purgeEvents(q: Builder, seconds: number): Promise<void> {
   await q

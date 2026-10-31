@@ -59,8 +59,7 @@ export interface MailOptions {
   /** Sends one email through any provider (SMTP, Resend, SES, Postmark...). */
   send(message: MailMessage): Promise<void>;
   /**
-   * Base URL of `/verify-email`, `/reset-password`, `/approve-email-change`,
-   * `/confirm-email-change` and `/delete-account` (each with `?token=`).
+   * Base URL of the `/verify-email`, `/reset-password` and other `?token=` pages.
    * Defaults to the `appUrl` option.
    */
   appUrl?: string;

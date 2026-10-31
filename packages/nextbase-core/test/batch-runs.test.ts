@@ -203,9 +203,8 @@ describe('batches of creates', () => {
     queries();
     const reply = await batch(tokens.user, fifty);
     expect(reply.status).toBe(200);
-    // The session, BEGIN, one per relation target, the create rule, the
-    // insert in a savepoint (so a duplicate can be traced to its row), the
-    // read back and COMMIT.
+    // The session, BEGIN, one per relation target, the create rule, the insert in
+    // a savepoint (to trace a duplicate to its row), the read back and COMMIT.
     expect(queries()).toBe(10);
     const results = reply.body as unknown as Reply[];
     expect(results.map((r) => r.status)).toEqual(fifty.map(() => 200));
