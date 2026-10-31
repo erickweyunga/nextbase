@@ -11,7 +11,6 @@ import { Issues } from '../src/schema/input.ts';
 
 const none: CollectionContext = { others: [] };
 
-/** Returns the validation errors of an invalid collection. */
 function errorsOf(
   input: unknown,
   context: CollectionContext = none,

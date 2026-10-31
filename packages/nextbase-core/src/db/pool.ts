@@ -33,10 +33,8 @@ export function sharedPool(connectionString: string): Pool {
 }
 
 /**
- * Ends a pool and waits until its connections have closed. `pool.end()`
- * resolves while they are still closing, and a server that ends them first,
- * such as when their database is dropped, then fails them with an error
- * nothing is left to handle.
+ * Ends a pool and waits until its connections have closed. `pool.end()` resolves while they
+ * are still closing, and a server ending them then fails them with an unhandled error.
  */
 export async function endPool(pool: pg.Pool): Promise<void> {
   let open = pool.totalCount;

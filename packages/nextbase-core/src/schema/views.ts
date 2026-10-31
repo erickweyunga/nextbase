@@ -5,10 +5,8 @@ import { ApiError } from '../errors.ts';
 import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
 import { fieldNameProblem } from './fields.ts';
 
-// View collections run as a dedicated least-privilege role: SELECT on collection
-// tables minus auth secrets, nothing else. So Postgres itself keeps views from
-// secrets and system tables. The role owns the views, and every view read runs
-// as it (SET LOCAL ROLE), because functions in a view run as whoever queries it.
+// View collections run as a least-privilege role (SELECT on collection tables minus auth secrets), so Postgres
+// keeps views from secrets. Reads SET LOCAL ROLE to it, since functions in a view run as whoever queries it.
 
 const SECRET_COLUMNS: ReadonlySet<string> = new Set(['password', 'tokenKey']);
 
@@ -105,11 +103,8 @@ async function asViewRole<T>(
   return result;
 }
 
-// Functions in a view run with the caller's privileges, hence the role switch.
-// The role lasts until the transaction ends, even when `db` is a transaction
-// and this runs in a savepoint of it. With `restore`, for a transaction that
-// goes on after the read, the role is set back once the read succeeds; when
-// it fails, rolling back the savepoint sets it back.
+// Functions in a view run with the caller's privileges, hence the role switch, lasting until the transaction
+// ends. With `restore`, a successful read sets it back; on failure the savepoint rollback does.
 export function readAsViewRole<T>(
   db: { transaction<R>(fn: (tx: Tx) => Promise<R>): Promise<R> },
   role: string | null,

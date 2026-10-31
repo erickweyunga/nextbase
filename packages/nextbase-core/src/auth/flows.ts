@@ -30,11 +30,8 @@ import {
 import { peekToken, signToken, verifyToken } from './tokens.ts';
 import { spendToken } from './used-tokens.ts';
 
-// Email verification, password reset, email change and account deletion.
-// - Answers and timing are the same whether or not the account exists.
-// - Tokens are bound to the record's tokenKey; rotating it on reset or email
-//   change makes each token single-use and ends every session.
-// - Links come from the configured app URL, never the Host header.
+// Answers and timing are the same whether or not the account exists. Tokens are bound
+// to tokenKey, and links come from the configured app URL, never the Host header.
 
 export interface FlowContext {
   db: DB;
@@ -150,10 +147,8 @@ export async function confirmPasswordReset(
 }
 
 /**
- * When the current email is verified, its inbox must approve the change
- * first: a link goes there, and only once it is opened does the new address
- * get its own. A stolen session alone cannot move the account to another
- * inbox. Without a verified email, the new address gets its link at once.
+ * A verified current inbox must approve the change before the new address gets its
+ * link, so a stolen session alone cannot move the account to another inbox.
  */
 export async function requestEmailChange(
   ctx: FlowContext,
@@ -190,8 +185,8 @@ export async function requestEmailChange(
 }
 
 /**
- * Opens the link the current inbox got: the new address then gets its
- * own. Each link works once, and only for the address it names.
+ * Opens the link the current inbox got: the new address then gets its own.
+ * Each link works once, and only for the address it names.
  */
 export async function approveEmailChange(
   ctx: FlowContext,
@@ -282,9 +277,8 @@ export async function confirmEmailChange(
 }
 
 /**
- * For an owner who can confirm neither with their password nor with a recent
- * sign-in, such as one who signed up through a provider: a link goes to
- * their verified email, and opening it deletes the account.
+ * For an owner with neither a password nor a recent sign-in, such as one who signed
+ * up through a provider: a link to their verified email deletes the account.
  */
 export async function requestAccountDeletion(
   ctx: FlowContext,
@@ -316,9 +310,8 @@ export async function requestAccountDeletion(
 }
 
 /**
- * Deletes the account the link was sent for, as its owner, so the
- * collection's delete rule still decides. With an authenticator app, a code
- * from it or a recovery code is needed in `mfaCode` too.
+ * Deletes the account as its owner, so the delete rule still decides. With an
+ * authenticator app, `mfaCode` needs a code from it or a recovery code too.
  */
 export async function confirmAccountDeletion(
   ctx: FlowContext,
@@ -421,10 +414,8 @@ async function verified(
 }
 
 /**
- * Goes through the records service so values are validated as on any write.
- * The token was checked against the record as read before; the write locks
- * the record and checks its tokenKey again, so of concurrent requests with
- * one token only the first succeeds and the others find the key it rotated.
+ * The write locks the record and checks its tokenKey again, so of concurrent
+ * requests with one token only the first succeeds.
  */
 async function privilegedUpdate(
   ctx: FlowContext,

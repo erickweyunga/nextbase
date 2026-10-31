@@ -36,9 +36,8 @@ interface Grant {
 }
 
 /**
- * A minimal OpenID Connect provider over HTTPS, as real providers are and
- * as NextBase requires: discovery, the token endpoint with PKCE, and JWKS.
- * Its authorization page is `approve()`, standing in for the user.
+ * A minimal OpenID Connect provider over HTTPS: discovery, the token endpoint
+ * with PKCE, and JWKS. `approve()` stands in for its authorization page.
  */
 export async function startProvider(): Promise<Provider> {
   const dir = mkdtempSync(join(tmpdir(), 'nextbase-idp-'));

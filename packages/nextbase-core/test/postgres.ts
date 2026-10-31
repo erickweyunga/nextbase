@@ -15,7 +15,6 @@ export function testDatabaseUrl(): string {
 export interface TestDatabase {
   db: DB;
   pool: pg.Pool;
-  /** Connection string of the database. */
   url: string;
   close(): Promise<void>;
 }
@@ -39,11 +38,8 @@ function isStale(name: string): boolean {
 }
 
 /**
- * Drops the databases and roles that interrupted runs left behind, which
- * never reached their cleanup. Only ones older than an hour, so suites
- * running at the same time against the same server keep theirs. A view role
- * is dropped once nothing grants it anything, which is the case once its
- * database is gone; Postgres refuses to drop one still in use.
+ * Drops databases and roles left by interrupted runs, older than an hour so
+ * concurrent suites keep theirs. A view role can go only once its database has.
  */
 export async function dropStaleTestDatabases(): Promise<void> {
   const admin = new pg.Client({ connectionString: url });
@@ -71,12 +67,8 @@ export async function dropStaleTestDatabases(): Promise<void> {
 }
 
 /**
- * Creates an empty database for one test file. NextBase owns a fixed Postgres
- * schema, so test files are isolated by database rather than by schema.
- *
- * With `roleAttributes`, the database is owned by and used through a new
- * non-superuser role with those attributes (e.g. "CREATEROLE"), since a
- * superuser bypasses every privilege check.
+ * Creates an empty database for one test file, since NextBase owns a fixed schema.
+ * `roleAttributes` uses a new non-superuser role, as superusers bypass privilege checks.
  */
 export async function createTestDatabase(
   roleAttributes?: string,

@@ -1,8 +1,6 @@
 /**
  * Postgres query builder on a node-postgres pool. `DB` (pool) and `Tx`
  * (transaction) share the same query methods.
- *
- * @module
  */
 export {
   Builder,

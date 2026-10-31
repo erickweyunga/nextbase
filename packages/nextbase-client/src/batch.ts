@@ -35,9 +35,8 @@ export class Batch {
   }
 
   /**
-   * Sends the writes and resolves with one result each, in order. On failure nothing
-   * is saved and the 400 ClientError's `data.requests[index]` holds the field errors.
-   * Files are uploaded to the bucket first, so batches with files need one.
+   * Resolves with one result per write, in order. On failure nothing is saved and the
+   * 400 error's `data.requests[index]` holds field errors. Files need a bucket.
    */
   async send(options: SendOptions = {}): Promise<BatchResult[]> {
     const requests = [];

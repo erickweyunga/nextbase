@@ -193,10 +193,8 @@ interface Context {
    */
   noteError(error: string): void;
   /**
-   * Counts requests against rate limits for the caller: this request when
-   * none are given, as for a route marked `countsItself`, or the writes of
-   * a batch. Throws the 429 of the first that is over. Does nothing for
-   * in-process requests or when rate limits are off.
+   * Counts this request, or a batch's writes, against the caller's rate limits and
+   * throws the first 429. Does nothing in-process or when rate limits are off.
    */
   rateLimit(requests?: readonly Limited[]): Promise<void>;
 }
@@ -206,10 +204,8 @@ export interface Route {
   /** Matched against the path below `basePath`; groups become `params`. */
   pattern: RegExp;
   /**
-   * The route runs in a transaction opened before the handler, which also
-   * reads the schema version. Use it only for routes that hold the
-   * transaction briefly: a route that reads a request body would keep the
-   * connection busy while the body arrives.
+   * Runs in a transaction opened before the handler. Only for routes that hold it
+   * briefly: reading a request body would keep the connection busy meanwhile.
    */
   transaction?: true;
   /**
@@ -223,9 +219,8 @@ export interface Route {
    */
   stream?: true;
   /**
-   * What the route does, for rate limit labels such as `*:auth`. On routes
-   * under `/collections/{collection}/` and `/files/{collection}/`, labels
-   * naming that collection apply too.
+   * What the route does, for rate limit labels such as `*:auth`. Labels naming the
+   * route's `{collection}` apply too.
    */
   tags?: readonly RouteTag[];
   /**
@@ -362,10 +357,8 @@ export const ROUTES: readonly Route[] = [
           collection: context.schema.find(write.collection),
         })),
       );
-      // Writes are planned before the transaction starts, then all run in it:
-      // all or nothing. Planning stops at the first write that fails. The
-      // writes before it still run, so the batch reports the first failing
-      // write in order, as when each is checked and run in turn.
+      // Planned before the transaction, then all run in it. Planning stops at the
+      // first failing write; earlier ones still run, so it is reported in order.
       const planned: PlannedWrite[] = [];
       let failed: unknown;
       const written = new Set<string>();
@@ -841,10 +834,8 @@ export const ROUTES: readonly Route[] = [
     async handler(context) {
       const { request, params, db, schema, oauth2 } = context;
       const query = new URL(request.url).searchParams;
-      // Counted first, so requests that fail below count too. The browser
-      // is navigating, so a refusal goes back to the app as its other
-      // sign-in errors do, not as JSON; only to a redirect that is valid,
-      // and only when OAuth2 is set up, so there is an app to return to.
+      // Counted first, so failing requests count too. A refusal redirects back to the app
+      // like other sign-in errors, only to a valid redirect when OAuth2 is set up.
       try {
         await context.rateLimit();
       } catch (error) {
@@ -1155,9 +1146,8 @@ export const ROUTES: readonly Route[] = [
           }
           throw error;
         }
-        // The second step is taken on the app's page. Its id stays in an
-        // HttpOnly cookie, out of the URL; GET /collections/{c}/mfa reads
-        // the methods it can take.
+        // The second step is taken on the app's page. Its id stays in an HttpOnly cookie,
+        // out of the URL; GET /collections/{c}/mfa reads the methods it can take.
         if (challenge) {
           const response = new Response(null, {
             status: 302,
@@ -1448,12 +1438,8 @@ export const ROUTES: readonly Route[] = [
         body: { ...body, id },
         query: new URLSearchParams(),
       });
-      // A new account could not sign in before verifying its email either,
-      // so a registered one answers the same, doing the same work, and its
-      // owner is told instead. The same sign-up with an unused email, rolled
-      // back, answers what another field would; Postgres names only the
-      // first value already taken.
-      // An empty email, as a phone sign-up has, is no one's.
+      // A registered email answers as an unused one would, doing the same work, and its
+      // owner is told instead, so a sign-up reveals nothing. An empty email is no one's.
       const hidden =
         collection.emailVerification.required &&
         typeof input.email === 'string' &&
@@ -1726,10 +1712,8 @@ export function beginRoute(db: DB, statementTimeout: number): Promise<Tx> {
 }
 
 /**
- * Runs records API work in a transaction limited by `statementTimeout`. It
- * uses the route's transaction if there is one, or opens a new one. The
- * timeout lasts only until the transaction ends, so it works through
- * transaction poolers.
+ * Runs records API work in a transaction limited by `statementTimeout`. The timeout
+ * lasts only until the transaction ends, so it works through transaction poolers.
  */
 async function bounded<T>(
   context: Context,
@@ -1759,9 +1743,8 @@ function parse({ request }: Context): { url: URL } {
 }
 
 /**
- * The `@request.*` values rules may read. Reads made while a write is planned
- * use the transaction of the hook that sent the request, if any, so they see
- * what it wrote.
+ * The `@request.*` values rules may read. Reads during planning use the sending
+ * hook's transaction, if any, so they see what it wrote.
  */
 function recordsContext(
   context: Context,
@@ -1829,9 +1812,8 @@ async function writeRecord(
 }
 
 /**
- * A write checked as far as it can be before its transaction starts. A batch
- * does consecutive creates together, so they stay planned creates; other
- * writes come with the rest of their work.
+ * A write checked as far as it can be before its transaction starts. Consecutive
+ * creates of a batch stay planned creates, done together.
  */
 type PlannedWrite = { create: PlannedCreate } | { apply: Apply<Reply> };
 
@@ -1979,9 +1961,8 @@ function flowContext(context: Context): FlowContext {
 }
 
 /**
- * Sends the verification link a collection sends by itself, on sign-up or
- * sign-in. It never fails the request: a link refused for being too soon
- * after the last one is not needed, and other failures are logged.
+ * Sends a collection's own verification link on sign-up or sign-in. Never fails the
+ * request: a link refused as too soon is not needed, and other failures are logged.
  */
 async function sendVerification(
   context: Context,
@@ -2280,9 +2261,8 @@ async function bodyStep(
 }
 
 /**
- * The sign-in of the body's `mfaId`, or else of this browser's cookie.
- * Browsers send the cookie with requests other sites make, so using it
- * needs a request from this site.
+ * The sign-in of the body's `mfaId`, or this browser's cookie. Other sites' requests
+ * carry the cookie too, so using it needs a request from this site.
  */
 async function requiredStep(
   context: Context,
@@ -2306,9 +2286,8 @@ async function requiredStep(
 }
 
 /**
- * The cookie's sign-in, when a first-step route signed in its record and it
- * can take that step: then the request finishes it. Otherwise the cookie
- * is left be, so an old one never stops another sign-in.
+ * The cookie's sign-in, when a first-step route signed in its record and it can take
+ * that step. Otherwise the cookie is left be, so an old one never stops a sign-in.
  */
 async function cookieStep(
   context: Context,
@@ -2385,9 +2364,8 @@ function secondStep(
 }
 
 /**
- * The second step of a sign-in by an OAuth2 provider. It only proves a
- * provider account already linked to the record: it never links one or
- * signs up. It ends with a cookie session, as OAuth2 sign-ins do.
+ * The second step of a sign-in by OAuth2. It only proves an already linked provider
+ * account: it never links one or signs up.
  */
 async function oauth2Step(
   context: Context,
@@ -2460,10 +2438,8 @@ async function oauth2Step(
 }
 
 /**
- * Starts a session in which the calling superuser acts as the record, like
- * a sign-in that skips the collection's auth rule. It lasts `duration`
- * seconds and is never extended. With `cookie`, the superuser's own cookie
- * session is kept in another cookie, and signing out restores it.
+ * Starts a session where the superuser acts as the record, skipping its auth rule,
+ * never extended. With `cookie`, the superuser's own session is kept and restored.
  */
 async function impersonate(context: Context): Promise<Response> {
   const { request, params, db, schema, principal, inProcess, origins } =
@@ -2623,9 +2599,8 @@ function ownRecord(
 }
 
 /**
- * The caller's own record and session, for MFA settings: only the record
- * itself, never a superuser for another, and never while impersonating, as
- * each could leave a way into the account.
+ * The caller's own record and session, for MFA settings: never a superuser for
+ * another, never while impersonating, as each could leave a way into the account.
  */
 function ownMfa(
   schema: Schema,

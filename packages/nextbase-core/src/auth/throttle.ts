@@ -3,9 +3,8 @@ import type { Builder } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
 import { ApiError } from '../errors.ts';
 
-// Counted in Postgres so limits hold across serverless instances without
-// trusting client IP headers. Trade-off: someone can lock a known account out
-// for one window; a password reset still works.
+// Counted in Postgres so limits hold across instances without trusting IP headers.
+// Trade-off: someone can lock a known account out for one window.
 
 export interface Limit {
   max: number;
@@ -16,9 +15,8 @@ export interface Limit {
 const DEFAULT_LIMIT: Limit = { max: 10, window: '15 minutes' };
 
 /**
- * Counts before the password is checked, in one atomic upsert, so parallel
- * guesses cannot all pass. Run outside any transaction the attempt could roll
- * back, so failures stay counted.
+ * Counts before the password is checked, in one atomic upsert, so parallel guesses
+ * cannot all pass. Run outside the attempt's transaction so failures stay counted.
  */
 export async function countAttempt(
   q: Builder,
@@ -29,9 +27,8 @@ export async function countAttempt(
   // Postgres rejects.
   const unique = [...new Set(keys)];
   if (unique.length === 0) return;
-  // One statement counts every key and removes expired counts of other keys.
-  // The keys being counted are left out of the delete, because one statement
-  // cannot change a row twice; the upsert restarts their expired counts.
+  // Counted keys stay out of the delete, as one statement cannot change a row
+  // twice; the upsert restarts their expired counts.
   const rows = await q
     .newQuery(
       `WITH expired AS (

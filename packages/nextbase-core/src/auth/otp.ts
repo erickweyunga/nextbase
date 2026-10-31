@@ -13,9 +13,8 @@ import { unlinkUnproven } from './linked-accounts.ts';
 import type { Mailer } from './mail.ts';
 import { clearAttempts, countAttempt, mailKey, otpKey } from './throttle.ts';
 
-// Sign-in by a code emailed to the account, with no password. A request
-// answers an id whether or not the account exists; the code is kept hashed,
-// works once, and its id ends after a few wrong ones.
+// Sign-in by an emailed code. A request answers an id whether or not the account
+// exists; the code is kept hashed, works once, and ends after a few wrong ones.
 
 export interface OtpContext {
   db: DB;
@@ -34,10 +33,8 @@ function otpHash(otpId: string): string {
 }
 
 /**
- * Emails a code to the account with `email`, if there is one, and answers
- * the id to sign in with. An unknown email gets an id too, stored the same
- * way with a code no one has, so neither the answer nor what follows reveals
- * who has an account.
+ * Emails a code to the account with `email` and answers the id to sign in with. An
+ * unknown email gets an id with a code no one has, so nothing reveals who has an account.
  */
 export async function requestOtp(
   ctx: OtpContext,
@@ -91,10 +88,8 @@ export async function requestOtp(
 }
 
 /**
- * The account a code signs in, once: its id is spent on success, and after
- * too many wrong codes. Wrong codes are counted per address, the same for an
- * address no account has. The caller marks the email proven with
- * `proveEmail` once it lets the sign-in go ahead.
+ * The account a code signs in, once; wrong codes count per address, known or not.
+ * The caller marks the email proven with `proveEmail` once the sign-in goes ahead.
  */
 export async function signInWithOtp(
   ctx: OtpContext,
@@ -157,9 +152,8 @@ export async function signInWithOtp(
 }
 
 /**
- * Marks the email a code just proved verified, if it was not. As the
- * verification link does, it drops the providers linked before anyone
- * proved the email: whoever linked them may not own it.
+ * Marks the email verified and, as the verification link does, drops providers
+ * linked before anyone proved it: whoever linked them may not own the email.
  */
 export async function proveEmail(
   ctx: OtpContext,

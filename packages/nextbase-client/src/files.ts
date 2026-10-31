@@ -11,9 +11,8 @@ export interface FileUrlOptions {
   /** A token from `files.getToken()`, for protected files. */
   token?: string;
   /**
-   * A thumbnail size of the field, such as `100x100`, for JPEG, PNG, GIF and
-   * WebP images. Other files, and sizes the field does not allow, are
-   * served as they are.
+   * A thumbnail size of the field, such as `100x100`, for JPEG, PNG, GIF and WebP.
+   * Other files and sizes the field does not allow are served as they are.
    */
   thumb?: string;
 }
@@ -60,9 +59,8 @@ export function hasFiles(body: Record<string, unknown>): boolean {
   );
 }
 
-// Non-file values go in `@jsonPayload` to keep their types. When the files
-// add up to more than 4 MB, the largest go to the bucket, when there is one,
-// until the rest fit.
+// Non-file values go in `@jsonPayload` to keep their types. Over 4 MB, the largest
+// files go to the bucket, when there is one, until the rest fit.
 export async function toFormData(
   client: NextBaseClient,
   collection: string,

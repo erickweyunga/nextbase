@@ -25,9 +25,8 @@ export interface HubStream {
    */
   sessionRead(active: ActiveSession | undefined): void;
   /**
-   * The next page of events, read once for every stream that follows the
-   * hub, after its session was read. It may start before the stream's own
-   * cursor.
+   * The next page of events, read once for every following stream, after its session was read.
+   * It may start before the stream's own cursor.
    */
   page(page: EventPage): void;
   /** Events may be ready: a stream that does not follow reads them itself. */
@@ -42,18 +41,8 @@ export type ReadSessions = (
 ) => Promise<(ActiveSession | undefined)[]>;
 
 /**
- * Wakes this instance's open streams when events may have been committed,
- * and reads each new page of events once for all streams that are caught
- * up. A stream behind, such as one that resumed, reads its own pages until
- * it catches up, then follows.
- *
- * It listens for the notification writes send on a connection of its own,
- * which transaction poolers do not support, so it uses `listenUrl`. While it
- * cannot listen, it polls the log instead, and keeps trying to listen.
- *
- * It holds the connection only while streams are open: the first stream
- * starts it and the last one stops it, so an idle instance, such as a
- * suspended serverless function, keeps nothing open.
+ * Wakes open streams when events may be committed, reading each new page once for caught-up streams.
+ * Listens on its own `listenUrl` connection (polling while it cannot), held only while streams are open.
  */
 export class RealtimeHub {
   readonly #listenUrl: string | undefined;
@@ -186,9 +175,8 @@ export class RealtimeHub {
   }
 
   /**
-   * Reads the sessions of the streams that follow, with one query, so none
-   * gets a page after its session ended, and rules see the signed-in
-   * record as it is now.
+   * Reads the following streams' sessions in one query, so none gets a page after its session
+   * ended, and rules see the signed-in record as it is now.
    */
   async #readSessions(): Promise<void> {
     const streams = [...this.#following].filter((s) => s.session);
@@ -243,9 +231,8 @@ export class RealtimeHub {
   async #listen(run: number, url: string): Promise<void> {
     const client = new pg.Client({
       connectionString: url,
-      // Starts the system's keepalive probes after 10 seconds idle rather
-      // than its default two hours. Probes still take minutes to give up,
-      // so the health check below is what notices a dead connection.
+      // Keepalive probes start after 10 seconds idle, not the default two hours. They still take
+      // minutes to give up, so the health check below is what notices a dead connection.
       keepAlive: true,
       keepAliveInitialDelayMillis: 10_000,
       // The default waits forever on a database that does not answer.
@@ -280,9 +267,8 @@ export class RealtimeHub {
   }
 
   /**
-   * Queries the listening connection now and then. A connection that died
-   * without the server saying so, as in a failover, hears nothing and
-   * reports no error, so one that does not answer in time counts as lost.
+   * Queries the listening connection now and then. One that died silently, as in a failover,
+   * hears nothing, so one that does not answer in time counts as lost.
    */
   #checkHealth(run: number, client: pg.Client): void {
     clearInterval(this.#health);

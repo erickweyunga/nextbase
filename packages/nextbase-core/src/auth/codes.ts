@@ -7,12 +7,10 @@ import { countAttempt, mailKey } from './throttle.ts';
 // Six-digit codes sent by email or text. The caller keeps each one hashed
 // and single-use, and limits guesses.
 
-/** A new six-digit code. */
 export function newCode(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
-/** A code as typed, if it can be one. */
 export function typedCode(input: unknown): string | undefined {
   const code = typeof input === 'string' ? input.trim() : '';
   return /^\d{6}$/.test(code) ? code : undefined;

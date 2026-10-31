@@ -144,9 +144,8 @@ async function superuser(
   return 0;
 }
 
-// Only someone who can reach the database and the secret key gets here, so
-// it needs no password: it is how a superuser who must take a second step
-// gets their first app.
+// Anyone with database access and the secret key gets here, so no password is needed:
+// it is how a superuser who must take a second step gets their first app.
 async function mfaSetup(
   nextbase: NextBase,
   email: string,

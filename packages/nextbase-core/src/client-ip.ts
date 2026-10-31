@@ -1,9 +1,8 @@
 import { isIP } from 'node:net';
 
 /**
- * Where the client's IP comes from: `"vercel"` for Vercel's own headers, a
- * header your proxy sets, or a function. Never used to decide who is signed
- * in, only for logs and rate limits.
+ * Where the client's IP comes from: `"vercel"`, a header your proxy sets, or a
+ * function. Used only for logs and rate limits, never to decide who is signed in.
  */
 export type ClientIpOption =
   | 'vercel'
@@ -24,9 +23,8 @@ export type ClientIp = (request: Request) => string | undefined;
 const UNKNOWN: ClientIp = () => undefined;
 
 /**
- * Reads `clientIp`. Without it, Vercel's headers are used on Vercel, and
- * elsewhere the IP is unknown: no header can be trusted unless a proxy of
- * yours sets it.
+ * Without `clientIp`, Vercel's headers are used on Vercel, and elsewhere the IP is
+ * unknown: no header can be trusted unless a proxy of yours sets it.
  */
 export function clientIpReader(
   option: ClientIpOption | undefined,
@@ -72,9 +70,8 @@ export function clientIpReader(
 }
 
 /**
- * The entry `hops` from the right of a list header, all of its lines merged.
- * Proxies append, so entries further left were written by the client and
- * prove nothing.
+ * The entry `hops` from the right of a list header. Proxies append, so entries
+ * further left were written by the client and prove nothing.
  */
 function fromHeader(
   request: Request,
@@ -100,10 +97,8 @@ const MAX_PORT = 65_535;
 const MAPPED_V4 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
 
 /**
- * A valid IP, or undefined: without a port or zone id, IPv6 compressed and
- * lowercase, and an IPv4-mapped IPv6 address as plain IPv4, so one client
- * always reads the same. Brackets are only allowed around IPv6, a zone id
- * only after IPv6, and a port only from 0 to 65535.
+ * A valid IP without port or zone id, IPv6 canonical and IPv4-mapped as plain
+ * IPv4, so one client always reads the same; otherwise undefined.
  */
 function normalizeIp(value: string): string | undefined {
   const bracketed = BRACKETED.exec(value);

@@ -1,11 +1,8 @@
 import type { AuthStore } from './auth-store.ts';
 
 /**
- * Keeps requests that overlap from saving an older state over a newer one.
- * A refresh of the current session, such as `getSession`, saves its answer
- * only if the store did not change while it was in flight. A sign-in or
- * sign-out is what the user asked for last, so it changes the store unless
- * one started after it already did.
+ * Keeps overlapping requests from saving older state over newer. A refresh saves only
+ * if the store is unchanged; a sign-in or sign-out wins unless a later one already did.
  */
 class AuthSync {
   // Bumped on every change of the store, including from another tab.

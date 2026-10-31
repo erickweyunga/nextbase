@@ -40,13 +40,8 @@ const ANONYMOUS: Principal = { superuser: false };
 const SUPERUSERS = '_superusers';
 
 /**
- * An invalid Bearer token is a 401 so API clients notice; an invalid cookie is
- * cleared and the request continues anonymously so public pages never break.
- * Pass `extend` only when the response can also renew the cookie. With
- * `writeCookie`, cookie changes are written through it instead of returned,
- * and a cookie session is extended only once its renewed cookie is written.
- * It returns false when it cannot write, as in a Next.js server component:
- * a session extended past its cookie would end early all the same.
+ * A bad Bearer token is a 401; a bad cookie is cleared and the request goes on anonymously.
+ * With `writeCookie`, a cookie session is extended only once its renewed cookie is written.
  */
 export async function resolvePrincipal(
   request: Request,
@@ -133,11 +128,8 @@ export function requireSuperuser(principal: Principal): void {
 }
 
 /**
- * A superuser acting as someone may do what they can, but nothing that
- * would leave a way back into the account once the session ends, or change
- * who else is signed in: no new or longer sessions, no new password, email,
- * phone, identity or token key, no linked providers, no other sessions
- * revoked. A 403 that says what was refused, such as `be refreshed`.
+ * An impersonating superuser may do nothing that leaves a way back into the account
+ * or changes who else is signed in. A 403 naming the action, such as `be refreshed`.
  */
 export function forbidImpersonated(principal: Principal, action: string): void {
   if (principal.impersonatedBy !== undefined) {

@@ -9,9 +9,8 @@ const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
 const IDENTIFIER_CHAR = /[\w$\u0080-￿]/;
 
 /**
- * Replaces `{:name}`, `{{table}}` and `[[column]]` tokens via `replace`. Literals,
- * quoted identifiers, dollar-quoted strings and comments are copied untouched.
- * `$1` is rejected since it would collide with the generated numbers.
+ * Replaces `{:name}`, `{{table}}` and `[[column]]` tokens, skipping literals, quoted
+ * names and comments. `$1` is rejected since it would collide with generated numbers.
  */
 export function rewriteSQL(
   sql: string,

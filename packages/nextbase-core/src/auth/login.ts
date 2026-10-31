@@ -35,8 +35,6 @@ export class EmailNotVerified extends ApiError {
 
 /**
  * authRule `null` disables logins, `""` allows all, anything else is a filter.
- * With `emailVerification.required`, an unverified email is refused too; an
- * account without an email, such as one that signs in by phone, is not.
  * Call only after the password matched, so the 403 leaks nothing.
  */
 export async function checkAuthRule(

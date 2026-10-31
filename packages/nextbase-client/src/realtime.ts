@@ -23,10 +23,8 @@ export interface SubscribeOptions {
   /** Output fields, e.g. `id,title`. */
   fields?: string;
   /**
-   * Called once the subscription is live, so events from then on arrive,
-   * and again whenever events may have been missed, such as after the
-   * client was away longer than the server keeps events. Load what you
-   * show here.
+   * Called once the subscription is live and again whenever events may have been
+   * missed, such as after a long disconnect. Load what you show here.
    */
   onReset?: () => void;
   /** Called when the server refuses the subscription, which then ends. */
@@ -57,9 +55,8 @@ const MAX_RETRY_MS = 30_000;
 const HEALTHY_MS = MAX_RETRY_MS;
 
 /**
- * Realtime subscriptions of one client, all over one streamed request. It
- * reconnects on its own, resuming after the last event it received, and
- * starts over when subscriptions or the signed-in session change.
+ * Realtime subscriptions of one client over one streamed request. It reconnects and
+ * resumes after the last event, and starts over when subscriptions or the session change.
  */
 export class RealtimeService {
   readonly #client: NextBaseClient;
@@ -83,10 +80,8 @@ export class RealtimeService {
   }
 
   /**
-   * Calls `callback` for each record of `collection` created, updated or
-   * deleted that the caller may see: any record for `"*"`, under the list
-   * rule, or one record by id, under the view rule. Returns the function
-   * that unsubscribes.
+   * Watches `"*"` (under the list rule) or one record id (under the view rule) of
+   * `collection`. Returns the function that unsubscribes.
    */
   subscribe<T extends RecordModel = RecordModel>(
     collection: string,
@@ -168,7 +163,6 @@ export class RealtimeService {
     this.#wake = undefined;
   }
 
-  /** Runs one streamed request until it ends. */
   async #stream(): Promise<Outcome> {
     const subscriptions = [...this.#subscriptions];
     const store = this.#client.authStore;
@@ -285,9 +279,8 @@ export class RealtimeService {
   }
 
   /**
-   * A response that refused the stream. Refused topics end their
-   * subscriptions; other client errors end all of them, as retrying cannot
-   * fix them. A 401 signs out, as `send()` does, and the stream starts over.
+   * Refused topics end their subscriptions; other client errors end all, as retrying
+   * cannot fix them. A 401 signs out, as `send()` does, and the stream starts over.
    */
   async #refused(
     response: Response,
@@ -369,11 +362,8 @@ interface ParsedEvent {
 }
 
 /**
- * Parses an event stream as the HTML standard's EventSource does
- * (https://html.spec.whatwg.org/multipage/server-sent-events.html). Lines
- * end with CRLF, LF or CR, which may be split across chunks; a blank line
- * dispatches the event. An event without data is not dispatched, but its id
- * still becomes the last event id. The decoder strips a leading BOM.
+ * Parses an event stream as EventSource does; CRLF may split across chunks.
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html
  */
 class EventStreamParser {
   readonly #onEvent: (event: ParsedEvent) => void;

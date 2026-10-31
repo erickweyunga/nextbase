@@ -14,10 +14,8 @@ export interface Committed {
 }
 
 /**
- * Work that follows the request's database changes: kept on success, undone
- * on failure. A request that commits some writes before it may still fail,
- * as a sign-up does before it starts the session, calls `commit()` once they
- * are committed, so their work is done either way.
+ * Work that follows the request's database changes: kept on success, undone on
+ * failure. Call `commit()` after writes that commit before the request may fail.
  */
 export class Effects {
   /** Sent on success. */
@@ -32,9 +30,8 @@ export class Effects {
   readonly committed: Committed = { mail: [], obsoleteFiles: [], hooks: [] };
 
   /**
-   * Marks the work so far as following committed writes. Call it right after
-   * a transaction the request opened commits, when no work of a transaction
-   * that failed is left here.
+   * Marks the work so far as following committed writes. Call it right after a
+   * transaction commits, when no work of a failed transaction is left here.
    */
   commit(): void {
     this.committed.mail.push(...this.mail.splice(0));

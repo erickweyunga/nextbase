@@ -82,9 +82,8 @@ export function passwordField(
 }
 
 /**
- * A random password the field accepts, for accounts created without one,
- * such as through a provider or a phone. It is never shown; the owner can
- * set their own with a password reset.
+ * A random password for accounts created without one, such as through a provider or a phone.
+ * It is never shown; the owner can set their own with a password reset.
  */
 export function randomPassword(collection: Collection): string {
   const field = passwordField(collection);

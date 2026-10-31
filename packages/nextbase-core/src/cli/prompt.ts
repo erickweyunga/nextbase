@@ -10,10 +10,8 @@ export interface Prompter {
 }
 
 /**
- * On a terminal, hidden input uses raw mode so nothing is echoed. Piped
- * input is read as lines through one interface for the whole run: readline
- * reads ahead, so answers piped together would be lost with an interface
- * closed after each question.
+ * On a terminal, hidden input uses raw mode so nothing is echoed. Piped input uses one
+ * interface for the whole run, since readline reads ahead and would lose later answers.
  */
 export function newPrompter(
   input: Readable & { isTTY?: boolean },

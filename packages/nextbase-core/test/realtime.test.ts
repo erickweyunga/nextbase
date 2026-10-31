@@ -213,10 +213,8 @@ describe('realtime', () => {
     return stream;
   };
   /**
-   * Waits until `stream` got `n` record events whose records `keep` keeps.
-   * A stream may also get writes committed shortly before it started, which
-   * a transaction of another test file, on another database of the server,
-   * held back. So tests count only their own records.
+   * Waits until `stream` got `n` record events whose records `keep` keeps. Other
+   * test files' writes committed just before the stream started may arrive too.
    */
   const received = async (
     stream: OpenStream,
@@ -1652,7 +1650,6 @@ function injectable(pool: pg.Pool): {
   };
 }
 
-/** Whether pg_dump and psql are installed, for the restore test. */
 /**
  * Whether pg_dump and psql are installed, and pg_dump can dump the test
  * server: it refuses a server of a newer major version than its own.
@@ -1670,9 +1667,8 @@ function hasPgDump(): boolean {
 }
 
 /**
- * A TCP proxy to the database whose open connections can be frozen: they
- * stay open but carry nothing, as when a NAT drops a connection or a
- * server fails over without saying so. Later connections pass.
+ * A TCP proxy to the database whose open connections can be frozen, carrying
+ * nothing, as after a NAT drop or a silent failover. Later connections pass.
  */
 async function freezableProxy(
   target: string,

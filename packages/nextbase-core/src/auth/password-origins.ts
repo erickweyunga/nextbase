@@ -1,12 +1,8 @@
 import type { Builder } from '@nextbasejs/dbx';
 import { table } from '../db/system.ts';
 
-// How each record's password was last set, while its collection has MFA on.
-// - `chosen`: at sign-up, by a change with the old password, or by a
-//   superuser or manager. The default for records without a row.
-// - `emailReset`, `phoneReset`: by a code or link sent there, so for a while
-//   that inbox or phone alone held both steps.
-// - `random`: generated at an OAuth2 or phone sign-up; nobody knows it.
+// How each record's password was last set while MFA is on (`chosen` if no row).
+// After an `emailReset` or `phoneReset`, that channel alone held both steps.
 
 export type PasswordOrigin = 'chosen' | 'emailReset' | 'phoneReset' | 'random';
 
