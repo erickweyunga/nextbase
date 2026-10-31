@@ -59,6 +59,17 @@ await nextbase.migrate();
 Each migration runs in its own transaction. One that fails keeps none of its
 changes, and the next ones wait until it is fixed.
 
+## Outside development
+
+Once `migrations` is set, collections change only through migrations where
+automigrate is off, such as in production: creating, changing or deleting
+one through the API answers `409` with `data.collections.code`
+`schema_managed_by_migrations`. Otherwise a change there would be in no file,
+and a later migration could conflict with it. Records, reads and the
+migrations themselves are not affected. To allow API changes anyway,
+pass `{ ...migrations, schemaChanges: true }`, and catch up with
+`npx nextbase migrate collections`.
+
 ## Write a migration
 
 `npx nextbase migrate create add_tags` writes a blank one to fill in:

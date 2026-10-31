@@ -63,6 +63,11 @@ export interface Migrations {
   files: Readonly<Record<string, Migration>>;
   /** Writes a migration for each collection change; on in `next dev`. */
   automigrate?: boolean;
+  /**
+   * Lets the API change collections where automigrate is off, such as in production,
+   * though nothing records it in a migration. Off, so the migrations stay the truth.
+   */
+  schemaChanges?: boolean;
 }
 
 export const MIGRATION_NAME: RegExp = /^\d{10,}_[a-z0-9_]+$/;
@@ -91,8 +96,10 @@ export function checkMigrations(list: Migrations): void {
   if (list.files === null || typeof list.files !== 'object') {
     throw new TypeError('migrations needs its files, by name.');
   }
-  if (list.automigrate !== undefined && typeof list.automigrate !== 'boolean') {
-    throw new TypeError('migrations.automigrate must be a boolean.');
+  for (const key of ['automigrate', 'schemaChanges'] as const) {
+    if (list[key] !== undefined && typeof list[key] !== 'boolean') {
+      throw new TypeError(`migrations.${key} must be a boolean.`);
+    }
   }
   for (const [name, file] of Object.entries(list.files)) {
     if (!MIGRATION_NAME.test(name)) {
