@@ -184,6 +184,8 @@ interface Context {
   passkeys: Passkeys;
   /** Writes a migration for each collection change, while automigrate is on. */
   automigrate: OnSchemaChange | undefined;
+  /** Whether the API may change collections; off where migrations manage them. */
+  schemaChanges: boolean;
   /** The app's check of who may sign up, link or sign in. */
   validateSignIn: ValidateSignIn | undefined;
   rejectBreachedPasswords: boolean;
@@ -475,8 +477,9 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: /^\/collections$/,
-    async handler({ request, db, principal, automigrate }) {
+    async handler({ request, db, principal, automigrate, schemaChanges }) {
       requireSuperuser(principal);
+      requireSchemaChanges(schemaChanges);
       const input = await readJsonObject(request);
       return Response.json(
         await schemaChange(() => newCollection(db, input, automigrate)),
@@ -494,8 +497,17 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'PATCH',
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ request, params, db, principal, effects, automigrate }) {
+    async handler({
+      request,
+      params,
+      db,
+      principal,
+      effects,
+      automigrate,
+      schemaChanges,
+    }) {
       requireSuperuser(principal);
+      requireSchemaChanges(schemaChanges);
       const input = await readJsonObject(request);
       return Response.json(
         await schemaChange(() =>
@@ -521,8 +533,10 @@ export const ROUTES: readonly Route[] = [
       storage,
       logger,
       automigrate,
+      schemaChanges,
     }) {
       requireSuperuser(principal);
+      requireSchemaChanges(schemaChanges);
       const { id } = schema.get(params[0] as string);
       await schemaChange(() =>
         deleteCollection(db, params[0] as string, automigrate),
@@ -2839,6 +2853,21 @@ function ownSettings(
     throw new ApiError(404, 'Record not found.');
   }
   return { collection, record, session };
+}
+
+/** Where migrations manage collections, they change in development only. */
+function requireSchemaChanges(allowed: boolean): void {
+  if (allowed) return;
+  throw new ApiError(
+    409,
+    'Collections here change only through migrations: make the change in development, where it writes one, and deploy it.',
+    {
+      collections: {
+        code: 'schema_managed_by_migrations',
+        message: 'Change it through a migration.',
+      },
+    },
+  );
 }
 
 function authCollection(schema: Schema, idOrName: string): AuthCollection {

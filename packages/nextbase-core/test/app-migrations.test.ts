@@ -374,6 +374,47 @@ describe("the app's migrations", () => {
     });
   });
 
+  describe('outside development', () => {
+    it('refuses collection changes through the API, while migrations still make them', async () => {
+      const t = await database();
+      const files: Record<string, Migration> = {
+        '1700000001_tags': {
+          async up(app) {
+            await app.collections.create({ name: 'tags' });
+          },
+        },
+      };
+      const locked = instance(t, { dir: 'x', files, automigrate: false });
+      await locked.migrate();
+      const admin = locked.client({ superuser: true });
+      for (const change of [
+        () => admin.collections.create({ name: 'drift' }),
+        () => admin.collections.update('tags', { listRule: '' }),
+        () => admin.collections.delete('tags'),
+      ]) {
+        const error = await change().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ClientError);
+        expect((error as ClientError).status).toBe(409);
+        expect((error as ClientError).data).toMatchObject({
+          collections: { code: 'schema_managed_by_migrations' },
+        });
+      }
+      // Reads, records and the migrations themselves are not affected.
+      expect((await admin.collections.getOne('tags')).name).toBe('tags');
+      await admin.collection('tags').create({});
+
+      const open = instance(t, {
+        dir: 'x',
+        files,
+        automigrate: false,
+        schemaChanges: true,
+      });
+      await open
+        .client({ superuser: true })
+        .collections.update('tags', { listRule: '' });
+    });
+  });
+
   describe('runner', () => {
     it('runs pending migrations once, in order, and seeds records in the same transaction', async () => {
       const t = await database();

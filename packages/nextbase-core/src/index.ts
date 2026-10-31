@@ -329,6 +329,8 @@ export class NextBase<C extends Collections = Collections> {
   readonly #migrations: Migrations | undefined;
   /** Writes a migration for each collection change, while automigrate is on. */
   readonly #automigrate: OnSchemaChange | undefined;
+  /** Whether the API may change collections. */
+  readonly #schemaChanges: boolean;
   readonly #rejectBreachedPasswords: boolean;
   readonly #validateSignIn: ValidateSignIn | undefined;
   readonly #storage: Storage;
@@ -452,6 +454,11 @@ export class NextBase<C extends Collections = Collections> {
       (options.migrations.automigrate ?? process.env.NODE_ENV === 'development')
         ? automigrate(process.cwd(), options.migrations.dir)
         : undefined;
+    // Where changes write no migration, they would drift from the migrations.
+    this.#schemaChanges =
+      !options.migrations ||
+      this.#automigrate !== undefined ||
+      options.migrations.schemaChanges === true;
     this.#hooks = new Hooks(
       options.hooks as RecordHooks | undefined,
       {
@@ -981,6 +988,7 @@ export class NextBase<C extends Collections = Collections> {
       mfa: this.#mfa,
       passkeys: this.#passkeys,
       automigrate: this.#automigrate,
+      schemaChanges: this.#schemaChanges,
       validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
