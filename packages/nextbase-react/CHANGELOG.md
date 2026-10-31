@@ -1,5 +1,18 @@
 # @nextbasejs/react
 
+## 0.2.0
+
+### Patch Changes
+
+- Updated dependencies [1f741f6]
+- Updated dependencies [bfebd87]
+- Updated dependencies [2d6d573]
+- Updated dependencies [1f741f6]
+- Updated dependencies [a26be60]
+- Updated dependencies [a26be60]
+- Updated dependencies [a26be60]
+  - @nextbasejs/client@0.2.0
+
 ## 0.1.10
 
 ### Patch Changes
