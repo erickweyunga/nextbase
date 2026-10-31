@@ -33,7 +33,9 @@ import {
 } from '../auth/linked-accounts.ts';
 import {
   authWithPassword,
+  checkAuthFilter,
   checkAuthRule,
+  checkEmailVerified,
   EmailNotVerified,
 } from '../auth/login.ts';
 import type { Mailer } from '../auth/mail.ts';
@@ -57,6 +59,7 @@ import {
 } from '../auth/oauth2.ts';
 import {
   type OtpContext,
+  otpEnabled,
   proveEmail,
   requestOtp,
   signInWithOtp,
@@ -620,16 +623,7 @@ export const ROUTES: readonly Route[] = [
         collection,
         identity,
         password,
-      ).catch(async (error: unknown) => {
-        // The password was right: the link goes out again if asked for.
-        if (
-          error instanceof EmailNotVerified &&
-          collection.emailVerification.sendOnSignIn
-        ) {
-          await sendVerification(context, collection, error.email);
-        }
-        throw error;
-      });
+      );
       const step =
         named ?? (await cookieStep(context, collection, record, 'password'));
       if (!step) {
@@ -640,6 +634,18 @@ export const ROUTES: readonly Route[] = [
           record,
         });
       }
+      await checkEmailVerified(db, collection, record.id as string).catch(
+        async (error: unknown) => {
+          // The password was right: the link goes out again if asked for.
+          if (
+            error instanceof EmailNotVerified &&
+            collection.emailVerification.sendOnSignIn
+          ) {
+            await sendVerification(context, collection, error.email);
+          }
+          throw error;
+        },
+      );
       if (step) {
         if (step.pending.record.id !== record.id) throw invalidMfa();
         return finishStep(context, step, 'password', cookie === true);
@@ -687,8 +693,9 @@ export const ROUTES: readonly Route[] = [
         input.otpId,
         input.code,
       );
-      // The app's check first, so a refused sign-in changes nothing; then
-      // the email the code proved, which the auth rule may require.
+      // Both checks first, so a refused sign-in changes nothing; the code
+      // proves the email, so it needs no verification check.
+      await checkAuthFilter(db, schema, collection, record.id as string);
       await checkSignIn(context.validateSignIn, {
         action: 'sign-in',
         method: 'emailCode',
@@ -696,7 +703,6 @@ export const ROUTES: readonly Route[] = [
         record,
       });
       await proveEmail(ctx, collection, record);
-      await checkAuthRule(db, schema, collection, record.id as string);
       return completeSignIn(context, collection, record, 'emailCode', cookie);
     },
   },
@@ -722,7 +728,7 @@ export const ROUTES: readonly Route[] = [
             collection.id !== SUPERUSERS,
         },
         otp: {
-          enabled: collection.authRule !== null && collection.otp.enabled,
+          enabled: otpEnabled(collection),
         },
         mfa: {
           enabled: collection.authRule !== null && collection.mfa.enabled,

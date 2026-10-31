@@ -27,6 +27,11 @@ export interface OtpContext {
 /** Wrong codes an id takes before it ends; the address has its own cap. */
 const MAX_ATTEMPTS = 5;
 
+/** Whether the collection signs in by email code; an authRule of `null` turns sign-in off. */
+export function otpEnabled(collection: AuthCollection): boolean {
+  return collection.otp.enabled && collection.authRule !== null;
+}
+
 /** The id of a code: what a sign-in names it by, never the code. */
 function otpHash(otpId: string): string {
   return createHash('sha256').update(otpId).digest('hex');
@@ -41,7 +46,7 @@ export async function requestOtp(
   collection: AuthCollection,
   email: unknown,
 ): Promise<string> {
-  if (!collection.otp.enabled) {
+  if (!otpEnabled(collection)) {
     throw new ApiError(400, 'Sign-in by email code is not turned on.');
   }
   if (typeof email !== 'string' || email.trim() === '') {
@@ -101,7 +106,7 @@ export async function signInWithOtp(
     new ApiError(400, 'The code is wrong or has expired.', {
       code: { code: 'validation_invalid_code', message: 'Wrong or expired.' },
     });
-  if (!collection.otp.enabled) {
+  if (!otpEnabled(collection)) {
     throw new ApiError(400, 'Sign-in by email code is not turned on.');
   }
   if (typeof otpId !== 'string' || otpId === '' || otpId.length > 64) {

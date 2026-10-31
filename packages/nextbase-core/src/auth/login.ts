@@ -43,6 +43,17 @@ export async function checkAuthRule(
   collection: AuthCollection,
   id: string,
 ): Promise<void> {
+  await checkAuthFilter(db, schema, collection, id);
+  await checkEmailVerified(db, collection, id);
+}
+
+/** The authRule alone, for sign-ins that check the email later or prove it. */
+export async function checkAuthFilter(
+  db: DB,
+  schema: Schema,
+  collection: AuthCollection,
+  id: string,
+): Promise<void> {
   const denied = new ApiError(
     403,
     'This account does not meet the requirements to sign in.',
@@ -54,6 +65,14 @@ export async function checkAuthRule(
   ) {
     throw denied;
   }
+}
+
+/** Refuses an unverified email when the collection requires it. */
+export async function checkEmailVerified(
+  db: DB,
+  collection: AuthCollection,
+  id: string,
+): Promise<void> {
   if (collection.emailVerification.required) {
     const [record] = await db
       .select('email', 'emailVerified')
@@ -119,7 +138,8 @@ export async function authWithPassword(
   else await verifyDummyPassword(password);
   if (!record || !valid) throw failed;
   await clearAttempts(db, keys);
-  await checkAuthRule(db, schema, collection, record.id as string);
+  // The email is checked by the caller, after the app's own check.
+  await checkAuthFilter(db, schema, collection, record.id as string);
 
   if (needsRehash(record.password as string)) {
     await db

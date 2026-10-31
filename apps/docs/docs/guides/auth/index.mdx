@@ -65,7 +65,7 @@ export const nextbase = new NextBase({
 
 | Field | Description |
 | ----- | ----------- |
-| `action` | `sign-up`, `link` (an OAuth2 provider) or `sign-in`. |
+| `action` | `sign-up`, `link` (an OAuth2 provider linked to an existing account by its email) or `sign-in`. Each starts a session, so a check on existing accounts handles `link` and `sign-in`. |
 | `method` | `password`, `oauth2`, `phoneCode` or `emailCode`. |
 | `collection` | The auth collection's name. |
 | `record` | The account as stored; for a sign-up, the values it is to be created with. Never the password or `tokenKey`. |

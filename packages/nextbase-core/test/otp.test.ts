@@ -179,6 +179,41 @@ describe('sign-in by email code', () => {
     );
   });
 
+  it('sends no code with sign-in off, and changes nothing the auth rule refuses', async () => {
+    await admin.collections.create({
+      name: 'members',
+      type: 'auth',
+      authRule: 'banned = false',
+      otp: { enabled: true },
+      fields: [{ name: 'banned', type: 'bool' }],
+    });
+    const members = nextbase.client().collection('members');
+    await admin.collection('members').create({
+      email: 'ivy@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+      banned: true,
+    });
+    const otpId = await members.requestOtp('ivy@example.com');
+    const error = await failure(
+      members.signInWithOtp(otpId, await codeTo('ivy@example.com')),
+    );
+    expect(error.status).toBe(403);
+    const { rows } = await t.pool.query(
+      `SELECT "emailVerified" FROM nextbase.members WHERE email = 'ivy@example.com'`,
+    );
+    expect(rows).toEqual([{ emailVerified: false }]);
+
+    await admin.collections.update('members', { authRule: null });
+    expect((await members.listAuthMethods()).otp).toEqual({ enabled: false });
+    const before = sent.length;
+    expect((await failure(members.requestOtp('ivy@example.com'))).status).toBe(
+      400,
+    );
+    await Promise.all(pending.splice(0));
+    expect(sent).toHaveLength(before);
+  });
+
   it('counts as the email code step of a sign-in that takes two', async () => {
     await admin.collections.update('users', {
       mfa: { enabled: true, rule: '' },
