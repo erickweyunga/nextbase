@@ -91,6 +91,9 @@ import { nextbase } from "../lib/nextbase";
 await nextbase.migrate();
 ```
 
+The app's own [migrations](/docs/guides/migrations) run right after, in the
+same way.
+
 When an upgrade adds a system field to auth collections, such as `phone`,
 `phoneVerified` or `emailVerified`, a field of your own with that name is
 renamed to `user_<name>` first, together with its column and the rules that

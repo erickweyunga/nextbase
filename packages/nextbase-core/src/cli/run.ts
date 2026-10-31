@@ -1,9 +1,16 @@
 import { writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
+import { DB } from '@nextbasejs/dbx';
 import pg from 'pg';
 import { endPool } from '../db/pool.ts';
 import { ApiError } from '../errors.ts';
 import { NextBase } from '../index.ts';
+import {
+  createMigration,
+  DEFAULT_DIR,
+  snapshotMigration,
+  syncHistory,
+} from '../migrations/commands.ts';
 import { typegen } from './typegen.ts';
 
 /** Abstracted so the CLI runs in tests without a terminal. */
@@ -18,6 +25,10 @@ const HELP = `Usage: nextbase <command> [options]
 
 Commands:
   migrate               Create or upgrade NextBase's tables
+  migrate create NAME   Write a blank migration of the app's to fill in
+  migrate collections   Write a migration with a snapshot of every collection,
+                        counted as applied in this database
+  migrate history-sync  Forget applied migrations whose file is gone
   superuser --email E   Add a superuser; asks for the password, or reads
                         NEXTBASE_SUPERUSER_PASSWORD
   superuser mfa-setup E Set up an authenticator app for the superuser with
@@ -29,6 +40,8 @@ Commands:
   help                  Show this message
 
 Options:
+  --dir D               The app's migrations folder (default:
+                        nextbase/migrations)
   --database URL        Postgres connection string. Defaults to DATABASE_URL,
                         from the environment, .env.local or .env.`;
 
@@ -54,13 +67,29 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     rest.length === 2
       ? rest[0]
       : undefined;
+  const migrateCommand =
+    command === 'migrate' &&
+    ((rest[0] === 'create' && rest.length === 2) ||
+      ((rest[0] === 'collections' || rest[0] === 'history-sync') &&
+        rest.length === 1))
+      ? rest[0]
+      : undefined;
   if (
-    (rest.length > 0 && mfaCommand === undefined) ||
+    (rest.length > 0 &&
+      mfaCommand === undefined &&
+      migrateCommand === undefined) ||
     !['migrate', 'superuser', 'typegen'].includes(command)
   ) {
     io.err(`Unknown command: ${positionals.join(' ')}`);
     io.err(HELP);
     return 2;
+  }
+  const dir = values.dir ?? DEFAULT_DIR;
+  // A blank migration needs no database.
+  if (migrateCommand === 'create') {
+    const path = await createMigration(process.cwd(), dir, rest[1] as string);
+    io.out(`Wrote ${path}.`);
+    return 0;
   }
   const database = values.database ?? io.env.DATABASE_URL;
   if (!database) {
@@ -74,7 +103,20 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   const pool = new pg.Pool({ connectionString: database });
   const nextbase = new NextBase({ database: pool });
   try {
-    if (command === 'migrate') {
+    if (migrateCommand !== undefined) {
+      await nextbase.migrate();
+      const db = new DB(pool);
+      if (migrateCommand === 'collections') {
+        io.out(`Wrote ${await snapshotMigration(db, process.cwd(), dir)}.`);
+      } else {
+        const forgotten = await syncHistory(db, process.cwd(), dir);
+        io.out(
+          forgotten.length === 0
+            ? 'Every applied migration has its file.'
+            : `Forgot ${forgotten.length} applied migrations without a file: ${forgotten.join(', ')}.`,
+        );
+      }
+    } else if (command === 'migrate') {
       await nextbase.migrate();
       io.out("NextBase's tables are up to date.");
     } else if (mfaCommand === 'mfa-setup') {
@@ -115,6 +157,7 @@ function parse(argv: readonly string[]) {
       database: { type: 'string' },
       email: { type: 'string' },
       out: { type: 'string' },
+      dir: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });

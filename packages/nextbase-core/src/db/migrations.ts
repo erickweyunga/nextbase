@@ -634,6 +634,20 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    name: '0018_app_migrations',
+    async up(tx) {
+      // The app's own migrations that ran here, by file name.
+      await tx
+        .newQuery(
+          `CREATE TABLE {{${table('_app_migrations')}}} (
+             name    text PRIMARY KEY,
+             applied timestamptz NOT NULL DEFAULT clock_timestamp()
+           )`,
+        )
+        .execute();
+    },
+  },
 ];
 
 /**
