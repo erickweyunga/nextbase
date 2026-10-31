@@ -463,6 +463,7 @@ export class OAuth2 {
       const [row] = await db
         .newQuery(
           `SELECT access_token, refresh_token, token_expires, scopes,
+             tokens_saved::text AS saved,
              tokens_saved > now() - make_interval(secs => ${FORCED_REFRESH_GAP}) AS fresh,
              token_expires < now() + make_interval(secs => ${REFRESH_AHEAD}) AS due,
              refreshing_until > now() AS claimed
@@ -494,15 +495,18 @@ export class OAuth2 {
       r.due === true || (refresh && r.fresh !== true);
     for (let waited = 0; wanted(row); waited += CLAIM_POLL_MS) {
       // One request refreshes; the rest wait for it, a few seconds at most.
+      // Only while the tokens are still those this request read: once
+      // another request saved new ones, there is nothing left to refresh.
       const [claimed] = await db
         .newQuery(
           `UPDATE {{${table('_linked_accounts')}}}
            SET refreshing_until = now() + make_interval(secs => ${CLAIM_SECONDS})
            WHERE ${where} AND access_token IS NOT NULL
              AND (refreshing_until IS NULL OR refreshing_until <= now())
+             AND tokens_saved::text IS NOT DISTINCT FROM {:saved}
            RETURNING refresh_token`,
         )
-        .bind(keys)
+        .bind({ ...keys, saved: row.saved })
         .all<{ refresh_token: string | null }>();
       if (claimed) {
         if (claimed.refresh_token === null) {
@@ -760,6 +764,8 @@ const CLAIM_POLL_MS = 200;
 
 interface TokenRow {
   access_token: string | null;
+  /** When the tokens were saved, as text, to compare exactly. */
+  saved: string | null;
   refresh_token: string | null;
   token_expires: Date | null;
   scopes: string[] | null;

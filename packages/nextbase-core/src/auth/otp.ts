@@ -9,13 +9,9 @@ import { systemContext, updateRecord } from '../records/service.ts';
 import type { Schema } from '../schema/cache.ts';
 import { codeHash, emailSignInCode, sameHash, typedCode } from './codes.ts';
 import { findByEmail } from './identity.ts';
+import { unlinkUnproven } from './linked-accounts.ts';
 import type { Mailer } from './mail.ts';
-import {
-  accountKey,
-  clearAttempts,
-  countAttempt,
-  mailKey,
-} from './throttle.ts';
+import { clearAttempts, countAttempt, mailKey, otpKey } from './throttle.ts';
 
 // Sign-in by a code emailed to the account, with no password. A request
 // answers an id whether or not the account exists; the code is kept hashed,
@@ -29,7 +25,7 @@ export interface OtpContext {
   hooks: Hooks;
 }
 
-/** Wrong codes an id takes before it ends. */
+/** Wrong codes an id takes before it ends; the address has its own cap. */
 const MAX_ATTEMPTS = 5;
 
 /** The id of a code: what a sign-in names it by, never the code. */
@@ -39,8 +35,9 @@ function otpHash(otpId: string): string {
 
 /**
  * Emails a code to the account with `email`, if there is one, and answers
- * the id to sign in with. An unknown email gets an id too, that no code
- * matches, so the answer does not reveal who has an account.
+ * the id to sign in with. An unknown email gets an id too, stored the same
+ * way with a code no one has, so neither the answer nor what follows reveals
+ * who has an account.
  */
 export async function requestOtp(
   ctx: OtpContext,
@@ -57,18 +54,20 @@ export async function requestOtp(
   }
   const otpId = randomBytes(24).toString('base64url');
   const record = await findByEmail(ctx.db, collection, email.trim());
-  if (!record) {
+  let code: string;
+  if (record) {
+    code = await emailSignInCode(
+      ctx.db,
+      ctx.mailer,
+      collection,
+      record.email as string,
+    );
+  } else {
     // Counted as a real request is, so the limit answers the same.
     ctx.mailer.check();
     await countAttempt(ctx.db, [mailKey(collection.id, email.trim())]);
-    return otpId;
+    code = randomBytes(16).toString('hex');
   }
-  const code = await emailSignInCode(
-    ctx.db,
-    ctx.mailer,
-    collection,
-    record.email as string,
-  );
   await ctx.db
     .newQuery(
       `WITH expired AS (
@@ -82,8 +81,8 @@ export async function requestOtp(
     .bind({
       idHash: otpHash(otpId),
       collectionId: collection.id,
-      recordId: record.id,
-      email: record.email,
+      recordId: record?.id ?? null,
+      email: record ? (record.email as string) : email.trim(),
       codeHash: codeHash(otpId, code),
       duration: collection.otp.duration,
     })
@@ -93,8 +92,9 @@ export async function requestOtp(
 
 /**
  * The account a code signs in, once: its id is spent on success, and after
- * too many wrong codes. Wrong codes count against the account as wrong
- * passwords do. The email it came to counts as verified.
+ * too many wrong codes. Wrong codes are counted per address, the same for an
+ * address no account has. The caller marks the email proven with
+ * `proveEmail` once it lets the sign-in go ahead.
  */
 export async function signInWithOtp(
   ctx: OtpContext,
@@ -124,16 +124,17 @@ export async function signInWithOtp(
     )
     .bind({ idHash, collectionId: collection.id })
     .all<{
-      recordId: string;
+      recordId: string | null;
       email: string;
       codeHash: string;
       attempts: number;
     }>();
   if (!pending) throw wrong();
-  const keys = [accountKey(collection.id, pending.recordId)];
+  const keys = [otpKey(collection.id, pending.email)];
   await countAttempt(ctx.db, keys);
   const typed = typedCode(code);
   const matches =
+    pending.recordId !== null &&
     pending.attempts <= MAX_ATTEMPTS &&
     typed !== undefined &&
     sameHash(codeHash(otpId, typed), pending.codeHash);
@@ -152,17 +153,33 @@ export async function signInWithOtp(
   // The code proves the inbox it was sent to, which must still be the
   // account's: a code to a former address signs in nothing.
   if (!record || record.email !== pending.email) throw wrong();
-  if (record.emailVerified !== true) {
+  return record;
+}
+
+/**
+ * Marks the email a code just proved verified, if it was not. As the
+ * verification link does, it drops the providers linked before anyone
+ * proved the email: whoever linked them may not own it.
+ */
+export async function proveEmail(
+  ctx: OtpContext,
+  collection: AuthCollection,
+  record: Row,
+): Promise<void> {
+  if (record.emailVerified === true) return;
+  const id = record.id as string;
+  await ctx.db.transaction(async (tx) => {
     await updateRecord(
-      systemContext(ctx, { emailVerified: true }),
+      systemContext({ ...ctx, db: tx, pool: ctx.db }, { emailVerified: true }),
       collection,
-      record.id as string,
+      id,
       { emailVerified: true },
       new URLSearchParams(),
     );
-    record.emailVerified = true;
-  }
-  return record;
+    await unlinkUnproven(tx, collection.id, id);
+  });
+  ctx.effects.commit();
+  record.emailVerified = true;
 }
 
 async function spend(db: DB, idHash: string): Promise<boolean> {

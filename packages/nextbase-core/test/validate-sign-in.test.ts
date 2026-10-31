@@ -189,6 +189,46 @@ describe('validateSignIn', () => {
     });
   });
 
+  it('checks accounts created directly or in a batch, but not by superusers', async () => {
+    const values = {
+      email: 'direct@blocked.example',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    };
+    expect((await failure(users().create(values))).status).toBe(403);
+    const batch = nextbase.client().createBatch();
+    batch.collection('users').create(values);
+    const refused = await failure(batch.send());
+    // As for any write a batch refuses: per request, and nothing saved.
+    expect(refused.data).toMatchObject({
+      requests: { 0: { account: { code: 'email_not_allowed' } } },
+    });
+    expect(await admin.collection('users').create(values)).toMatchObject({
+      email: 'direct@blocked.example',
+    });
+  });
+
+  it('leaves the email unproven when the check refuses an email code', async () => {
+    await admin.collection('users').create({
+      email: 'late@blocked.example',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const otpId = await users().requestOtp('late@blocked.example');
+    await Promise.all(pending.splice(0));
+    const code =
+      /(\d{6})/.exec(
+        mails.filter((m) => m.to === 'late@blocked.example').at(-1)?.text ?? '',
+      )?.[1] ?? '';
+    expect((await failure(users().signInWithOtp(otpId, code))).status).toBe(
+      403,
+    );
+    const { rows } = await t.pool.query(
+      `SELECT "emailVerified" FROM nextbase.users WHERE email = 'late@blocked.example'`,
+    );
+    expect(rows).toEqual([{ emailVerified: false }]);
+  });
+
   it('refuses an app check that answers a malformed code', async () => {
     const strict = new NextBase({
       database: t.pool,

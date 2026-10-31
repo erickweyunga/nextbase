@@ -55,7 +55,12 @@ import {
   OAuth2Error,
   setStateCookie,
 } from '../auth/oauth2.ts';
-import { type OtpContext, requestOtp, signInWithOtp } from '../auth/otp.ts';
+import {
+  type OtpContext,
+  proveEmail,
+  requestOtp,
+  signInWithOtp,
+} from '../auth/otp.ts';
 import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
@@ -682,19 +687,23 @@ export const ROUTES: readonly Route[] = [
       const cookie = input.cookie === true;
       // Another site must not sign the browser in to an account of its choosing.
       if (cookie && !inProcess) checkSameOrigin(request, origins);
+      const ctx = otpContext(context);
       const record = await signInWithOtp(
-        otpContext(context),
+        ctx,
         collection,
         input.otpId,
         input.code,
       );
-      await checkAuthRule(db, schema, collection, record.id as string);
+      // The app's check first, so a refused sign-in changes nothing; then
+      // the email the code proved, which the auth rule may require.
       await checkSignIn(context.validateSignIn, {
         action: 'sign-in',
         method: 'emailCode',
         collection: collection.name,
         record,
       });
+      await proveEmail(ctx, collection, record);
+      await checkAuthRule(db, schema, collection, record.id as string);
       return completeSignIn(context, collection, record, 'emailCode', cookie);
     },
   },
@@ -1455,13 +1464,15 @@ export const ROUTES: readonly Route[] = [
         hidden !== undefined &&
         (await findByEmail(db, collection, hidden)) !== undefined;
       try {
+        // Checked above, on the email as sent.
+        const checked = { ...context, validateSignIn: undefined };
         if (taken && hidden !== undefined) {
           await rehearse(
-            context,
+            checked,
             write({ ...input, email: unusedEmail(hidden) }),
           );
         } else {
-          await writeRecord(context, write(input));
+          await writeRecord(checked, write(input));
         }
       } catch (error) {
         // Registered meanwhile, by a sign-up at the same moment.
@@ -1777,6 +1788,7 @@ function recordsContext(
     hooks: context.hooks,
     hookChain: context.hookChain,
     mfa: context.mfa,
+    validateSignIn: context.validateSignIn,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),

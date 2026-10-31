@@ -21,6 +21,7 @@ import {
 import { forbidImpersonated, type Principal } from '../auth/principal.ts';
 import { rekeySessions } from '../auth/sessions.ts';
 import { accountKey, clearAttempts, countAttempt } from '../auth/throttle.ts';
+import { checkSignIn, type ValidateSignIn } from '../auth/validate.ts';
 import { table } from '../db/system.ts';
 import type { Effects } from '../effects.ts';
 import { ApiError, indexRowTooLarge, writeFailed } from '../errors.ts';
@@ -86,6 +87,8 @@ export interface RecordsContext {
   deletionConfirmed?: boolean;
   /** What a delete's body brought to confirm the caller's own account goes. */
   deletionCredentials?: { password: unknown; mfaCode: unknown };
+  /** The app's check of sign-ups, for auth records callers create. */
+  validateSignIn?: ValidateSignIn;
 }
 
 /**
@@ -362,6 +365,15 @@ export async function planNewRecord(
 ): Promise<PlannedCreate> {
   checkWritable(collection);
   denyNullRule(ctx, collection.createRule);
+  // An account a caller creates is a sign-up, whatever route it came by.
+  if (collection.type === 'auth' && !ctx.principal.superuser) {
+    await checkSignIn(ctx.validateSignIn, {
+      action: 'sign-up',
+      method: 'password',
+      collection: collection.name,
+      record: input,
+    });
+  }
   if (ctx.hooks?.hasBefore(collection, 'create')) {
     input = { ...input };
     await ctx.hooks.before(hookScope(ctx), collection, 'create', {

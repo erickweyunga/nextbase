@@ -584,7 +584,7 @@ const MIGRATIONS: readonly Migration[] = [
           `CREATE TABLE {{${table('_otps')}}} (
              id_hash       text PRIMARY KEY,
              collection_id text NOT NULL,
-             record_id     text NOT NULL,
+             record_id     text NULL,
              email         text NOT NULL,
              code_hash     text NOT NULL,
              attempts      integer NOT NULL DEFAULT 0,

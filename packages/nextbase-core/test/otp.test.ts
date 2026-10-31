@@ -125,6 +125,51 @@ describe('sign-in by email code', () => {
     expect(rows).toEqual([{ emailVerified: false }]);
   });
 
+  it('answers wrong codes the same for an unknown email, and leaves password sign-in alone', async () => {
+    await account('gil@example.com');
+    const statuses = async (email: string): Promise<number[]> => {
+      const seen: number[] = [];
+      for (let id = 0; id < 3; id++) {
+        const otpId = await users().requestOtp(email);
+        for (let i = 0; i < 5; i++) {
+          seen.push(
+            (await failure(users().signInWithOtp(otpId, '000000'))).status,
+          );
+        }
+      }
+      return seen;
+    };
+    const known = await statuses('gil@example.com');
+    const unknown = await statuses('ghost@example.com');
+    expect(unknown).toEqual(known);
+    expect(known).toContain(429);
+    // Guessing codes does not lock the account's password out.
+    const { record } = await users().signInWithPassword(
+      'gil@example.com',
+      PASSWORD,
+    );
+    expect(record.email).toBe('gil@example.com');
+  });
+
+  it('drops providers linked before the code proved the email', async () => {
+    const record = await account('hal@example.com');
+    const { rows: collections } = await t.pool.query(
+      "SELECT id FROM nextbase._collections WHERE name = 'users'",
+    );
+    await t.pool.query(
+      `INSERT INTO nextbase._linked_accounts (id, collection_id, record_id, provider, provider_id)
+       VALUES ('link00000000001', $1, $2, 'idp', 'stranger')`,
+      [collections[0].id, record?.id],
+    );
+    const otpId = await users().requestOtp('hal@example.com');
+    await users().signInWithOtp(otpId, await codeTo('hal@example.com'));
+    const { rows } = await t.pool.query(
+      'SELECT 1 FROM nextbase._linked_accounts WHERE record_id = $1',
+      [record?.id],
+    );
+    expect(rows).toEqual([]);
+  });
+
   it('is off unless the collection turns it on', async () => {
     await admin.collections.create({ name: 'closed', type: 'auth' });
     const closed = nextbase.client().collection('closed');

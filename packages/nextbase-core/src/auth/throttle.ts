@@ -102,6 +102,11 @@ export function mfaKey(collectionId: string, recordId: string): string {
   return `${collectionId}:mfa:${recordId}`;
 }
 
+/** Wrong email codes for an address, whether or not an account has it. */
+export function otpKey(collectionId: string, email: string): string {
+  return `${collectionId}:otp:${email.toLowerCase()}`;
+}
+
 /** Caps emails to an address, so no one can flood an inbox. */
 export function mailKey(collectionId: string, email: string): string {
   return `${collectionId}:mail:${email.toLowerCase()}`;

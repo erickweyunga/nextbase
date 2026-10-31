@@ -73,7 +73,9 @@ export const nextbase = new NextBase({
 
 A refusal answers `403` with the message, and the code in
 `data.account.code`; an OAuth2 sign-in in the browser comes back with
-`?error=` and the code. A sign-up is refused before anything is written, and
+`?error=` and the code. Accounts callers create through the records API, or
+in a batch, are checked as sign-ups too; a superuser's are not. A sign-up is
+refused before anything is written, and
 the same whether or not the email is registered, so it reveals nothing. The
 second step of a [multi-factor](/docs/guides/auth/mfa) sign-in and session
 refreshes are not checked again. For rules that only read the stored account,
