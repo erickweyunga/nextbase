@@ -98,6 +98,7 @@ describe('migrate', () => {
       '0015_oauth2',
       '0016_otps',
       '0017_passkeys',
+      '0018_app_migrations',
     ]);
     expect(await schemaVersion(t.db)).toBe(1);
 

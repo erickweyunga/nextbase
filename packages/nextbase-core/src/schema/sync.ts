@@ -31,9 +31,17 @@ import {
 // Each schema change is one transaction under the schema lock (load, validate,
 // DDL, store, bump version). DDL is transactional, so a failure changes nothing.
 
+/** Runs in a schema change's transaction once it is done; a throw undoes it. */
+export type OnSchemaChange = (
+  tx: Tx,
+  before: Collection | undefined,
+  after: Collection | undefined,
+) => Promise<void>;
+
 export async function newCollection(
-  db: DB,
+  db: DB | Tx,
   input: unknown,
+  onChange?: OnSchemaChange,
 ): Promise<Collection> {
   return db.transaction(async (tx) => {
     await lockSchema(tx);
@@ -55,15 +63,17 @@ export async function newCollection(
     }
     await saveCollectionRow(tx, collection);
     await bumpSchemaVersion(tx);
+    await onChange?.(tx, undefined, collection);
     return collection;
   });
 }
 
 export async function updateCollection(
-  db: DB,
+  db: DB | Tx,
   idOrName: string,
   input: unknown,
   obsoleteFiles: string[] = [],
+  onChange?: OnSchemaChange,
 ): Promise<Collection> {
   return db.transaction(async (tx) => {
     await lockSchema(tx);
@@ -94,13 +104,15 @@ export async function updateCollection(
     }
     await saveCollectionRow(tx, collection);
     await bumpSchemaVersion(tx);
+    await onChange?.(tx, existing, collection);
     return collection;
   });
 }
 
 export async function deleteCollection(
-  db: DB,
+  db: DB | Tx,
   idOrName: string,
+  onChange?: OnSchemaChange,
 ): Promise<void> {
   await db.transaction(async (tx) => {
     await lockSchema(tx);
@@ -161,6 +173,7 @@ export async function deleteCollection(
       }
     }
     await bumpSchemaVersion(tx);
+    await onChange?.(tx, existing, undefined);
   });
 }
 

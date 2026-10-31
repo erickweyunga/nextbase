@@ -1,0 +1,113 @@
+---
+title: Migrations
+---
+
+# Migrations
+
+Migrations keep your collections in git: each change is a file, and every
+database you deploy to runs the files it has not run yet, in order. You make
+changes in development as usual, and NextBase writes the files for you.
+
+## Set up
+
+The migrations live in a folder of your project, `nextbase/migrations` by
+default, whose `index.ts` lists them. Create the folder with a first, empty
+migration, then pass its index to `new NextBase()`:
+
+```bash
+npx nextbase migrate create init
+```
+
+```ts title="lib/nextbase.ts"
+import migrations from "@/nextbase/migrations";
+
+export const nextbase = new NextBase({ migrations });
+```
+
+## Automigrate
+
+In `next dev`, each collection you create, change or delete, through the API
+or `nextbase.client()`, writes a migration to the folder and updates its
+`index.ts`:
+
+- `1730370000_created_posts.ts` creates the collection.
+- `1730370100_updated_posts.ts` changes it: the settings that changed, and
+  its fields, added, changed or removed by id, so a renamed field keeps its
+  column and data.
+- `1730370200_deleted_posts.ts` deletes it.
+
+Each counts as applied in your development database, as the change is there
+already. Commit them with the code that uses them. Token secrets never go into
+a file: each database keeps its own. Automigrate is off outside development;
+`{ ...migrations, automigrate: false }` turns it off there too.
+
+## Deploy
+
+The first request after a deploy runs the migrations a database has not run,
+after NextBase upgrades its own tables, under a lock, so instances starting
+together run each once. To do it before traffic arrives, run it from a deploy
+script:
+
+```ts title="scripts/migrate.ts"
+import { nextbase } from "../lib/nextbase";
+
+await nextbase.migrate();
+```
+
+Each migration runs in its own transaction. One that fails keeps none of its
+changes, and the next ones wait until it is fixed.
+
+## Write a migration
+
+`npx nextbase migrate create add_tags` writes a blank one to fill in:
+
+```ts title="nextbase/migrations/1730370300_add_tags.ts"
+import { migration } from "@nextbasejs/core";
+
+export default migration({
+  async up(app) {
+    await app.collections.create({
+      name: "tags",
+      listRule: "",
+      fields: [{ name: "label", type: "text", required: true }],
+    });
+    await app.nextbase.collection("tags").create({ label: "news" });
+  },
+  async down(app) {
+    await app.collections.delete("tags");
+  },
+});
+```
+
+| `app` | |
+| ----- | - |
+| `collections.get(idOrName)` | The collection, as the migration has changed it so far. |
+| `collections.create(input)` | Creates a collection, as the API does. |
+| `collections.change(idOrName, edit)` | Hands the collection to `edit` to change in place, then saves it. `c.fields` has `getById`, `addAt(index, field)` and `removeById`. |
+| `collections.delete(idOrName)` | Deletes a collection, and its records. |
+| `collections.import(collections, { deleteMissing })` | See [snapshots](#snapshots). |
+| `nextbase` | A superuser client for records, in the migration's transaction. |
+| `db` | The transaction, for SQL of your own. |
+
+Everything a migration does is in one transaction, records and collections
+alike, so a record it creates can belong to a collection it just created.
+
+## Snapshots
+
+`npx nextbase migrate collections` writes a migration with every collection
+of the database, counted as applied there. Run on another database, it lays
+the collections over the ones it has, matched by id, then name, and creates
+the rest; collections and fields it leaves out are kept. With
+`{ deleteMissing: true }` on its `import` call, it deletes them instead,
+system collections aside, with their records. Use one to start from a database
+that has collections already, or to squash many migrations into one.
+
+## Squash and revert
+
+To squash, delete the files you no longer want, write a snapshot, and run
+`npx nextbase migrate history-sync` to forget the applied migrations whose
+file is gone.
+
+`await nextbase.revertMigrations(count)` runs `down` of the last `count`
+applied migrations, newest first, each in its own transaction. A migration
+without `down` cannot be reverted.

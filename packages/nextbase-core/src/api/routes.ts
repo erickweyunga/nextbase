@@ -157,6 +157,7 @@ import { SCHEMA_VERSION_SQL, type Schema } from '../schema/cache.ts';
 import {
   deleteCollection,
   newCollection,
+  type OnSchemaChange,
   updateCollection,
 } from '../schema/sync.ts';
 
@@ -181,6 +182,8 @@ interface Context {
   oauth2: OAuth2;
   mfa: Mfa;
   passkeys: Passkeys;
+  /** Writes a migration for each collection change, while automigrate is on. */
+  automigrate: OnSchemaChange | undefined;
   /** The app's check of who may sign up, link or sign in. */
   validateSignIn: ValidateSignIn | undefined;
   rejectBreachedPasswords: boolean;
@@ -472,10 +475,12 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'POST',
     pattern: /^\/collections$/,
-    async handler({ request, db, principal }) {
+    async handler({ request, db, principal, automigrate }) {
       requireSuperuser(principal);
       const input = await readJsonObject(request);
-      return Response.json(await schemaChange(() => newCollection(db, input)));
+      return Response.json(
+        await schemaChange(() => newCollection(db, input, automigrate)),
+      );
     },
   },
   {
@@ -489,7 +494,7 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'PATCH',
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ request, params, db, principal, effects }) {
+    async handler({ request, params, db, principal, effects, automigrate }) {
       requireSuperuser(principal);
       const input = await readJsonObject(request);
       return Response.json(
@@ -499,6 +504,7 @@ export const ROUTES: readonly Route[] = [
             params[0] as string,
             input,
             effects.obsoleteFiles,
+            automigrate,
           ),
         ),
       );
@@ -507,10 +513,20 @@ export const ROUTES: readonly Route[] = [
   {
     method: 'DELETE',
     pattern: new RegExp(`^/collections/${segment}$`),
-    async handler({ params, db, schema, principal, storage, logger }) {
+    async handler({
+      params,
+      db,
+      schema,
+      principal,
+      storage,
+      logger,
+      automigrate,
+    }) {
       requireSuperuser(principal);
       const { id } = schema.get(params[0] as string);
-      await schemaChange(() => deleteCollection(db, params[0] as string));
+      await schemaChange(() =>
+        deleteCollection(db, params[0] as string, automigrate),
+      );
       // A failure only leaves unused files behind.
       await storage.deletePrefix(`${id}/`).catch((error: unknown) => {
         logger.failure(

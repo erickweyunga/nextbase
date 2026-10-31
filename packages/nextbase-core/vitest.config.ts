@@ -1,6 +1,15 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type ViteUserConfig } from 'vitest/config';
 
 const config: ViteUserConfig = defineConfig({
+  resolve: {
+    // Generated migration files import the package by name.
+    alias: {
+      '@nextbasejs/core': fileURLToPath(
+        new URL('src/index.ts', import.meta.url),
+      ),
+    },
+  },
   test: {
     include: ['test/**/*.test.ts'],
     globalSetup: ['test/global-setup.ts'],
