@@ -9,7 +9,8 @@ import TabItem from "@theme/TabItem";
 
 Create, change and delete [collections](/docs/guides/collections). Every
 endpoint needs a superuser: anyone else gets a `401` when signed out and a
-`403` when signed in.
+`403` when signed in. Where [migrations](/docs/guides/migrations#outside-development)
+manage the collections, creating, changing and deleting them answers `409`.
 
 In the SDK examples, `superuser` is a client signed in as a superuser, or
 `nextbase.client({ superuser: true })` in server code.

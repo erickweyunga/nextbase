@@ -62,6 +62,10 @@ import {
 import { hasThumbs, Thumbs, thumbsPrefix } from './files/thumbs.ts';
 import { Logger, type LogsOptions } from './logs/logger.ts';
 import { type RequestOutcome, requestEntry } from './logs/request.ts';
+import type { MigrationRun } from './migrations/app.ts';
+import { automigrate } from './migrations/automigrate.ts';
+import { checkMigrations, type Migrations } from './migrations/define.ts';
+import { revertMigrations, runMigrations } from './migrations/run.ts';
 import {
   type Limited,
   RateLimits,
@@ -80,6 +84,7 @@ import {
   type Schema,
   SchemaCache,
 } from './schema/cache.ts';
+import type { OnSchemaChange } from './schema/sync.ts';
 
 // Serialization failures and deadlocks: retrying the transaction can fix them.
 const RETRYABLE: ReadonlySet<string> = new Set(['40001', '40P01']);
@@ -149,6 +154,15 @@ export type { ClientIpOption } from './client-ip.ts';
 export { ApiError } from './errors.ts';
 export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
 export type { LogsOptions } from './logs/logger.ts';
+export type {
+  CollectionDraft,
+  FieldList,
+  Migration,
+  MigrationApp,
+  MigrationCollections,
+  Migrations,
+} from './migrations/define.ts';
+export { migration, migrations } from './migrations/define.ts';
 export type { RateLimitRule, RateLimitsOptions } from './rate-limits.ts';
 export type { RealtimeOptions } from './realtime/stream.ts';
 export type {
@@ -239,6 +253,11 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    */
   hooks?: RecordHooks<NoInfer<C>>;
   /**
+   * The app's migrations: the default export of `index.ts` in their folder. They
+   * run after NextBase's own, and in `next dev` each collection change writes one.
+   */
+  migrations?: Migrations;
+  /**
    * Lets clients subscribe to records as they are created, updated and
    * deleted: `true` for every collection, or `{ collections: [...] }`.
    */
@@ -307,6 +326,11 @@ export class NextBase<C extends Collections = Collections> {
   readonly #sms: Sms;
   readonly #mfa: Mfa;
   readonly #passkeys: Passkeys;
+  readonly #migrations: Migrations | undefined;
+  /** Writes a migration for each collection change, while automigrate is on. */
+  readonly #automigrate: OnSchemaChange | undefined;
+  /** Whether the API may change collections. */
+  readonly #schemaChanges: boolean;
   readonly #rejectBreachedPasswords: boolean;
   readonly #validateSignIn: ValidateSignIn | undefined;
   readonly #storage: Storage;
@@ -423,6 +447,18 @@ export class NextBase<C extends Collections = Collections> {
           logger: this.#logger,
         })
       : undefined;
+    if (options.migrations !== undefined) checkMigrations(options.migrations);
+    this.#migrations = options.migrations;
+    this.#automigrate =
+      options.migrations &&
+      (options.migrations.automigrate ?? process.env.NODE_ENV === 'development')
+        ? automigrate(process.cwd(), options.migrations.dir)
+        : undefined;
+    // Where changes write no migration, they would drift from the migrations.
+    this.#schemaChanges =
+      !options.migrations ||
+      this.#automigrate !== undefined ||
+      options.migrations.schemaChanges === true;
     this.#hooks = new Hooks(
       options.hooks as RecordHooks | undefined,
       {
@@ -440,13 +476,57 @@ export class NextBase<C extends Collections = Collections> {
    */
   migrate(): Promise<void> {
     // Async so a missing database rejects instead of throwing synchronously.
-    this.#migrated ??= (async () => migrate(this.#connection()))().catch(
-      (error: unknown) => {
-        this.#migrated = undefined;
-        throw error;
-      },
-    );
+    this.#migrated ??= (async () => {
+      const db = this.#connection();
+      await migrate(db);
+      if (this.#migrations) {
+        await runMigrations(
+          db,
+          this.#migrations,
+          (join, schema) => this.#joined(join, schema),
+          (run, effects) => this.#afterMigration(run, effects),
+        );
+      }
+    })().catch((error: unknown) => {
+      this.#migrated = undefined;
+      throw error;
+    });
     return this.#migrated;
+  }
+
+  /**
+   * Runs `down` of the last `count` of the app's applied migrations, newest first,
+   * each in its own transaction, and returns their names.
+   */
+  async revertMigrations(count = 1): Promise<string[]> {
+    if (!this.#migrations) {
+      throw new TypeError('Pass the migrations option to revert them.');
+    }
+    await this.migrate();
+    return revertMigrations(
+      this.#connection(),
+      this.#migrations,
+      count,
+      (join, schema) => this.#joined(join, schema),
+      (run, effects) => this.#afterMigration(run, effects),
+    );
+  }
+
+  /** Deletes the files a committed migration left without a use, then does its records' work. */
+  #afterMigration(run: MigrationRun, effects: Effects): void {
+    effects.committed.obsoleteFiles.push(...run.obsoleteFiles);
+    for (const id of run.deleted) {
+      this.#waitUntil(
+        this.#storage.deletePrefix(`${id}/`).catch((error: unknown) => {
+          this.#logger.failure(
+            'storage',
+            "deleting a collection's files failed",
+            error,
+          );
+        }),
+      );
+    }
+    this.#finish(effects);
   }
 
   /**
@@ -692,7 +772,7 @@ export class NextBase<C extends Collections = Collections> {
    * The superuser client of an on hook. Requests run one at a time, since savepoints
    * of one transaction nest, and it closes once the hook returns.
    */
-  #joined(join: Join): JoinedClient {
+  #joined(join: Join, schema?: () => Promise<Schema>): JoinedClient {
     let queue: Promise<unknown> = Promise.resolve();
     let pending = 0;
     let open = true;
@@ -709,8 +789,12 @@ export class NextBase<C extends Collections = Collections> {
         }
         checkHookDepth(join.chain);
         pending++;
-        const response = queue.then(() =>
-          this.#dispatch(request, { http: false, join }),
+        const response = queue.then(async () =>
+          this.#dispatch(request, {
+            http: false,
+            // A migration's requests see the collections it changed before them.
+            join: schema ? { ...join, schema: await schema() } : join,
+          }),
         );
         const done = (): void => {
           pending--;
@@ -903,6 +987,8 @@ export class NextBase<C extends Collections = Collections> {
       oauth2: this.#oauth2,
       mfa: this.#mfa,
       passkeys: this.#passkeys,
+      automigrate: this.#automigrate,
+      schemaChanges: this.#schemaChanges,
       validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,

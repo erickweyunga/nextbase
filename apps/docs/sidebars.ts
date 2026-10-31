@@ -21,6 +21,7 @@ const sidebars: SidebarsConfig = {
       className: 'sidebar-icon sidebar-icon-concepts',
       items: [
         'guides/collections',
+        'guides/migrations',
         'guides/records',
         'guides/filters',
         'guides/rules',
