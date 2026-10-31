@@ -43,6 +43,8 @@ is a filter the request must match.
   with a phone and password.
 - [Email code](/docs/guides/auth/email-code): sign in with a code emailed to
   the account, with no password.
+- [Passkeys](/docs/guides/auth/passkeys): sign in with the device's
+  fingerprint, face or PIN, with no password.
 - [Multi-factor](/docs/guides/auth/mfa): a second step after any of these,
   with an authenticator app, a recovery code, or a code sent by email or text.
 
@@ -66,7 +68,7 @@ export const nextbase = new NextBase({
 | Field | Description |
 | ----- | ----------- |
 | `action` | `sign-up`, `link` (an OAuth2 provider linked to an existing account by its email) or `sign-in`. Each starts a session, so a check on existing accounts handles `link` and `sign-in`. |
-| `method` | `password`, `oauth2`, `phoneCode` or `emailCode`. |
+| `method` | `password`, `oauth2`, `phoneCode`, `emailCode` or `passkey`. |
 | `collection` | The auth collection's name. |
 | `record` | The account as stored; for a sign-up, the values it is to be created with. Never the password or `tokenKey`. |
 | `oauth2` | For OAuth2: `provider`, and `profile`, what the provider says about the account at this sign-in. |

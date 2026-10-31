@@ -77,6 +77,8 @@ GET /collections/{collection}/auth-methods
   "password": { "enabled": true, "identityFields": ["email"] },
   "oauth2": { "enabled": true, "providers": [{ "name": "google", "displayName": "Google" }] },
   "phone": { "enabled": false },
+  "otp": { "enabled": false },
+  "passkey": { "enabled": true },
   "mfa": { "enabled": true, "duration": 300 }
 }
 ```
@@ -307,6 +309,49 @@ Answers like [Sign in with a password](#sign-in-with-a-password), with the
 method `emailCode`. A wrong, used or expired code answers `400` with
 `data.code.code` `validation_invalid_code`; too many wrong codes for the
 address, `429`.
+
+## Sign in with a passkey
+
+See [Passkeys](/docs/guides/auth/passkeys). The client does both requests,
+and the browser's dialog between them.
+
+```ts
+await nb.collection("users").signInWithPasskey({ cookie: true });
+```
+
+```http
+POST /collections/{collection}/passkey-options
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `mfaId` | string | Optional. For a second step: only the pending account's passkeys may answer. |
+
+```json
+{ "challengeId": "Zm9v...", "options": { "challenge": "...", "rpId": "app.example.com", "userVerification": "preferred" } }
+```
+
+Pass `options` to `PublicKeyCredential.parseRequestOptionsFromJSON` and
+`navigator.credentials.get`, then send the credential's `toJSON()`:
+
+```http
+POST /collections/{collection}/auth-with-passkey
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `challengeId` | string | Required. From the options; works once, for 5 minutes. |
+| `credential` | object | Required. The credential, as `toJSON()` gives it. |
+| `cookie` | boolean | Optional. Puts the session in a cookie instead of the response. |
+| `mfaId` | string | Optional. Makes this the second step of a sign-in. |
+
+Answers like [Sign in with a password](#sign-in-with-a-password), with the
+method `passkey`; when the device checked the user, it needs no second step.
+An expired or used `challengeId` answers `400` with `data.challengeId.code`
+`validation_invalid_challenge`, a passkey not on any account
+`data.credential.code` `passkey_not_found`, and one that fails verification,
+such as from another site, `passkey_invalid`. `passkeySignIn` off, an
+`authRule` of `null`, or no `appUrl` answers `400`.
 
 ## Sign in with an ID token
 
@@ -1287,6 +1332,68 @@ await nb.collection("users").clearMfa(userId);
 ```http
 DELETE /collections/{collection}/records/{id}/mfa
 ```
+
+## Manage passkeys
+
+Only the signed-in record itself, and never an impersonation session
+(`403`). Another record is a `404`.
+
+### List passkeys
+
+```http
+GET /collections/{collection}/records/{id}/passkeys
+```
+
+```json
+[{ "id": "k1a2b3c4d5e6f7g", "name": "Laptop", "aaguid": "00000000-0000-0000-0000-000000000000", "backedUp": true, "created": "2026-10-31T09:00:00.000Z", "lastUsed": "" }]
+```
+
+### Add a passkey
+
+```http
+POST /collections/{collection}/records/{id}/passkeys/options
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `password` | string | Required unless the session signed in within the last day. |
+| `mfaCode` | string | With an authenticator app and `mfa.enabled`, a code from it or a recovery code. |
+
+Answers `{ challengeId, options }`. Pass `options` to
+`PublicKeyCredential.parseCreationOptionsFromJSON` and
+`navigator.credentials.create`, then, from the same session:
+
+```http
+POST /collections/{collection}/records/{id}/passkeys
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `challengeId` | string | Required. Works once, for 5 minutes. |
+| `credential` | object | Required. The credential, as `toJSON()` gives it. |
+| `name` | string | Optional. Up to 100 characters. |
+
+Answers the passkey, and emails the owner. A passkey already added answers
+`400` with `data.credential.code` `passkey_exists`.
+
+### Rename a passkey
+
+```http
+PATCH /collections/{collection}/records/{id}/passkeys/{passkeyId}
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `name` | string | Required. Up to 100 characters. |
+
+### Remove a passkey
+
+```http
+DELETE /collections/{collection}/records/{id}/passkeys/{passkeyId}
+```
+
+Takes `password` and `mfaCode` as adding does, answers `204`, and emails the
+owner.
 
 ## Refresh
 

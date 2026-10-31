@@ -149,6 +149,8 @@ export async function deleteCollection(
         '_recovery_codes',
         '_password_origins',
         '_otps',
+        '_passkeys',
+        '_webauthn_challenges',
       ]) {
         await tx
           .newQuery(

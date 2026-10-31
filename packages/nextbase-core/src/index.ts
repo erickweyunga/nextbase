@@ -24,6 +24,7 @@ import {
   OAuth2,
   type OAuth2Options,
 } from './auth/oauth2.ts';
+import { Passkeys } from './auth/passkeys.ts';
 import { type Principal, resolvePrincipal } from './auth/principal.ts';
 import { SecretKeys, secretKeysFromEnv } from './auth/secret-keys.ts';
 import {
@@ -305,6 +306,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #oauth2: OAuth2;
   readonly #sms: Sms;
   readonly #mfa: Mfa;
+  readonly #passkeys: Passkeys;
   readonly #rejectBreachedPasswords: boolean;
   readonly #validateSignIn: ValidateSignIn | undefined;
   readonly #storage: Storage;
@@ -395,6 +397,7 @@ export class NextBase<C extends Collections = Collections> {
       issuer: this.#appUrl?.hostname ?? 'NextBase',
       oauth2: this.#oauth2.list().length > 0,
     });
+    this.#passkeys = new Passkeys(this.#appUrl, this.#mailer);
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,
@@ -898,6 +901,7 @@ export class NextBase<C extends Collections = Collections> {
       sms: this.#sms,
       oauth2: this.#oauth2,
       mfa: this.#mfa,
+      passkeys: this.#passkeys,
       validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,

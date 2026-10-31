@@ -3,6 +3,12 @@ import { authSync } from './auth-sync.ts';
 import { ClientError } from './client-error.ts';
 import { hasFiles, toFormData } from './files.ts';
 import type { NextBaseClient, SendOptions } from './index.ts';
+import {
+  createPasskey,
+  forgetPasskey,
+  getPasskey,
+  type PasskeyRequest,
+} from './passkeys.ts';
 import type { RealtimeEvent, SubscribeOptions } from './realtime.ts';
 import type {
   AuthMethods,
@@ -11,6 +17,7 @@ import type {
   LinkedAccountModel,
   ListResult,
   MfaStatus,
+  PasskeyModel,
   RecordModel,
   RecoveryCodes,
   SignInMethod,
@@ -43,6 +50,15 @@ export interface SecondStepOptions extends AuthOptions {
  */
 export interface StepUpOptions extends SendOptions {
   password: string;
+  mfaCode?: string;
+}
+
+/**
+ * Proof for adding or removing a passkey: the password, unless the session signed
+ * in within the last day, and with an authenticator app a code from it.
+ */
+export interface PasskeyStepUp extends SendOptions {
+  password?: string;
   mfaCode?: string;
 }
 
@@ -321,6 +337,121 @@ export class RecordService<T extends RecordModel = RecordModel> {
       code,
       ...(cookie && { cookie: true }),
     });
+  }
+
+  /**
+   * Signs in with a passkey, in the browser. `autofill` waits for one picked from the
+   * suggestions of an input with `autocomplete="username webauthn"`; abort it with `signal`.
+   */
+  async signInWithPasskey(
+    options: SecondStepOptions & { autofill?: boolean } = {},
+  ): Promise<AuthResponse<T>> {
+    const { cookie, mfaId, autofill, signal, ...rest } = options;
+    const passkey = await this.#client.send<{
+      challengeId: string;
+      options: PasskeyRequest;
+    }>(`/collections/${encodeURIComponent(this.#collection)}/passkey-options`, {
+      method: 'POST',
+      body: mfaId === undefined ? {} : { mfaId },
+      ...(signal && { signal }),
+    });
+    const credential = await getPasskey(passkey.options, {
+      ...(autofill && { autofill }),
+      ...(signal && { signal }),
+    });
+    try {
+      return await this.#signIn(
+        '/auth-with-passkey',
+        { ...rest, ...(signal && { signal }) },
+        {
+          challengeId: passkey.challengeId,
+          credential,
+          ...(mfaId !== undefined && { mfaId }),
+          ...(cookie && { cookie: true }),
+        },
+      );
+    } catch (error) {
+      const code = (error as ClientError).data?.credential?.code;
+      if (code === 'passkey_not_found' && passkey.options.rpId) {
+        forgetPasskey(passkey.options.rpId, credential.id);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a passkey on this device for the signed-in record, in the browser.
+   * The owner is emailed; `name` labels it in {@link listPasskeys}.
+   */
+  async addPasskey(
+    recordId: string,
+    options: PasskeyStepUp & { name?: string } = {},
+  ): Promise<PasskeyModel> {
+    const { password, mfaCode, name, ...rest } = options;
+    const passkey = await this.#client.send<{
+      challengeId: string;
+      options: unknown;
+    }>(this.#mfaPath(recordId, '/passkeys/options'), {
+      ...rest,
+      method: 'POST',
+      body: {
+        ...(password !== undefined && { password }),
+        ...(mfaCode !== undefined && { mfaCode }),
+      },
+    });
+    const credential = await createPasskey(
+      passkey.options,
+      rest.signal ?? undefined,
+    );
+    return this.#client.send(this.#mfaPath(recordId, '/passkeys'), {
+      ...rest,
+      method: 'POST',
+      body: {
+        challengeId: passkey.challengeId,
+        credential,
+        ...(name !== undefined && { name }),
+      },
+    });
+  }
+
+  /** The signed-in record's passkeys. */
+  listPasskeys(
+    recordId: string,
+    options?: SendOptions,
+  ): Promise<PasskeyModel[]> {
+    return this.#client.send(this.#mfaPath(recordId, '/passkeys'), options);
+  }
+
+  renamePasskey(
+    recordId: string,
+    passkeyId: string,
+    name: string,
+    options?: SendOptions,
+  ): Promise<PasskeyModel> {
+    return this.#client.send(
+      this.#mfaPath(recordId, `/passkeys/${encodeURIComponent(passkeyId)}`),
+      { ...options, method: 'PATCH', body: { name } },
+    );
+  }
+
+  /** Removes a passkey of the signed-in record; the owner is emailed. */
+  async deletePasskey(
+    recordId: string,
+    passkeyId: string,
+    options: PasskeyStepUp = {},
+  ): Promise<void> {
+    const { password, mfaCode, ...rest } = options;
+    await this.#client.send(
+      this.#mfaPath(recordId, `/passkeys/${encodeURIComponent(passkeyId)}`),
+      {
+        ...rest,
+        method: 'DELETE',
+        body: {
+          ...(password !== undefined && { password }),
+          ...(mfaCode !== undefined && { mfaCode }),
+        },
+      },
+    );
   }
 
   /**

@@ -594,6 +594,47 @@ const MIGRATIONS: readonly Migration[] = [
         .execute();
     },
   },
+  {
+    name: '0017_passkeys',
+    async up(tx) {
+      const exec = (sql: string) => tx.newQuery(sql).execute();
+      // A passkey's public key; the private key never leaves the device.
+      await exec(`
+        CREATE TABLE {{${table('_passkeys')}}} (
+          id            text PRIMARY KEY,
+          collection_id text NOT NULL,
+          record_id     text NOT NULL,
+          credential_id text NOT NULL UNIQUE,
+          public_key    bytea NOT NULL,
+          counter       bigint NOT NULL,
+          transports    text[] NOT NULL DEFAULT '{}',
+          device_type   text NOT NULL,
+          backed_up     boolean NOT NULL,
+          aaguid        text NOT NULL,
+          name          text NOT NULL DEFAULT '',
+          created       timestamptz NOT NULL DEFAULT now(),
+          last_used     timestamptz NULL
+        )`);
+      await exec(
+        `CREATE INDEX "_passkeys_record" ON {{${table('_passkeys')}}} (collection_id, record_id)`,
+      );
+      // Single-use challenges of registrations and sign-ins, by id hash.
+      await exec(`
+        CREATE TABLE {{${table('_webauthn_challenges')}}} (
+          id_hash       text PRIMARY KEY,
+          collection_id text NOT NULL,
+          purpose       text NOT NULL,
+          record_id     text NULL,
+          session_id    text NULL,
+          mfa_hash      text NULL,
+          challenge     text NOT NULL,
+          expires       timestamptz NOT NULL
+        )`);
+      await exec(
+        `CREATE INDEX "_webauthn_challenges_expires" ON {{${table('_webauthn_challenges')}}} (expires)`,
+      );
+    },
+  },
 ];
 
 /**

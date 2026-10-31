@@ -26,6 +26,8 @@ export type MailKind =
   | 'signInCode'
   | 'totpEnabled'
   | 'totpDisabled'
+  | 'passkeyAdded'
+  | 'passkeyRemoved'
   | 'recoveryCodeUsed'
   | 'mfaCleared'
   | 'mfaCodesPaused';
@@ -130,6 +132,14 @@ const DEFAULT_TEMPLATES: Record<MailKind, MailTemplate> = {
   totpDisabled: () => ({
     subject: 'Two-step sign-in was turned off',
     text: 'Your account no longer asks for a code from your authenticator app. If this was not you, reset your password and contact support right away.',
+  }),
+  passkeyAdded: () => ({
+    subject: 'A passkey was added',
+    text: 'Your account can now sign in with a new passkey. If this was not you, remove it, reset your password and contact support right away.',
+  }),
+  passkeyRemoved: () => ({
+    subject: 'A passkey was removed',
+    text: 'A passkey can no longer sign in to your account. If this was not you, reset your password and contact support right away.',
   }),
   mfaCleared: () => ({
     subject: 'Two-step sign-in was reset',

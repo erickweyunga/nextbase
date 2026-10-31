@@ -43,7 +43,7 @@ import {
 } from './totp.ts';
 
 // A first step that needs a second answers a single-use `mfaId` tied to the record's key.
-// Once a record has an authenticator app, only its codes or a recovery code count.
+// Once a record has an authenticator app, only its codes, a recovery code or a passkey count.
 
 /** The method of a session a superuser started to act as the record. */
 export const IMPERSONATION: SignInMethod = 'impersonation';
@@ -101,6 +101,8 @@ interface RecordState {
   secret: string | null;
   recoveryCodes: number;
   linked: boolean;
+  /** Whether the record has a passkey. */
+  passkeys: boolean;
   /** How the password was last set; null when chosen. */
   origin: string | null;
   /** Whether that was within the reset hold. */
@@ -652,6 +654,8 @@ export class Mfa {
     let methods: SignInMethod[];
     if (state.secret !== null) {
       methods = state.recoveryCodes > 0 ? ['totp', 'recoveryCode'] : ['totp'];
+      // A passkey is as strong as the app's codes.
+      if (state.passkeys) methods.push('passkey');
     } else if (collection.id === SUPERUSERS) {
       methods = [];
     } else {
@@ -662,6 +666,7 @@ export class Mfa {
       }
       if (textsCodes(collection, record)) methods.push('phoneCode');
       if (this.#oauth2 && state.linked) methods.push('oauth2');
+      if (state.passkeys) methods.push('passkey');
     }
     const held = (channel: SignInMethod): boolean =>
       state.recent &&
@@ -835,6 +840,8 @@ async function recordState(
           WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS "recoveryCodes",
          EXISTS (SELECT 1 FROM {{${table('_linked_accounts')}}}
           WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS linked,
+         EXISTS (SELECT 1 FROM {{${table('_passkeys')}}}
+          WHERE collection_id = {:collectionId} AND record_id = {:recordId}) AS passkeys,
          p.origin, coalesce(p.set_at > now() - interval '${RESET_HOLD}', false) AS recent
        FROM (SELECT 1) AS one
        LEFT JOIN {{${table('_password_origins')}}} p
@@ -872,6 +879,35 @@ export async function checkPassword(
     });
   }
   await clearAttempts(db, keys);
+}
+
+/** Within this, a session counts as recent enough to stand in for the password. */
+const RECENT_SIGN_IN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * For a sensitive change: the current password, or a session signed in within the last
+ * day, so a long-stolen session alone cannot make it. `doing` ends the message.
+ */
+export async function checkRecentOrPassword(
+  db: DB,
+  collection: AuthCollection,
+  record: Row,
+  session: Pick<Session, 'created'> | undefined,
+  password: unknown,
+  doing: string,
+): Promise<void> {
+  if (password !== undefined) {
+    await checkPassword(db, collection, record, password);
+    return;
+  }
+  const created = session?.created.getTime() ?? 0;
+  if (Date.now() - created > RECENT_SIGN_IN_MS) {
+    throw new ApiError(
+      400,
+      `Enter your current password, or sign in again, to ${doing}.`,
+      { password: { code: 'validation_required', message: 'Required.' } },
+    );
+  }
 }
 
 /** Whether a sign-in to the record must take a second step. */
