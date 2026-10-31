@@ -122,6 +122,9 @@ export function SignInForm() {
   in this tab or another.
 - `useNextBase()` returns the [client SDK](/docs/sdk) instance, for reading and
   writing records.
+- `useRecords(collection, options)` and `useRecord(collection, id)` keep a
+  page of records, or one record, current as anyone changes them. See
+  [Realtime in React](/docs/guides/realtime#in-react).
 - Sign in with `{ cookie: true }` so the session lives in an HttpOnly cookie
   that server components can read. See [Sessions and cookies](/docs/guides/auth/sessions).
 
