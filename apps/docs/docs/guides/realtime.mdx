@@ -146,8 +146,12 @@ export default async function Room({ params }: { params: Promise<{ id: string }>
 ```
 
 The server component loads with the same filter and sort as the hook, so
-the page renders at once and the browser does not load it a second time
-before changes arrive.
+the page renders at once. The hook still loads it again once its
+subscription is live, so no change made in between is missed.
+
+A client's subscriptions share one stream, and identical ones share a topic.
+Past the limits on [streams](#limits), the newest subscriptions are refused
+with their `error` and the others go on.
 
 ## What subscribers get
 
@@ -231,9 +235,10 @@ connection breaks before that.
   realtime collections, this caps throughput. Other writes are not affected.
 - **Streams.** An instance serves at most 1000 streams, of which callers who
   are not signed in may hold 500 together, and a signed-in record at most
-  10. A stream's topics may weigh at most 100: each counts 1, and 1 more for
-  each relation it expands. Past these, the server answers 503 or 429, and
-  the client tries again later.
+  10. Past these, the server answers 503 or 429, and the client tries again
+  later. A stream has at most 50 topics, weighing at most 100: each counts
+  1, and 1 more for each relation it expands. Past these, the topics over
+  the limit are refused, and the client ends just their subscriptions.
 
 ## Deploying
 

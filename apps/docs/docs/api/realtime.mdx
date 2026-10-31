@@ -89,9 +89,11 @@ data: {"reason":"timeout"}
 </TabItem>
 <TabItem value="400" label="400">
 
-A malformed body, topics that weigh too much, a collection without
-realtime, or a bad `filter`, `expand` or `fields`. For a topic,
-`data.topics` names it, by position from 0:
+A malformed body, a collection without realtime, a bad `filter`, `expand`
+or `fields`, or more topics, or more weight, than allowed. For a topic,
+`data.topics` names it, by position from 0; past a limit, it names every
+topic over it, with the code `realtime_too_many_topics` or
+`realtime_topics_too_heavy`:
 
 ```json
 {

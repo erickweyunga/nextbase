@@ -165,6 +165,13 @@ export class RealtimeService {
 
   async #stream(): Promise<Outcome> {
     const subscriptions = [...this.#subscriptions];
+    // Subscriptions to the same topic share it, as the server caps topics.
+    const groups = new Map<string, Subscription[]>();
+    for (const subscription of subscriptions) {
+      const key = JSON.stringify(topicOf(subscription));
+      groups.set(key, [...(groups.get(key) ?? []), subscription]);
+    }
+    const shared = [...groups.values()];
     const store = this.#client.authStore;
     const { token, record } = store;
     const unchanged = authSync(store).snapshot();
@@ -176,13 +183,7 @@ export class RealtimeService {
     };
     if (token) headers.authorization = `Bearer ${token}`;
     if (this.#lastEventId) headers['last-event-id'] = this.#lastEventId;
-    const topics = subscriptions.map(({ collection, id, options }) => ({
-      collection,
-      ...(id !== undefined && { id }),
-      ...(options.filter && { filter: options.filter }),
-      ...(options.expand && { expand: options.expand }),
-      ...(options.fields && { fields: options.fields }),
-    }));
+    const topics = shared.map(([first]) => topicOf(first as Subscription));
     try {
       const response = await this.#post({
         method: 'POST',
@@ -201,7 +202,7 @@ export class RealtimeService {
         await response.body?.cancel();
         return 'changed';
       }
-      if (!response.ok) return await this.#refused(response, subscriptions);
+      if (!response.ok) return await this.#refused(response, shared);
       if (!response.body) return 'failed';
       // The server answers once it knows where the stream starts.
       for (const subscription of subscriptions) {
@@ -221,7 +222,7 @@ export class RealtimeService {
           }
           return;
         }
-        this.#dispatch(subscriptions, event);
+        this.#dispatch(shared, event);
       });
       const reader = response.body
         .pipeThrough(new TextDecoderStream())
@@ -247,11 +248,11 @@ export class RealtimeService {
   }
 
   #dispatch(
-    subscriptions: readonly Subscription[],
+    shared: readonly Subscription[][],
     event: { type: string; data: string },
   ): void {
     if (event.type === 'reset') {
-      for (const subscription of subscriptions) {
+      for (const subscription of shared.flat()) {
         if (this.#subscriptions.has(subscription)) {
           call(() => subscription.options.onReset?.());
         }
@@ -269,12 +270,16 @@ export class RealtimeService {
       topics?: Record<string, RecordModel>;
     };
     for (const [index, record] of Object.entries(topics ?? {})) {
-      const subscription = subscriptions[Number(index)];
-      // Unsubscribed while the stream was open.
-      if (!subscription || !this.#subscriptions.has(subscription)) continue;
-      call(() =>
-        subscription.callback({ action: event.type as RealtimeAction, record }),
-      );
+      for (const subscription of shared[Number(index)] ?? []) {
+        // Unsubscribed while the stream was open.
+        if (!this.#subscriptions.has(subscription)) continue;
+        call(() =>
+          subscription.callback({
+            action: event.type as RealtimeAction,
+            record,
+          }),
+        );
+      }
     }
   }
 
@@ -284,7 +289,7 @@ export class RealtimeService {
    */
   async #refused(
     response: Response,
-    subscriptions: readonly Subscription[],
+    shared: readonly Subscription[][],
   ): Promise<Outcome> {
     const body = parseJson(await response.text().catch(() => ''));
     const error = new ClientError(
@@ -311,8 +316,8 @@ export class RealtimeService {
     const refused = error.data.topics;
     const ended =
       refused && typeof refused === 'object'
-        ? Object.keys(refused).flatMap((i) => subscriptions[Number(i)] ?? [])
-        : subscriptions;
+        ? Object.keys(refused).flatMap((i) => shared[Number(i)] ?? [])
+        : shared.flat();
     for (const subscription of ended) {
       if (this.#subscriptions.delete(subscription)) {
         call(() => subscription.options.onError?.(error));
@@ -320,6 +325,17 @@ export class RealtimeService {
     }
     return 'changed';
   }
+}
+
+/** What the server is asked to send for `subscription`. */
+function topicOf({ collection, id, options }: Subscription): object {
+  return {
+    collection,
+    ...(id !== undefined && { id }),
+    ...(options.filter && { filter: options.filter }),
+    ...(options.expand && { expand: options.expand }),
+    ...(options.fields && { fields: options.fields }),
+  };
 }
 
 /** The wait before the `failures`th retry in a row, with jitter. */

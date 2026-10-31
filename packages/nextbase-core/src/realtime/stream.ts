@@ -228,13 +228,17 @@ export class Realtime {
         );
       }
     });
-    const weight = topics.reduce(
-      (sum, topic) => sum + 1 + relations(topic.query.get('expand')),
-      0,
-    );
-    if (weight > MAX_TOPIC_WEIGHT) {
-      throw new ApiError(
-        400,
+    // Only the topics past the limit are refused, so the client keeps the rest.
+    let weight = 0;
+    const heavy: number[] = [];
+    topics.forEach((topic, i) => {
+      weight += 1 + relations(topic.query.get('expand'));
+      if (weight > MAX_TOPIC_WEIGHT) heavy.push(i);
+    });
+    if (heavy.length > 0) {
+      throw overLimit(
+        heavy,
+        'realtime_topics_too_heavy',
         `The topics weigh ${weight}, more than ${MAX_TOPIC_WEIGHT}: each counts 1, and 1 more for each relation it expands.`,
       );
     }
@@ -378,17 +382,30 @@ interface TopicInput {
   fields?: string;
 }
 
+/** Refuses the topics at `indexes`, as a refused topic is. */
+function overLimit(indexes: number[], code: string, message: string): ApiError {
+  return new ApiError(400, message, {
+    topics: Object.fromEntries(indexes.map((i) => [i, { code, message }])),
+  });
+}
+
 // `{ topics: [{ collection, id?, filter?, expand?, fields? }] }`
 function parseTopics(body: Record<string, unknown>): TopicInput[] {
   const { topics } = body;
-  if (
-    !Array.isArray(topics) ||
-    topics.length === 0 ||
-    topics.length > MAX_TOPICS
-  ) {
+  if (!Array.isArray(topics) || topics.length === 0) {
     throw new ApiError(
       400,
       `topics must be an array of 1 to ${MAX_TOPICS} topics.`,
+    );
+  }
+  if (topics.length > MAX_TOPICS) {
+    throw overLimit(
+      Array.from(
+        { length: topics.length - MAX_TOPICS },
+        (_, i) => MAX_TOPICS + i,
+      ),
+      'realtime_too_many_topics',
+      `There are ${topics.length} topics, more than ${MAX_TOPICS}.`,
     );
   }
   return topics.map((topic: unknown, i) => {

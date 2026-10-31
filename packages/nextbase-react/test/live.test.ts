@@ -115,7 +115,11 @@ describe('live hooks', () => {
   /** Lets pending loads settle. */
   const settle = () => act(async () => {});
 
-  function Posts(props: { filter?: string; initial?: ListResult<Post> }) {
+  function Posts(props: {
+    filter?: string;
+    fields?: string;
+    initial?: ListResult<Post>;
+  }) {
     const { data, isPending, error } = useRecords<Post>('posts', props);
     if (error) return `error:${error.message}`;
     if (isPending) return 'pending';
@@ -161,6 +165,38 @@ describe('live hooks', () => {
     });
     expect(fake.lists).toBe(2);
     expect(container.textContent).toBe('Third,First, edited');
+  });
+
+  it('still loads again while changes keep coming', async () => {
+    vi.useFakeTimers();
+    fake.list = [post('p1', 'First')];
+    await mount(createElement(Posts));
+    fake.reset();
+    await settle();
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        fake.emit({ action: 'create', record: post(`n${i}`, 'New') });
+        await vi.advanceTimersByTimeAsync(100);
+      });
+    }
+    expect(fake.lists).toBeGreaterThan(1);
+  });
+
+  it('patches nothing for a change without an id, and loads it instead', async () => {
+    vi.useFakeTimers();
+    fake.list = [{ title: 'First' } as Post, { title: 'Second' } as Post];
+    await mount(createElement(Posts, { fields: 'title' }));
+    fake.reset();
+    await settle();
+    await act(() => {
+      fake.emit({ action: 'delete', record: { title: 'Second' } as Post });
+    });
+    expect(container.textContent).toBe('First,Second');
+    fake.list = [{ title: 'First' } as Post];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(container.textContent).toBe('First');
   });
 
   it('keeps only the newest of overlapping loads', async () => {

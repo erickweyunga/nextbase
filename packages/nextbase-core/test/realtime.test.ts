@@ -902,6 +902,27 @@ describe('realtime', () => {
     );
     expect(heavy.status).toBe(400);
     expect(String(heavy.body.message)).toMatch(/weigh 150/);
+    // Only the topics past the limit: 34 weigh 102.
+    const heavyTopics = (heavy.body.data as { topics: Record<string, unknown> })
+      .topics;
+    expect(Object.keys(heavyTopics).map(Number)).toEqual(
+      Array.from({ length: 17 }, (_, i) => 33 + i),
+    );
+    expect(heavyTopics[33]).toMatchObject({
+      code: 'realtime_topics_too_heavy',
+    });
+
+    const many = await subscribe(
+      Array.from({ length: 52 }, () => ({ collection: 'rooms' })),
+      { token },
+    );
+    expect(many.status).toBe(400);
+    expect(many.body.data).toEqual({
+      topics: {
+        50: { code: 'realtime_too_many_topics', message: expect.any(String) },
+        51: { code: 'realtime_too_many_topics', message: expect.any(String) },
+      },
+    });
   });
 
   it("goes back to its own reads when the instance's read fails or falls behind", async () => {
@@ -1577,6 +1598,39 @@ describe('realtime client', () => {
     offTasks();
     offUser();
     await waitFor(async () => (await listeners(t)) === 0, 'the stream to stop');
+  });
+
+  it('shares identical topics, and past the cap refuses only the newest', async () => {
+    const nb = browser();
+    await nb
+      .collection('users')
+      .signInWithPassword('user@example.com', PASSWORD);
+    const first: string[] = [];
+    const second: string[] = [];
+    const errors: ClientError[] = [];
+    const tasks = nb.collection('tasks');
+    const offs = [
+      tasks.subscribe('*', (e) => first.push(String(e.record.title))),
+      tasks.subscribe('*', (e) => second.push(String(e.record.title))),
+      // 50 distinct topics with the shared one: the last is one too many.
+      ...Array.from({ length: 50 }, (_, i) =>
+        tasks.subscribe('*', () => {}, {
+          filter: `title = "only ${i}"`,
+          onError: (e) => errors.push(e),
+        }),
+      ),
+    ];
+    await waitFor(() => errors.length === 1, 'the refusal');
+    expect(errors[0]?.data).toMatchObject({
+      topics: { 50: { code: 'realtime_too_many_topics' } },
+    });
+    await waitFor(async () => (await listeners(t)) === 1, 'the stream');
+    await admin.collection('tasks').create({ title: 'shared' });
+    await waitFor(
+      () => first.includes('shared') && second.includes('shared'),
+      'the task, to both',
+    );
+    for (const off of offs) off();
   });
 
   it('starts over when the session changes, and reports refused topics', async () => {

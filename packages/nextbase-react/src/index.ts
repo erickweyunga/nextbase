@@ -309,8 +309,11 @@ export function useRecords<T extends RecordModel = RecordModel>(
       (event) => {
         const data = live.state.data;
         if (data) live.set({ data: patchPage(data, event) });
-        clearTimeout(timer);
-        timer = setTimeout(() => void load(), RELOAD_DELAY_MS);
+        // Not pushed back by later events, so a steady stream still reloads.
+        timer ??= setTimeout(() => {
+          timer = undefined;
+          void load();
+        }, RELOAD_DELAY_MS);
       },
       {
         expand,
@@ -338,8 +341,10 @@ function patchPage<T extends RecordModel>(
   page: ListResult<T>,
   { action, record }: RealtimeEvent<T>,
 ): ListResult<T> {
+  // Without `id` in `fields`, the reload brings the change.
+  if (action === 'create' || record.id === undefined) return page;
   const at = page.items.findIndex((item) => item.id === record.id);
-  if (at === -1 || action === 'create') return page;
+  if (at === -1) return page;
   const items = [...page.items];
   if (action === 'delete') items.splice(at, 1);
   else items[at] = record;
