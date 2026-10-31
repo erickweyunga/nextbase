@@ -350,8 +350,10 @@ method `passkey`; when the device checked the user, it needs no second step.
 An expired or used `challengeId` answers `400` with `data.challengeId.code`
 `validation_invalid_challenge`, a passkey not on any account
 `data.credential.code` `passkey_not_found`, and one that fails verification,
-such as from another site, `passkey_invalid`. `passkeySignIn` off, an
-`authRule` of `null`, or no `appUrl` answers `400`.
+such as from another site or with a counter that went back, `passkey_invalid`.
+A passkey of another auth collection answers `passkey_other_collection`.
+`passkeySignIn` off, an `authRule` of `null`, a superuser, or no `appUrl`
+answers `400`.
 
 ## Sign in with an ID token
 
@@ -1335,8 +1337,9 @@ DELETE /collections/{collection}/records/{id}/mfa
 
 ## Manage passkeys
 
-Only the signed-in record itself, and never an impersonation session
-(`403`). Another record is a `404`.
+Only the signed-in record itself (`401` when signed out), and never an
+impersonation session (`403`). Another record, or an unknown passkey, is a
+`404`.
 
 ### List passkeys
 
@@ -1359,7 +1362,10 @@ POST /collections/{collection}/records/{id}/passkeys/options
 | `password` | string | Required unless the session signed in within the last day. |
 | `mfaCode` | string | With an authenticator app and `mfa.enabled`, a code from it or a recovery code. |
 
-Answers `{ challengeId, options }`. Pass `options` to
+Answers `{ challengeId, options }`. Without a verified email or phone it
+answers `400` with `data.passkey.code` `validation_not_verified`, and without
+`password` once the session is a day old, `data.password.code`
+`validation_required`. Pass `options` to
 `PublicKeyCredential.parseCreationOptionsFromJSON` and
 `navigator.credentials.create`, then, from the same session:
 
@@ -1373,8 +1379,13 @@ POST /collections/{collection}/records/{id}/passkeys
 | `credential` | object | Required. The credential, as `toJSON()` gives it. |
 | `name` | string | Optional. Up to 100 characters. |
 
-Answers the passkey, and emails the owner. A passkey already added answers
-`400` with `data.credential.code` `passkey_exists`.
+Answers the passkey, and emails the owner when the account has an email. A
+passkey already added answers `400` with `data.credential.code`
+`passkey_exists`, one that fails verification `passkey_invalid`, and a
+`challengeId` that expired, was used, or came from another session
+`data.challengeId.code` `validation_invalid_challenge`. A `name` that is not
+text of at most 100 characters answers `data.name.code`
+`validation_invalid_name`.
 
 ### Rename a passkey
 
@@ -1384,7 +1395,7 @@ PATCH /collections/{collection}/records/{id}/passkeys/{passkeyId}
 
 | Param | Type | Description |
 | ----- | ---- | ----------- |
-| `name` | string | Required. Up to 100 characters. |
+| `name` | string | Up to 100 characters; empty or left out clears it. |
 
 ### Remove a passkey
 
@@ -1393,7 +1404,7 @@ DELETE /collections/{collection}/records/{id}/passkeys/{passkeyId}
 ```
 
 Takes `password` and `mfaCode` as adding does, answers `204`, and emails the
-owner.
+owner when the account has an email.
 
 ## Refresh
 

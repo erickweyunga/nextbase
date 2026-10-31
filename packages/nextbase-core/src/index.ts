@@ -390,14 +390,15 @@ export class NextBase<C extends Collections = Collections> {
       this.#basePath,
       secretKeys,
     );
+    this.#passkeys = new Passkeys(this.#appUrl, this.#mailer);
     this.#mfa = new Mfa({
       secretKeys,
       mailer: this.#mailer,
       sms: this.#sms,
       issuer: this.#appUrl?.hostname ?? 'NextBase',
       oauth2: this.#oauth2.list().length > 0,
+      passkeys: this.#passkeys,
     });
-    this.#passkeys = new Passkeys(this.#appUrl, this.#mailer);
     this.#origins = {
       trustedOrigins: [...(options.trustedOrigins ?? [])],
       trustProxy: options.trustProxy ?? false,

@@ -161,12 +161,22 @@ describe('passkeys', () => {
 
   it('offers the passkeys the record has to the device, so it does not add one twice', async () => {
     const { record, nb } = await withPasskey('bea@example.com');
-    const [first] = await nb.collection('users').listPasskeys(record.id);
-    device.behavior.account = record.id;
-    await nb.collection('users').addPasskey(record.id);
-    const excluded = device.lastOptions?.excludeCredentials as { id: string }[];
-    expect(excluded).toHaveLength(1);
-    expect(first).toBeDefined();
+    const twice = await failure(nb.collection('users').addPasskey(record.id));
+    expect((twice.cause as DOMException).name).toBe('InvalidStateError');
+    expect(device.lastOptions?.excludeCredentials).toHaveLength(1);
+  });
+
+  it('needs a verified email or phone, so a sign-up with another address cannot keep a way in', async () => {
+    const created = await admin.collection('users').create({
+      email: 'pat@example.com',
+      password: PASSWORD,
+      passwordConfirm: PASSWORD,
+    });
+    const nb = await signedIn('pat@example.com');
+    const unverified = await failure(
+      nb.collection('users').addPasskey(created?.id ?? ''),
+    );
+    expect(codeOf(unverified, 'passkey')).toBe('validation_not_verified');
   });
 
   it('needs the password once the session is a day old', async () => {
@@ -262,6 +272,64 @@ describe('passkeys', () => {
     const gone = await failure(passkeySignIn(record.id));
     expect(codeOf(gone, 'credential')).toBe('passkey_not_found');
     expect(device.forgotten).toHaveLength(1);
+  });
+
+  it("keeps another collection's passkey on the device", async () => {
+    const { record } = await withPasskey('mo@example.com');
+    await admin.collections.create({
+      name: 'members',
+      type: 'auth',
+      passkeySignIn: true,
+    });
+    device.behavior.account = record.id;
+    const forgotten = device.forgotten.length;
+    const other = await failure(
+      nextbase.client().collection('members').signInWithPasskey(),
+    );
+    expect(codeOf(other, 'credential')).toBe('passkey_other_collection');
+    expect(device.forgotten).toHaveLength(forgotten);
+  });
+
+  it('waits again when autofill outlasts its challenge', async () => {
+    const { record } = await withPasskey('ned@example.com');
+    device.behavior.beforeGet = async () => {
+      await t.pool.query(
+        "UPDATE nextbase._webauthn_challenges SET expires = now() - interval '1 second'",
+      );
+    };
+    const signIn = await passkeySignIn(record.id, { autofill: true });
+    expect(signIn.record.id).toBe(record.id);
+  });
+
+  it('sends nothing without WebAuthn, and reports a cancelled dialog as a ClientError', async () => {
+    const record = await account('ola@example.com');
+    const nb = await signedIn('ola@example.com');
+    uninstall();
+    try {
+      await expect(
+        nb.collection('users').addPasskey(record.id, { password: 'wrong!' }),
+      ).rejects.toThrow(/WebAuthn/);
+      await expect(
+        nextbase.client().collection('users').signInWithPasskey(),
+      ).rejects.toThrow(/WebAuthn/);
+    } finally {
+      uninstall = device.install();
+    }
+    const { rows } = await t.pool.query(
+      'SELECT 1 FROM nextbase._webauthn_challenges WHERE record_id = $1',
+      [record.id],
+    );
+    expect(rows).toEqual([]);
+    device.behavior.fail = new DOMException('Cancelled.', 'NotAllowedError');
+    try {
+      const cancelled = await failure(
+        nb.collection('users').addPasskey(record.id),
+      );
+      expect(cancelled.status).toBe(0);
+      expect((cancelled.cause as DOMException).name).toBe('NotAllowedError');
+    } finally {
+      device.behavior.fail = undefined;
+    }
   });
 
   it("checks the app's rule, as any sign-in", async () => {
@@ -368,6 +436,68 @@ describe('passkeys', () => {
       (await failure(users.renamePasskey(record.id, theirs?.id ?? '', 'x')))
         .status,
     ).toBe(404);
+  });
+
+  it('lets only one of parallel uses with the same count through', async () => {
+    const { record } = await withPasskey('quin@example.com');
+    await passkeySignIn(record.id);
+    const key = device.keys.at(-1);
+    if (!key) throw new Error('The passkey was added.');
+    const nb = nextbase.client();
+    const tries = await Promise.allSettled(
+      [0, 1].map(async () => {
+        const asked = await nb.send<{ challengeId: string; options: never }>(
+          '/collections/users/passkey-options',
+          { method: 'POST' },
+        );
+        device.behavior.counter = 7;
+        const credential = device.assert(
+          key,
+          (asked.options as { challenge: string }).challenge,
+        );
+        return nb.send('/collections/users/auth-with-passkey', {
+          method: 'POST',
+          body: { challengeId: asked.challengeId, credential },
+        });
+      }),
+    );
+    device.behavior.counter = undefined;
+    expect(tries.map((r) => r.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+  });
+
+  it('offers no passkey step where passkeys are off, and refuses text it cannot store', async () => {
+    const { record, nb } = await withPasskey('rex@example.com');
+    const users = nb.collection('users');
+    expect(
+      (await failure(users.renamePasskey(record.id, 'nope', 'x'))).status,
+    ).toBe(404);
+    const [passkey] = await users.listPasskeys(record.id);
+    const nul = await failure(
+      users.renamePasskey(record.id, passkey?.id ?? '', 'a\u0000b'),
+    );
+    expect(codeOf(nul, 'name')).toBe('validation_invalid_name');
+
+    await admin.collections.update('users', {
+      passkeySignIn: false,
+      mfa: { enabled: true, rule: '' },
+    });
+    try {
+      const step = await failure(
+        nextbase
+          .client()
+          .collection('users')
+          .signInWithPassword('rex@example.com', PASSWORD),
+      );
+      expect(step.mfa?.methods).not.toContain('passkey');
+    } finally {
+      await admin.collections.update('users', {
+        passkeySignIn: true,
+        mfa: { enabled: false, rule: null },
+      });
+    }
   });
 
   it('removes the passkeys of a deleted record', async () => {

@@ -28,6 +28,10 @@ export interface Behavior {
   counter?: number;
   /** Answers with this record's passkey, as when the user picks it. */
   account?: string;
+  /** Runs before a `get` answers, as time passing while the user picks. */
+  beforeGet?: () => Promise<void>;
+  /** Rejects the dialog, as when the user cancels. */
+  fail?: Error;
 }
 
 export class Authenticator {
@@ -50,6 +54,7 @@ export class Authenticator {
     g.PublicKeyCredential = {
       parseCreationOptionsFromJSON: (options: Json) => options,
       parseRequestOptionsFromJSON: (options: Json) => options,
+      isConditionalMediationAvailable: async () => true,
       signalUnknownCredential: async ({
         credentialId,
       }: {
@@ -62,8 +67,10 @@ export class Authenticator {
       configurable: true,
       value: {
         credentials: {
-          create: async ({ publicKey }: { publicKey: Json }) =>
-            jsonCredential(this.create(publicKey)),
+          create: async ({ publicKey }: { publicKey: Json }) => {
+            if (this.behavior.fail) throw this.behavior.fail;
+            return jsonCredential(this.create(publicKey));
+          },
           get: async ({
             publicKey,
             mediation,
@@ -72,6 +79,10 @@ export class Authenticator {
             mediation?: string;
           }) => {
             this.lastMediation = mediation;
+            if (this.behavior.fail) throw this.behavior.fail;
+            const before = this.behavior.beforeGet;
+            this.behavior.beforeGet = undefined;
+            await before?.();
             return jsonCredential(this.get(publicKey));
           },
         },
@@ -94,10 +105,13 @@ export class Authenticator {
     const { privateKey, publicKey } = generateKeyPairSync('ec', {
       namedCurve: 'P-256',
     });
+    // A device holding one of the excluded passkeys refuses, as browsers do.
+    const held = this.keys.some(
+      (k) =>
+        k.rpId === rp.id && excluded.some((c) => c.id === b64(k.credentialId)),
+    );
+    if (held) throw new DOMException('Already added.', 'InvalidStateError');
     const credentialId = randomBytes(16);
-    if (excluded.some((c) => c.id === b64(credentialId))) {
-      throw new Error('InvalidStateError');
-    }
     const key: Key = {
       credentialId,
       privateKey,

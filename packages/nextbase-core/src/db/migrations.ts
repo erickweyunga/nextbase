@@ -626,7 +626,6 @@ const MIGRATIONS: readonly Migration[] = [
           purpose       text NOT NULL,
           record_id     text NULL,
           session_id    text NULL,
-          mfa_hash      text NULL,
           challenge     text NOT NULL,
           expires       timestamptz NOT NULL
         )`);

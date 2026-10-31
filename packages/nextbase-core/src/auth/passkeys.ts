@@ -13,7 +13,8 @@ import {
 } from '@simplewebauthn/server';
 import { table } from '../db/system.ts';
 import { ApiError } from '../errors.ts';
-import { newId } from '../random.ts';
+import { isId, newId } from '../random.ts';
+import { unstorableText } from '../storable.ts';
 import type { Mailer } from './mail.ts';
 import type { Session } from './sessions.ts';
 
@@ -78,6 +79,23 @@ export class Passkeys {
   ): Promise<PasskeyOptions<PublicKeyCredentialCreationOptionsJSON>> {
     const appUrl = this.#check(collection);
     const id = record.id as string;
+    // Whoever signed up with someone else's address must not keep a way in
+    // that the owner's password reset leaves behind.
+    const verified =
+      record.emailVerified === true ||
+      (record.phoneVerified === true && Boolean(record.phone));
+    if (!verified) {
+      throw new ApiError(
+        400,
+        'Verify your email or phone before you add a passkey.',
+        {
+          passkey: {
+            code: 'validation_not_verified',
+            message: 'Needs a verified email or phone.',
+          },
+        },
+      );
+    }
     const account = (record.email as string) || (record.phone as string) || id;
     const options = await generateRegistrationOptions({
       rpName: appUrl.hostname,
@@ -230,13 +248,16 @@ export class Passkeys {
     const [passkey] = await db
       .newQuery(
         `SELECT id, record_id AS "recordId", credential_id AS "credentialId",
-           public_key AS "publicKey", counter, transports
+           public_key AS "publicKey", counter, transports,
+           collection_id AS "collectionId"
          FROM {{${table('_passkeys')}}}
-         WHERE credential_id = {:credentialId} AND collection_id = {:collectionId}`,
+         WHERE credential_id = {:credentialId}`,
       )
-      .bind({ credentialId: response.id, collectionId: collection.id })
-      .all<PasskeyRow>();
+      .bind({ credentialId: response.id })
+      .all<PasskeyRow & { collectionId: string }>();
     if (!passkey) throw unknownPasskey();
+    // All collections share the site, so the device offers this passkey here too.
+    if (passkey.collectionId !== collection.id) throw otherCollection();
     const verification = await verified(() =>
       verifyAuthenticationResponse({
         response,
@@ -254,14 +275,18 @@ export class Passkeys {
     );
     if (!verification.verified) throw refused();
     const { newCounter, userVerified } = verification.authenticationInfo;
-    await db
+    // Only if the counter still moves on, so parallel uses of a cloned
+    // passkey cannot both pass. Devices that never count send 0.
+    const moved = await db
       .newQuery(
         `UPDATE {{${table('_passkeys')}}}
-         SET counter = greatest(counter, {:counter}), last_used = now()
-         WHERE id = {:id}`,
+         SET counter = {:counter}, last_used = now()
+         WHERE id = {:id}
+           AND (counter < {:counter} OR ({:counter} = 0 AND counter = 0))`,
       )
       .bind({ id: passkey.id, counter: newCounter })
       .execute();
+    if (moved.rowsAffected === 0) throw refused();
     const [record] = await db
       .select()
       .from(table(collection.name))
@@ -301,7 +326,7 @@ export class Passkeys {
          RETURNING ${COLUMNS}`,
       )
       .bind({
-        id,
+        id: passkeyId(id),
         collectionId: collection.id,
         recordId,
         name: passkeyName(name),
@@ -324,7 +349,11 @@ export class Passkeys {
          WHERE id = {:id} AND collection_id = {:collectionId} AND record_id = {:recordId}
          RETURNING 1`,
       )
-      .bind({ id, collectionId: collection.id, recordId: record.id })
+      .bind({
+        id: passkeyId(id),
+        collectionId: collection.id,
+        recordId: record.id,
+      })
       .column();
     if (deleted.length === 0) throw notFound();
     if (record.email) {
@@ -469,9 +498,19 @@ function challengeHash(challengeId: string): string {
   return createHash('sha256').update(challengeId).digest('hex');
 }
 
+/** An id from the URL; one no passkey can have is not found. */
+function passkeyId(id: string): string {
+  if (!isId(id)) throw notFound();
+  return id;
+}
+
 function passkeyName(name: unknown): string {
   if (name === undefined || name === null) return '';
-  if (typeof name !== 'string' || name.trim().length > MAX_NAME) {
+  if (
+    typeof name !== 'string' ||
+    name.trim().length > MAX_NAME ||
+    unstorableText(name) !== undefined
+  ) {
     throw new ApiError(400, 'Failed to save the passkey.', {
       name: {
         code: 'validation_invalid_name',
@@ -525,6 +564,20 @@ function unknownPasskey(): ApiError {
       message: 'Unknown passkey.',
     },
   });
+}
+
+/** Still valid elsewhere, so the device must keep it. */
+function otherCollection(): ApiError {
+  return new ApiError(
+    400,
+    'This passkey signs in to another kind of account.',
+    {
+      credential: {
+        code: 'passkey_other_collection',
+        message: 'Belongs to another collection.',
+      },
+    },
+  );
 }
 
 function expired(): ApiError {

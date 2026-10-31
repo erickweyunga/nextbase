@@ -7,12 +7,18 @@ title: Passkeys
 Users sign in with a passkey: a key their device keeps, unlocked with a
 fingerprint, face or PIN, and often synced by their password manager. There
 is no password to phish or leak, as a passkey only works on your site. It
-needs the `appUrl` option of `new NextBase()`, whose host the passkeys are
-bound to, and the collection's `passkeySignIn` option:
+needs the `appUrl` option of `new NextBase()` and the collection's
+`passkeySignIn` option:
 
 ```ts
 await superuser.collections.update("users", { passkeySignIn: true });
 ```
+
+Passkeys are bound to `appUrl`: its host is the site they belong to, and
+pages must be served at exactly its origin, so `https://www.example.com` and
+`https://example.com`, or another port, do not mix. Every auth collection
+shares that site. Passkeys are off for superusers, and while the
+collection's `authRule` is `null`.
 
 ## Add a passkey
 
@@ -23,12 +29,20 @@ const users = nb.collection("users");
 await users.addPasskey(record.id, { name: "Laptop" });
 ```
 
-It adds a way into the account, so a stolen session alone cannot add one: it
-needs the `password`, unless the session signed in within the last day, and
-with an [authenticator app](/docs/guides/auth/mfa) an `mfaCode` from it. The
-owner is emailed. A good moment to offer it is right after another sign-in,
-such as with a password or an [email code](/docs/guides/auth/email-code),
-and after a sign-up.
+It adds a way into the account, so:
+
+- The account needs a verified email or phone. Otherwise whoever signed up
+  with someone else's address could keep a passkey after the owner resets
+  the password.
+- It needs the `password`, unless the session signed in within the last
+  day, and with an [authenticator app](/docs/guides/auth/mfa) an `mfaCode`
+  from it. The code is checked before the device's dialog, so a cancelled
+  dialog has used it up.
+
+The owner is emailed, when the account has an email. A good moment to offer
+a passkey is right after another sign-in, such as with a password or an
+[email code](/docs/guides/auth/email-code). A device that already holds one
+of the account's passkeys refuses to add another.
 
 ## Sign in
 
@@ -38,23 +52,44 @@ const { record } = await nb.collection("users").signInWithPasskey({ cookie: true
 
 The device lists the user's passkeys for your site, so there is no email to
 type. To offer them in the browser's autofill instead, give the email input
-`autocomplete="username webauthn"` and start a sign-in that waits when the
-page loads:
+`autocomplete="username webauthn"`, and start a sign-in that waits when the
+page loads, where the browser supports it:
 
 ```tsx
+import { isMfaRequired, passkeyAutofillAvailable } from "@nextbasejs/client";
+
 useEffect(() => {
   const controller = new AbortController();
-  nb.collection("users")
-    .signInWithPasskey({ autofill: true, cookie: true, signal: controller.signal })
-    .then(() => router.push("/"))
-    .catch(() => {});
+  void (async () => {
+    if (!(await passkeyAutofillAvailable())) return;
+    try {
+      await nb
+        .collection("users")
+        .signInWithPasskey({ autofill: true, cookie: true, signal: controller.signal });
+      router.push("/");
+    } catch (error) {
+      // A security key that does not check the user needs a second step.
+      const mfa = isMfaRequired(error);
+      if (mfa) setSecondStep(mfa);
+    }
+  })();
   return () => controller.abort();
-}, []);
+}, [nb, router]);
 ```
 
-It signs in existing accounts. A passkey that is no longer on the account
-answers `passkey_not_found`, and the client asks the browser to stop
-offering it, where browsers support that.
+The wait outlasts its 5-minute challenge: the client asks for a new one when
+a late pick needs it. A sign-in started with a button meanwhile ends the
+waiting one, so start it again afterwards.
+
+The dialog's errors are a `ClientError` of status `0`, with the browser's
+error as `cause`: `NotAllowedError` when the user cancels, `AbortError`
+through `signal`. A passkey that is no longer on any account answers
+`passkey_not_found`, and the client asks the browser to stop offering it,
+where browsers support that. One of another collection answers
+`passkey_other_collection`, and the device keeps it.
+
+It signs in existing accounts. A new user signs up first, for example with
+a password, or an email code.
 
 ## Manage passkeys
 
@@ -64,9 +99,9 @@ await users.renamePasskey(record.id, passkeys[0].id, "Phone");
 await users.deletePasskey(record.id, passkeys[0].id, { password });
 ```
 
-Removing one takes the same proof as adding one, and the owner is emailed.
-Keep another way to sign in, such as a password, an email code or a
-provider, so a user who loses their device can still get in.
+Removing one takes the same proof as adding one, and emails the owner. Keep
+another way to sign in, such as a password, an email code or a provider, so
+a user who loses their device can still get in.
 
 ## With multi-factor sign-in
 
@@ -78,7 +113,15 @@ step, and the [second step](/docs/guides/auth/mfa) follows. A passkey is
 also a second step, after a password for example:
 
 ```ts
-await users.signInWithPasskey({ mfaId: error.mfa.mfaId });
+try {
+  await users.signInWithPassword(email, password);
+} catch (error) {
+  const mfa = isMfaRequired(error);
+  if (!mfa) throw error;
+  if (mfa.methods.includes("passkey")) {
+    await users.signInWithPasskey({ mfaId: mfa.mfaId });
+  }
+}
 ```
 
 The emails are the `passkeyAdded` and `passkeyRemoved` kinds, which

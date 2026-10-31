@@ -101,8 +101,8 @@ try {
 
 Second steps: `signInWithTotp`, `signInWithRecoveryCode`, `requestEmailCode`
 with `signInWithEmailCode`, `requestMfaPhoneCode` with
-`signInWithMfaPhoneCode`, and an `mfaId` option on `signInWithPassword` and
-`signInWithOAuth2`. Without an `mfaId`, they use the cookie an OAuth2 sign-in
+`signInWithMfaPhoneCode`, and an `mfaId` option on `signInWithPassword`,
+`signInWithOAuth2` and `signInWithPasskey`. Without an `mfaId`, they use the cookie an OAuth2 sign-in
 set, and `getPendingMfa()` reads its methods. The session's `methods`,
 such as `["password", "totp"]`, come back in the response and in
 `getSession()`.
@@ -118,6 +118,10 @@ await users.removeTotp(me.id, codeFromApp);
 // As a superuser, for an owner who lost their app:
 await users.clearMfa(userId);
 ```
+
+It manages its [passkeys](/docs/guides/auth/passkeys) with `addPasskey`,
+`listPasskeys`, `renamePasskey` and `deletePasskey`, in the browser, and
+signs in with them with `signInWithPasskey`.
 
 Linking or unlinking a provider and changing the phone take
 `{ password, mfaCode }`, and a verified email's inbox approves an email

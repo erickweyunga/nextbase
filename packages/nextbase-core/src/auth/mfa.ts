@@ -14,6 +14,7 @@ import type { Schema } from '../schema/cache.ts';
 import { codeHash, emailSignInCode, sameHash, typedCode } from './codes.ts';
 import { recordMatches } from './login.ts';
 import type { Mailer } from './mail.ts';
+import type { Passkeys } from './passkeys.ts';
 import { verifyPassword } from './password.ts';
 import { RESET_HOLD } from './password-origins.ts';
 import { textSignInCode, textsCodes } from './phone.ts';
@@ -117,6 +118,8 @@ export interface MfaOptions {
   issuer: string;
   /** Whether OAuth2 providers are set up. */
   oauth2: boolean;
+  /** Whether a collection signs in with passkeys. */
+  passkeys: Passkeys;
 }
 
 export class Mfa {
@@ -125,13 +128,22 @@ export class Mfa {
   readonly #sms: Sms;
   readonly #issuer: string;
   readonly #oauth2: boolean;
+  readonly #passkeys: Passkeys;
 
-  constructor({ secretKeys, mailer, sms, issuer, oauth2 }: MfaOptions) {
+  constructor({
+    secretKeys,
+    mailer,
+    sms,
+    issuer,
+    oauth2,
+    passkeys,
+  }: MfaOptions) {
     this.#keys = secretKeys;
     this.#mailer = mailer;
     this.#sms = sms;
     this.#issuer = issuer;
     this.#oauth2 = oauth2;
+    this.#passkeys = passkeys;
   }
 
   /**
@@ -652,10 +664,11 @@ export class Mfa {
     first: SignInMethod,
   ): SignInMethod[] {
     let methods: SignInMethod[];
+    const passkey = state.passkeys && this.#passkeys.enabled(collection);
     if (state.secret !== null) {
       methods = state.recoveryCodes > 0 ? ['totp', 'recoveryCode'] : ['totp'];
       // A passkey is as strong as the app's codes.
-      if (state.passkeys) methods.push('passkey');
+      if (passkey) methods.push('passkey');
     } else if (collection.id === SUPERUSERS) {
       methods = [];
     } else {
@@ -666,7 +679,7 @@ export class Mfa {
       }
       if (textsCodes(collection, record)) methods.push('phoneCode');
       if (this.#oauth2 && state.linked) methods.push('oauth2');
-      if (state.passkeys) methods.push('passkey');
+      if (passkey) methods.push('passkey');
     }
     const held = (channel: SignInMethod): boolean =>
       state.recent &&
