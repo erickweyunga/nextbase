@@ -1,5 +1,18 @@
 # nextbasejs
 
+## 0.2.1
+
+### Patch Changes
+
+- 309705f: Sign-in by a code emailed to the account, with no password. Turn it on with the auth collection option `otp: { enabled: true, duration }` (codes work 180 seconds by default). `requestOtp(email)` answers an id whether or not the account exists, and `signInWithOtp(otpId, code)` signs in, counting the email verified. A code works once, five wrong ones end its id, wrong ones are capped per address the same whether or not an account has it, a code sent before the email changed signs in nothing, and proving the email drops providers linked before, as the verification link does. It is the `emailCode` method for multi-factor sign-in, and `auth-methods` lists it as `otp`.
+- 309705f: A request that read a provider token as due no longer refreshes it a second time after another request already did: a refresh is claimed only while the stored tokens are still those the request read.
+- 7b7db0a: A realtime stream over 50 topics, or over the weight of 100, now refuses only the topics past the limit, so the client ends just those subscriptions and keeps the rest. The client shares one topic between identical subscriptions. `useRecords` reloads during a steady stream of changes instead of waiting for a pause, and no longer patches the wrong item when `fields` leaves out `id`.
+- 7b7db0a: Sign-in by email code is off when the collection's `authRule` is `null`, and a code the `authRule` refuses no longer marks the email verified. A password sign-in that `validateSignIn` refuses answers the app's refusal even when the email is not verified, and sends no verification link.
+- 309705f: The `validateSignIn` option decides who may sign up, link an OAuth2 provider or sign in, at each one and by every method (password, OAuth2 in the browser or by ID token, phone code, email code). It sees the action, the method, the collection, the account (for a sign-up, its values; never the password), and for OAuth2 the provider's profile as it is at this sign-in, and refuses by answering `{ error, message }`: a 403 with the code in `data.account.code`, or `?error=` for an OAuth2 sign-in in the browser. A sign-up is refused before anything is written. Accounts callers create through the records API or a batch are checked as sign-ups too.
+- Updated dependencies [309705f]
+- Updated dependencies [7b7db0a]
+  - @nextbasejs/client@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
