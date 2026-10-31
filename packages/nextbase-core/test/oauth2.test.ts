@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { NextBaseClient } from '@nextbasejs/client';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { type MailMessage, NextBase } from '../src/index.ts';
+import { type MailMessage, NextBase, type SignInCheck } from '../src/index.ts';
 import { call, origin } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
 
@@ -44,6 +44,8 @@ describe('OAuth2 sign-in', () => {
   let refreshes = 0;
   /** Makes the next refresh answer a token type NextBase refuses. */
   let badRefresh = false;
+  /** What the app's sign-in check saw. */
+  const checks: SignInCheck[] = [];
   let keys: Awaited<ReturnType<typeof generateKeyPair>>;
 
   /** A fake OpenID Connect provider and GitHub, behind fetch. */
@@ -331,6 +333,15 @@ describe('OAuth2 sign-in', () => {
       database: t.pool,
       appUrl: origin,
       secretKey: randomBytes(32).toString('base64'),
+      // Refuses a provider account whose email is, as the provider says
+      // now, at a blocked domain.
+      validateSignIn: (check) => {
+        checks.push(check);
+        const email = String(check.oauth2?.profile.email ?? '');
+        return email.endsWith('@blocked.example')
+          ? { error: 'email_not_allowed', message: 'Use your work email.' }
+          : undefined;
+      },
       oauth2: {
         idp: { issuer: ISSUER, clientId: 'client', clientSecret: 'secret' },
         github: { clientId: 'client', clientSecret: 'secret' },
@@ -509,6 +520,43 @@ describe('OAuth2 sign-in', () => {
         )
       ).rows,
     ).toEqual([]);
+  });
+
+  it("asks the app's check at sign-up, every sign-in and link, with the provider's profile now", async () => {
+    const refused = await signIn('idp', {
+      sub: 'blocked-1',
+      email: 'new@blocked.example',
+    });
+    expect(errorOf(refused)).toBe('email_not_allowed');
+    expect(checks.at(-1)).toMatchObject({
+      action: 'sign-up',
+      method: 'oauth2',
+      oauth2: { provider: 'idp' },
+    });
+    expect(
+      (
+        await t.pool.query(
+          "SELECT 1 FROM nextbase.users WHERE email = 'new@blocked.example'",
+        )
+      ).rows,
+    ).toEqual([]);
+
+    // Signed up while allowed; then the provider moves the email.
+    sessionOf(
+      await signIn('idp', { sub: 'mover', email: 'mover@example.com' }),
+    );
+    sessionOf(
+      await signIn('idp', { sub: 'mover', email: 'mover@example.com' }),
+    );
+    expect(checks.at(-1)).toMatchObject({
+      action: 'sign-in',
+      record: { email: 'mover@example.com' },
+    });
+    const moved = await signIn('idp', {
+      sub: 'mover',
+      email: 'mover@blocked.example',
+    });
+    expect(errorOf(moved)).toBe('email_not_allowed');
   });
 
   describe('stored provider tokens', () => {
@@ -829,6 +877,17 @@ describe('OAuth2 sign-in', () => {
       });
       expect(unverified.body.data).toMatchObject({
         token: { code: 'email_not_verified' },
+      });
+      const blocked = await signInWith('mobile', {
+        token: await idToken({
+          sub: 'native-blocked',
+          email: 'native@blocked.example',
+          email_verified: true,
+        }),
+      });
+      expect(blocked.status).toBe(403);
+      expect(blocked.body.data).toMatchObject({
+        account: { code: 'email_not_allowed' },
       });
     });
   });

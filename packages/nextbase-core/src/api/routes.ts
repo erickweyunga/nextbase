@@ -56,6 +56,12 @@ import {
   setStateCookie,
 } from '../auth/oauth2.ts';
 import {
+  type OtpContext,
+  proveEmail,
+  requestOtp,
+  signInWithOtp,
+} from '../auth/otp.ts';
+import {
   authWithPhoneCode,
   confirmPasswordResetByPhone,
   confirmPhoneVerification,
@@ -93,6 +99,11 @@ import {
 import type { Sms } from '../auth/sms.ts';
 import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
 import { countAttempt, mailKey } from '../auth/throttle.ts';
+import {
+  checkSignIn,
+  SignInRefused,
+  type ValidateSignIn,
+} from '../auth/validate.ts';
 import { table } from '../db/system.ts';
 import { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
@@ -164,6 +175,8 @@ interface Context {
   sms: Sms;
   oauth2: OAuth2;
   mfa: Mfa;
+  /** The app's check of who may sign up, link or sign in. */
+  validateSignIn: ValidateSignIn | undefined;
   rejectBreachedPasswords: boolean;
   effects: Effects;
   storage: Storage;
@@ -626,6 +639,14 @@ export const ROUTES: readonly Route[] = [
       });
       const step =
         named ?? (await cookieStep(context, collection, record, 'password'));
+      if (!step) {
+        await checkSignIn(context.validateSignIn, {
+          action: 'sign-in',
+          method: 'password',
+          collection: collection.name,
+          record,
+        });
+      }
       if (step) {
         if (step.pending.record.id !== record.id) throw invalidMfa();
         return finishStep(context, step, 'password', cookie === true);
@@ -637,6 +658,53 @@ export const ROUTES: readonly Route[] = [
         'password',
         cookie === true,
       );
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/request-otp$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, schema } = context;
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readJsonObject(request);
+      const otpId = await requestOtp(
+        otpContext(context),
+        collection,
+        input.email,
+      );
+      return Response.json({ otpId });
+    },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/collections/${segment}/auth-with-otp$`),
+    tags: ['auth'],
+    async handler(context) {
+      const { request, params, db, schema, inProcess, origins } = context;
+      const collection = authCollection(schema, params[0] as string);
+      const input = await readJsonObject(request);
+      const cookie = input.cookie === true;
+      // Another site must not sign the browser in to an account of its choosing.
+      if (cookie && !inProcess) checkSameOrigin(request, origins);
+      const ctx = otpContext(context);
+      const record = await signInWithOtp(
+        ctx,
+        collection,
+        input.otpId,
+        input.code,
+      );
+      // The app's check first, so a refused sign-in changes nothing; then
+      // the email the code proved, which the auth rule may require.
+      await checkSignIn(context.validateSignIn, {
+        action: 'sign-in',
+        method: 'emailCode',
+        collection: collection.name,
+        record,
+      });
+      await proveEmail(ctx, collection, record);
+      await checkAuthRule(db, schema, collection, record.id as string);
+      return completeSignIn(context, collection, record, 'emailCode', cookie);
     },
   },
   {
@@ -659,6 +727,9 @@ export const ROUTES: readonly Route[] = [
             collection.authRule !== null &&
             collection.phoneSignIn &&
             collection.id !== SUPERUSERS,
+        },
+        otp: {
+          enabled: collection.authRule !== null && collection.otp.enabled,
         },
         mfa: {
           enabled: collection.authRule !== null && collection.mfa.enabled,
@@ -896,7 +967,13 @@ export const ROUTES: readonly Route[] = [
       let account: Account;
       try {
         account = await accountFor(
-          { db, schema, effects: context.effects, hooks: context.hooks },
+          {
+            db,
+            schema,
+            effects: context.effects,
+            hooks: context.hooks,
+            validateSignIn: context.validateSignIn,
+          },
           collection,
           {
             name: provider.name,
@@ -1032,7 +1109,13 @@ export const ROUTES: readonly Route[] = [
           });
         }
         const { record, linkedTo } = await accountFor(
-          { db, schema, effects: context.effects, hooks: context.hooks },
+          {
+            db,
+            schema,
+            effects: context.effects,
+            hooks: context.hooks,
+            validateSignIn: context.validateSignIn,
+          },
           collection,
           {
             name: provider.name,
@@ -1113,7 +1196,7 @@ export const ROUTES: readonly Route[] = [
         );
         return response;
       } catch (error) {
-        if (error instanceof OAuth2Error) {
+        if (error instanceof OAuth2Error || error instanceof SignInRefused) {
           context.noteError(error.code);
           return back(error.code);
         }
@@ -1351,6 +1434,14 @@ export const ROUTES: readonly Route[] = [
       // Chosen here so the record can be signed in even if the caller cannot view it.
       const id =
         typeof input.id === 'string' && input.id !== '' ? input.id : newId();
+      // Before anything is written, and the same whether or not the email is
+      // registered, so a refusal reveals nothing either.
+      await checkSignIn(context.validateSignIn, {
+        action: 'sign-up',
+        method: 'password',
+        collection: collection.name,
+        record: input,
+      });
       const write = (body: Record<string, unknown>): RecordWrite => ({
         method: 'POST',
         collection: collection.id,
@@ -1373,13 +1464,15 @@ export const ROUTES: readonly Route[] = [
         hidden !== undefined &&
         (await findByEmail(db, collection, hidden)) !== undefined;
       try {
+        // Checked above, on the email as sent.
+        const checked = { ...context, validateSignIn: undefined };
         if (taken && hidden !== undefined) {
           await rehearse(
-            context,
+            checked,
             write({ ...input, email: unusedEmail(hidden) }),
           );
         } else {
-          await writeRecord(context, write(input));
+          await writeRecord(checked, write(input));
         }
       } catch (error) {
         // Registered meanwhile, by a sign-up at the same moment.
@@ -1695,6 +1788,7 @@ function recordsContext(
     hooks: context.hooks,
     hookChain: context.hookChain,
     mfa: context.mfa,
+    validateSignIn: context.validateSignIn,
     request: {
       method,
       query: Object.fromEntries(query ?? new URL(request.url).searchParams),
@@ -1871,6 +1965,11 @@ function parseBatch(input: Record<string, unknown>): BatchWrite[] {
       query: parsed.searchParams,
     };
   });
+}
+
+function otpContext(context: Context): OtpContext {
+  const { db, schema, mailer, effects, hooks } = context;
+  return { db, schema, mailer, effects, hooks };
 }
 
 function flowContext(context: Context): FlowContext {
@@ -2056,6 +2155,7 @@ function phoneContext({
   effects,
   hooks,
   mfa,
+  validateSignIn,
 }: Context): PhoneContext {
   return {
     db,
@@ -2066,6 +2166,7 @@ function phoneContext({
     effects,
     hooks,
     mfa,
+    validateSignIn,
   };
 }
 

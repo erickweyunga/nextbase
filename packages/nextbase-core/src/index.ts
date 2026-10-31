@@ -41,6 +41,7 @@ import {
   insertSuperuser,
   setupToken,
 } from './auth/superusers.ts';
+import type { ValidateSignIn } from './auth/validate.ts';
 import {
   type ClientIp,
   type ClientIpOption,
@@ -138,6 +139,11 @@ export type {
   SmsOptions,
   SmsTemplate,
 } from './auth/sms.ts';
+export type {
+  SignInCheck,
+  SignInRefusal,
+  ValidateSignIn,
+} from './auth/validate.ts';
 export type { ClientIpOption } from './client-ip.ts';
 export { ApiError } from './errors.ts';
 export type { S3StorageOptions, StorageOptions } from './files/storage.ts';
@@ -214,6 +220,14 @@ export interface NextBaseOptions<C extends Collections = Collections> {
    * 5-character SHA-1 prefix is sent; accepts if unreachable). Defaults to false.
    */
   rejectBreachedPasswords?: boolean;
+  /**
+   * Decides who may sign up, link an OAuth2 provider, or sign in, at each
+   * one and by every method: answer `{ error, message }` to refuse, nothing
+   * to allow. It sees the account (for a sign-up, its values), never the
+   * password, and for OAuth2 the provider's profile as it is now, so a
+   * policy such as an email domain holds at every sign-in.
+   */
+  validateSignIn?: ValidateSignIn;
   /**
    * OAuth2 providers by name: `google`, `github`, or any OpenID Connect `issuer`.
    * Requires `appUrl`; the redirect URI is `{appUrl origin}{basePath}/callback/{name}`.
@@ -305,6 +319,7 @@ export class NextBase<C extends Collections = Collections> {
   readonly #sms: Sms;
   readonly #mfa: Mfa;
   readonly #rejectBreachedPasswords: boolean;
+  readonly #validateSignIn: ValidateSignIn | undefined;
   readonly #storage: Storage;
   readonly #thumbs: Thumbs;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
@@ -337,6 +352,13 @@ export class NextBase<C extends Collections = Collections> {
     this.#basePath = basePath.replace(/\/+$/, '');
     this.#database = options.database;
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
+    if (
+      options.validateSignIn !== undefined &&
+      typeof options.validateSignIn !== 'function'
+    ) {
+      throw new TypeError('validateSignIn must be a function.');
+    }
+    this.#validateSignIn = options.validateSignIn;
     const appUrl =
       options.appUrl === undefined ? undefined : checkAppUrl(options.appUrl);
     this.#waitUntil = keepingAlive(
@@ -912,6 +934,7 @@ export class NextBase<C extends Collections = Collections> {
       sms: this.#sms,
       oauth2: this.#oauth2,
       mfa: this.#mfa,
+      validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
       thumbs: this.#thumbs,

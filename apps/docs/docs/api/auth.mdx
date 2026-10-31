@@ -266,6 +266,46 @@ Also returned for the superusers collection.
 </TabItem>
 </Tabs>
 
+## Request an email code
+
+Emails a sign-in code to the account with `email`, when the collection's
+`otp` is on. Answers `200` with `{ "otpId": "..." }`, whether or not the
+account exists. See [Email code](/docs/guides/auth/email-code).
+
+```ts
+const otpId = await nb.collection("users").requestOtp("ann@example.com");
+```
+
+```http
+POST /collections/{collection}/request-otp
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `email` | string | Required. |
+
+`otp` off answers `400`; too many emails to the address, `429`.
+
+## Sign in with an email code
+
+```ts
+await nb.collection("users").signInWithOtp(otpId, code);
+```
+
+```http
+POST /collections/{collection}/auth-with-otp
+```
+
+| Param | Type | Description |
+| ----- | ---- | ----------- |
+| `otpId` | string | Required. From the request. |
+| `code` | string | Required. The six digits from the email. |
+| `cookie` | boolean | Optional. Puts the session in a cookie instead of the response. |
+
+Answers like [Sign in with a password](#sign-in-with-a-password), with the
+method `emailCode`. A wrong, used or expired code answers `400` with
+`data.code.code` `validation_invalid_code`.
+
 ## Sign in with an ID token
 
 Signs in with an ID token a native app got from the provider's SDK. See

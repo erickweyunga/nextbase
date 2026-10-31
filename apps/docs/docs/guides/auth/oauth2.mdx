@@ -155,6 +155,7 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 | `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
 | `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
 | `already_linked` | The provider account belongs to another user, or this user already linked one from this provider. |
+| Your own code | [`validateSignIn`](/docs/guides/auth#decide-who-may-sign-in) refused the sign-up, link or sign-in. |
 
 ## New accounts
 

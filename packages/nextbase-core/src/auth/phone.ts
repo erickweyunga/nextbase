@@ -24,6 +24,7 @@ import {
   phoneKey,
   smsKey,
 } from './throttle.ts';
+import { checkSignIn, type ValidateSignIn } from './validate.ts';
 
 // Sign-in and verification with codes texted to a phone.
 // - Six-digit, single-use codes valid for 10 minutes.
@@ -41,6 +42,7 @@ export interface PhoneContext {
   effects: Effects;
   hooks: Hooks;
   mfa: Mfa;
+  validateSignIn?: ValidateSignIn;
 }
 
 /** A code is accepted only for the purpose it was sent for. */
@@ -133,6 +135,12 @@ export async function authWithPhoneCode(
   await consumeCode(ctx.db, collection, phone, 'signIn', codeInput);
   const existing = await findByPhone(ctx.db, collection, phone);
   if (existing) {
+    await checkSignIn(ctx.validateSignIn, {
+      action: 'sign-in',
+      method: 'phoneCode',
+      collection: collection.name,
+      record: existing,
+    });
     if (existing.phoneVerified !== true) {
       await privilegedUpdate(ctx, collection, existing, {
         phoneVerified: true,
@@ -149,6 +157,12 @@ export async function authWithPhoneCode(
     password,
     passwordConfirm: password,
   };
+  await checkSignIn(ctx.validateSignIn, {
+    action: 'sign-up',
+    method: 'phoneCode',
+    collection: collection.name,
+    record: input,
+  });
   await newRecord(
     {
       db: ctx.db,

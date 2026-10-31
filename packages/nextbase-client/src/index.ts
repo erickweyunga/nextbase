@@ -96,6 +96,7 @@ export type {
   JsonField,
   MfaConfig,
   NumberField,
+  OtpConfig,
   PasswordField,
   PhoneField,
   RelationField,
