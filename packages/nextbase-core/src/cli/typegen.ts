@@ -53,12 +53,14 @@ function fieldType(field: Field): string {
       return 'boolean';
     case 'json':
       return 'unknown';
+    case 'geoPoint':
+      return '{ lon: number; lat: number }';
     case 'select':
     case 'file':
     case 'relation':
       return isMultiple(field) ? 'string[]' : 'string';
     default:
-      // Text, emails, urls and dates (ISO 8601 strings, "" when blank).
+      // Text, HTML, emails, urls and dates (ISO 8601 strings, "" when blank).
       return 'string';
   }
 }

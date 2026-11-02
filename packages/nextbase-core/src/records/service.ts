@@ -2078,6 +2078,7 @@ function sortColumns(
       !field ||
       isMultiple(field) ||
       field.type === 'json' ||
+      field.type === 'geoPoint' ||
       field.type === 'password' ||
       field.name === 'tokenKey' ||
       (field.hidden && !ctx.principal.superuser) ||
@@ -2139,6 +2140,7 @@ function columnCast(field: Field): string {
     case 'autodate':
       return 'timestamptz';
     case 'json':
+    case 'geoPoint':
       return 'jsonb';
     default:
       return 'text';
@@ -2150,6 +2152,7 @@ function columnValue(field: Field, value: unknown): unknown {
   if (value instanceof Date) return timestampParam(value);
   if (field.type === 'json')
     return value === null || value === undefined ? null : JSON.stringify(value);
+  if (field.type === 'geoPoint') return JSON.stringify(value);
   return value;
 }
 

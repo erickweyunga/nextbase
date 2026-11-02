@@ -7,6 +7,7 @@ import type {
 } from '@nextbasejs/client';
 import { MAX_THUMBS, thumbSizeProblem } from '../files/thumbs.ts';
 import { ALPHANUMERIC, LOWER_ALPHANUMERIC, randomString } from '../random.ts';
+import { patternGenerator, UnsupportedPattern } from '../random-pattern.ts';
 import { parseDate } from '../storable.ts';
 import { type Issues, isRecord, type Path, Reader } from './input.ts';
 
@@ -37,6 +38,15 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TEXT_MAX = 5000;
 const DEFAULT_FILE_MAX_SIZE = 5 * 1024 * 1024;
 const DEFAULT_JSON_MAX_SIZE = 1024 * 1024;
+// Sanitizing runs at about 2 MB/s on the worst markup, so this bounds it to a
+// quarter second.
+const DEFAULT_EDITOR_MAX_SIZE = 512 * 1024;
+/** How record ids are generated: what `newId` makes. */
+export const ID_AUTOGENERATE_PATTERN = '[a-z0-9]{15}';
+/** How auth records' token keys are generated. */
+export const TOKEN_KEY_AUTOGENERATE_PATTERN = '[a-zA-Z0-9]{50}';
+/** Values an autogeneratePattern is tried on against the field's other checks. */
+const PATTERN_SAMPLES = 10;
 // Length beats symbol mixes for guess resistance, and passwords are the only factor.
 export const DEFAULT_PASSWORD_MIN = 15;
 export const DEFAULT_PASSWORD_MAX = 256;
@@ -57,6 +67,8 @@ const FIELD_TYPES = [
   'relation',
   'file',
   'json',
+  'editor',
+  'geoPoint',
   'password',
 ] as const satisfies readonly FieldType[];
 
@@ -178,6 +190,7 @@ export function parseField(
     system: false,
     required: r.boolean('required', false),
     hidden: r.boolean('hidden', false),
+    presentable: r.boolean('presentable', false),
   };
 
   const fieldType = type as Exclude<FieldType, 'password'>;
@@ -188,8 +201,24 @@ export function parseField(
       if (min > max)
         r.fail('min', 'validation_out_of_range', 'Must not exceed max.');
       const pattern = r.string('pattern', '');
-      if (pattern !== '') checkPattern(pattern, r);
-      return { ...base, type: 'text', min, max, pattern, primaryKey: false };
+      const validPattern = pattern === '' || checkPattern(pattern, r);
+      const autogeneratePattern = r.string('autogeneratePattern', '');
+      if (autogeneratePattern !== '') {
+        checkAutogeneratePattern(r, autogeneratePattern, {
+          min,
+          max,
+          pattern: validPattern ? pattern : '',
+        });
+      }
+      return {
+        ...base,
+        type: 'text',
+        min,
+        max,
+        pattern,
+        autogeneratePattern,
+        primaryKey: false,
+      };
     }
     case 'number': {
       const min = r.numberOrNull('min', null);
@@ -262,11 +291,13 @@ export function parseField(
           "A relation's collection cannot change. Remove the field and add a new one instead.",
         );
       }
+      const maxSelect = r.integer('maxSelect', 1, 1, MAX_SAFE);
       return {
         ...base,
         type: 'relation',
         collectionId,
-        maxSelect: r.integer('maxSelect', 1, 1, MAX_SAFE),
+        minSelect: r.integer('minSelect', 0, 0, maxSelect),
+        maxSelect,
         cascadeDelete: r.boolean('cascadeDelete', false),
       };
     }
@@ -297,6 +328,15 @@ export function parseField(
         type: 'json',
         maxSize: r.integer('maxSize', DEFAULT_JSON_MAX_SIZE, 1, MAX_SAFE),
       };
+    case 'editor':
+      return {
+        ...base,
+        type: 'editor',
+        maxSize: r.integer('maxSize', DEFAULT_EDITOR_MAX_SIZE, 1, MAX_SAFE),
+        convertURLs: r.boolean('convertURLs', false),
+      };
+    case 'geoPoint':
+      return { ...base, type: 'geoPoint' };
     default: {
       const unknown: never = fieldType;
       throw new Error(`Unknown field type: ${unknown}.`);
@@ -323,16 +363,73 @@ export function parseEmailOptions(r: Reader, field: EmailField): EmailField {
   };
 }
 
-function checkPattern(pattern: string, r: Reader): void {
+function checkPattern(pattern: string, r: Reader): boolean {
   try {
     new RegExp(pattern, 'u');
+    return true;
   } catch {
     r.fail(
       'pattern',
       'validation_invalid_value',
       'Must be a valid regular expression.',
     );
+    return false;
   }
+}
+
+// Generated values must pass the field's own checks. Lengths are known from the
+// pattern; matching `pattern` is tried on samples, which catches most conflicts.
+function checkAutogeneratePattern(
+  r: Reader,
+  autogeneratePattern: string,
+  field: { min: number; max: number; pattern: string },
+): void {
+  const fail = (message: string): void =>
+    r.fail('autogeneratePattern', 'validation_invalid_value', message);
+  let generator: ReturnType<typeof patternGenerator>;
+  try {
+    generator = patternGenerator(autogeneratePattern);
+  } catch (error) {
+    if (!(error instanceof UnsupportedPattern)) throw error;
+    fail(error.message);
+    return;
+  }
+  const min = Math.max(field.min, 1);
+  if (generator.minLength < min || generator.maxLength > field.max) {
+    fail(
+      `Generates values of ${generator.minLength} to ${generator.maxLength} characters, but the field takes ${min} to ${field.max}.`,
+    );
+    return;
+  }
+  if (field.pattern === '') return;
+  const matches = new RegExp(field.pattern, 'u');
+  for (let i = 0; i < PATTERN_SAMPLES; i++) {
+    const value = generator.generate();
+    if (!matches.test(value)) {
+      fail(
+        `Can generate values that do not match pattern, such as "${value}".`,
+      );
+      return;
+    }
+  }
+}
+
+/**
+ * A stored field with the settings added since it was saved, at their defaults.
+ * The system id and tokenKey fields describe how NextBase generates them.
+ */
+export function withFieldDefaults(stored: Field): Field {
+  const field: Field = { ...stored, presentable: stored.presentable ?? false };
+  if (field.type === 'text') {
+    field.autogeneratePattern ??= field.primaryKey
+      ? ID_AUTOGENERATE_PATTERN
+      : field.system && field.name === 'tokenKey'
+        ? TOKEN_KEY_AUTOGENERATE_PATTERN
+        : '';
+  } else if (field.type === 'relation') {
+    field.minSelect ??= 0;
+  }
+  return field;
 }
 
 function parseDomains(

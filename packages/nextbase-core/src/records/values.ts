@@ -11,10 +11,12 @@ import {
 } from '../files/files.ts';
 import { normalizePhone } from '../phone.ts';
 import { ALPHANUMERIC, isId, randomString } from '../random.ts';
+import { patternGenerator } from '../random-pattern.ts';
 import type { Schema } from '../schema/cache.ts';
 import { isMultiple, passwordField } from '../schema/fields.ts';
 import { Issues, type Path } from '../schema/input.ts';
 import { isStorableTime, parseDate, unstorableText } from '../storable.ts';
+import { MAX_HTML_DEPTH, sanitizeHtml } from './html.ts';
 
 export const EMAIL_PATTERN: RegExp = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -25,6 +27,7 @@ const FORBIDDEN_MESSAGES: Record<string, string> = {
   phoneVerified: 'Only superusers can verify phones.',
 };
 const INVALID = Symbol('invalid');
+const encoder = new TextEncoder();
 
 export interface WriteOptions {
   collection: Collection;
@@ -191,6 +194,20 @@ export function draftWrite(
       value = normalize(field, input[name], issues);
       changed = true;
     }
+    // A new record without a value gets one made from the field's pattern.
+    // It is not part of the request, so `@request.body` does not see it.
+    if (
+      creating &&
+      field.type === 'text' &&
+      field.autogeneratePattern !== '' &&
+      (!changed || value === '')
+    ) {
+      const generated = patternGenerator(field.autogeneratePattern).generate();
+      if (validate(field, generated, issues)) {
+        row[name] = values[name] = generated;
+      }
+      continue;
+    }
     for (const [key, apply] of modifierKeys(field)) {
       if (!Object.hasOwn(input, key) || input[key] === undefined) continue;
       const current = changed ? value : row[name];
@@ -251,12 +268,30 @@ export function draftWrite(
       field.name === 'email' &&
       !isBlank(row.phone);
     if (phoneInstead) continue;
+    const value = row[field.name];
     if (
       field.type === 'password'
-        ? creating && isBlank(row[field.name])
-        : isBlank(row[field.name])
+        ? creating && isBlank(value)
+        : field.type === 'geoPoint'
+          ? isBlankPoint(value)
+          : isBlank(value)
     ) {
       issues.add([field.name], 'validation_required', 'Cannot be blank.');
+    }
+  }
+  // Like required, checked whenever the record is written, so one left short
+  // by a deleted related record must be fixed by its next write.
+  for (const field of collection.fields) {
+    if (field.type !== 'relation' || field.minSelect === 0) continue;
+    const value = row[field.name];
+    const count = Array.isArray(value) ? value.length : value ? 1 : 0;
+    // An empty value is for required to judge.
+    if (count > 0 && count < field.minSelect) {
+      issues.add(
+        [field.name],
+        'validation_too_few',
+        `Select at least ${field.minSelect}.`,
+      );
     }
   }
   // Rules see what was submitted, never secrets derived from it.
@@ -311,6 +346,8 @@ function blankValue(field: Field): unknown {
     case 'json':
     case 'relation':
       return null;
+    case 'geoPoint':
+      return { lon: 0, lat: 0 };
     default:
       return '';
   }
@@ -320,6 +357,11 @@ function blankRow(collection: Collection): Record<string, unknown> {
   return Object.fromEntries(
     collection.fields.map((f) => [f.name, blankValue(f)]),
   );
+}
+
+function isBlankPoint(value: unknown): boolean {
+  const point = value as { lon: number; lat: number };
+  return point.lon === 0 && point.lat === 0;
 }
 
 function isBlank(value: unknown): boolean {
@@ -460,6 +502,53 @@ function normalize(field: Field, raw: unknown, issues: Issues): unknown {
     }
     case 'json':
       return raw;
+    case 'editor': {
+      if (raw === null) return '';
+      if (typeof raw !== 'string') return fail('Must be a string.');
+      // Checked before sanitizing too, so oversized input costs no parsing.
+      if (encoder.encode(raw).length > field.maxSize) {
+        issues.add(
+          [field.name],
+          'validation_too_large',
+          `Must be at most ${field.maxSize} bytes of HTML.`,
+        );
+        return INVALID;
+      }
+      const html = sanitizeHtml(raw);
+      if (html === null) {
+        issues.add(
+          [field.name],
+          'validation_invalid_value',
+          `Must not nest elements more than ${MAX_HTML_DEPTH} deep.`,
+        );
+        return INVALID;
+      }
+      return html;
+    }
+    case 'geoPoint': {
+      if (raw === null || raw === '') return { lon: 0, lat: 0 };
+      let point = raw;
+      // Form data sends it as JSON text.
+      if (typeof point === 'string') {
+        try {
+          point = JSON.parse(point);
+        } catch {
+          return fail('Must be an object with lon and lat numbers.');
+        }
+      }
+      const { lon, lat } = (point ?? {}) as Record<string, unknown>;
+      if (
+        typeof point !== 'object' ||
+        Array.isArray(point) ||
+        typeof lon !== 'number' ||
+        typeof lat !== 'number' ||
+        !Number.isFinite(lon) ||
+        !Number.isFinite(lat)
+      ) {
+        return fail('Must be an object with lon and lat numbers.');
+      }
+      return { lon, lat };
+    }
     default:
       return fail('Cannot be set.');
   }
@@ -610,8 +699,31 @@ function validate(field: Field, value: unknown, issues: Issues): boolean {
         return fail('validation_invalid_value', 'Must be record ids.');
       return checkList(field.maxSelect, items, fail);
     }
+    case 'editor': {
+      const size = encoder.encode(value as string).length;
+      if (size > field.maxSize)
+        return fail(
+          'validation_too_large',
+          `Must be at most ${field.maxSize} bytes of HTML.`,
+        );
+      return true;
+    }
+    case 'geoPoint': {
+      const { lon, lat } = value as { lon: number; lat: number };
+      if (lon < -180 || lon > 180)
+        return fail(
+          'validation_out_of_range',
+          'Longitude must be between -180 and 180.',
+        );
+      if (lat < -90 || lat > 90)
+        return fail(
+          'validation_out_of_range',
+          'Latitude must be between -90 and 90.',
+        );
+      return true;
+    }
     case 'json': {
-      const size = new TextEncoder().encode(JSON.stringify(value)).length;
+      const size = encoder.encode(JSON.stringify(value)).length;
       if (size > field.maxSize)
         return fail(
           'validation_too_large',

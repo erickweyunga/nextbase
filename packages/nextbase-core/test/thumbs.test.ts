@@ -550,6 +550,7 @@ describe('thumbnails with local storage', () => {
       system: false,
       required: false,
       hidden: false,
+      presentable: false,
       maxSelect: 1,
       maxSize: 1024 * 1024,
       mimeTypes: [],

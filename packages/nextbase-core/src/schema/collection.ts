@@ -22,10 +22,12 @@ import {
 import {
   DEFAULT_PASSWORD_MAX,
   DEFAULT_PASSWORD_MIN,
+  ID_AUTOGENERATE_PATTERN,
   NAME_PATTERN,
   parseEmailOptions,
   parseField,
   parsePasswordOptions,
+  TOKEN_KEY_AUTOGENERATE_PATTERN,
 } from './fields.ts';
 import { Issues, isRecord, type Path, Reader } from './input.ts';
 
@@ -334,9 +336,11 @@ function systemFields(type: Collection['type']): Field[] {
     system: true,
     required: true,
     hidden: false,
+    presentable: false,
     min: 15,
     max: 15,
     pattern: '^[a-z0-9]+$',
+    autogeneratePattern: ID_AUTOGENERATE_PATTERN,
     primaryKey: true,
   };
   if (type === 'base') return [id];
@@ -347,6 +351,7 @@ function systemFields(type: Collection['type']): Field[] {
     system: true,
     required: false,
     hidden: false,
+    presentable: false,
   });
   return [
     id,
@@ -357,6 +362,7 @@ function systemFields(type: Collection['type']): Field[] {
       system: true,
       required: true,
       hidden: false,
+      presentable: false,
       onlyDomains: [],
       exceptDomains: [],
     },
@@ -370,6 +376,7 @@ function systemFields(type: Collection['type']): Field[] {
       system: true,
       required: false,
       hidden: false,
+      presentable: false,
     },
     flag('phoneVerified'),
     {
@@ -379,6 +386,7 @@ function systemFields(type: Collection['type']): Field[] {
       system: true,
       required: true,
       hidden: true,
+      presentable: false,
       min: DEFAULT_PASSWORD_MIN,
       max: DEFAULT_PASSWORD_MAX,
     },
@@ -389,9 +397,11 @@ function systemFields(type: Collection['type']): Field[] {
       system: true,
       required: true,
       hidden: true,
+      presentable: false,
       min: 30,
       max: 60,
       pattern: '',
+      autogeneratePattern: TOKEN_KEY_AUTOGENERATE_PATTERN,
       primaryKey: false,
     },
   ];
@@ -406,6 +416,7 @@ function defaultFields(): AutodateField[] {
     system: false,
     required: false,
     hidden: false,
+    presentable: false,
     onCreate: true,
     onUpdate,
   });
@@ -503,7 +514,12 @@ function matchSystemField(
 }
 
 // Other properties, which clients echo back, are ignored; a new name or type is an error.
-function parseSystemField(r: Reader, field: Field): Field {
+// Only presentable, which is display only, and the email and password options can change.
+function parseSystemField(r: Reader, system: Field): Field {
+  const field = {
+    ...system,
+    presentable: r.boolean('presentable', system.presentable),
+  };
   if (r.has('name') && r.input.name !== field.name) {
     r.fail('name', 'validation_immutable', 'System fields cannot be renamed.');
   }
@@ -600,6 +616,7 @@ function parseIndexes(
           field?.type === 'text' ||
           field?.type === 'email' ||
           field?.type === 'url' ||
+          field?.type === 'editor' ||
           (field?.type === 'select' && field.maxSelect === 1);
         if (field && !text) {
           r.issues.add(

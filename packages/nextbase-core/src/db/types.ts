@@ -48,6 +48,8 @@ export function decodeRecordJson(collection: Collection, json: Row): Row {
       case 'password':
       case 'bool':
       case 'json':
+      case 'editor':
+      case 'geoPoint':
       case 'select':
       case 'file':
       case 'relation':

@@ -60,6 +60,8 @@ interface Constant {
   value: unknown;
   /** Undefined when it adapts to the other operand. */
   type: SqlType | undefined;
+  /** The types of the schema fields it is read from, kept when it is blank. */
+  fieldTypes?: SqlType[];
 }
 
 interface RelationStep {
@@ -88,7 +90,18 @@ interface Path {
   source?: string;
 }
 
-type Resolved = Constant | Path;
+/** A value SQL computes, such as `geoDistance(...)`. */
+interface Computed {
+  kind: 'computed';
+  sql: string;
+  type: SqlType;
+  nullable: boolean;
+}
+
+type Resolved = Constant | Path | Computed;
+
+/** Mean Earth radius, in kilometres. */
+const EARTH_RADIUS = 6371;
 
 /**
  * Every value is bound and every name comes from the schema. Undefined for an
@@ -177,8 +190,10 @@ class Compiler {
     let left = this.#resolve(node.left, collection, alias);
     let right = this.#resolve(node.right, collection, alias);
     let op = node.op;
-    // Paths go on the left, so `"x" = title` compiles like `title = "x"`.
-    if (left.kind === 'constant' && right.kind === 'path') {
+    // Paths go on the left, so `"x" = title` compiles like `title = "x"`, and
+    // computed values next, so a path is compared with them as with a column.
+    const rank = { path: 0, computed: 1, constant: 2 };
+    if (rank[left.kind] > rank[right.kind]) {
       if (op === '~' || op === '!~')
         throw new FilterError(`The field must be on the left of ${op}.`);
       [left, right] = [right, left];
@@ -186,6 +201,15 @@ class Compiler {
     }
     if (left.kind === 'constant')
       return this.#compareConstants(left, op, right as Constant);
+    if (left.kind === 'computed') {
+      return this.#compareColumn(
+        left.sql,
+        left.type,
+        left.nullable,
+        op,
+        right as Constant | Computed,
+      );
+    }
     return this.#comparePath(left, op, node.any, right);
   }
 
@@ -201,6 +225,7 @@ class Compiler {
   }
 
   #resolve(operand: Operand, collection: Collection, alias: string): Resolved {
+    if (operand.kind === 'call') return this.#call(operand, collection, alias);
     if (operand.kind === 'literal') {
       return {
         kind: 'constant',
@@ -213,6 +238,62 @@ class Compiler {
     if (head.startsWith('@'))
       return this.#resolveSpecial(operand, head, rest, collection);
     return this.#resolvePath(operand.path, operand.modifier, collection, alias);
+  }
+
+  #call(
+    call: Operand & { kind: 'call' },
+    collection: Collection,
+    alias: string,
+  ): Computed {
+    if (call.name !== 'geoDistance')
+      throw new FilterError(`Unknown function "${call.name}".`);
+    if (call.args.length !== 4)
+      throw new FilterError(
+        `geoDistance takes 4 arguments: lonA, latA, lonB, latB; got ${call.args.length}.`,
+      );
+    const [lonA, latA, lonB, latB] = call.args.map((arg, i) =>
+      this.#number(arg, i, collection, alias),
+    ) as [string, string, string, string];
+    // Haversine, in kilometres; least() keeps rounding from leaving asin's domain.
+    const half = (a: string, b: string): string =>
+      `power(sin(radians(${b} - ${a}) / 2), 2)`;
+    return {
+      kind: 'computed',
+      sql: `(${2 * EARTH_RADIUS} * asin(least(1, sqrt(${half(latA, latB)} + cos(radians(${latA})) * cos(radians(${latB})) * ${half(lonA, lonB)}))))`,
+      type: 'number',
+      nullable: true,
+    };
+  }
+
+  /** A function argument as a double precision SQL value, NULL when blank. */
+  #number(
+    operand: Operand,
+    index: number,
+    collection: Collection,
+    alias: string,
+  ): string {
+    const problem = `Argument ${index + 1} of geoDistance must be a number or a numeric field with one value.`;
+    if (operand.kind === 'call') throw new FilterError(problem);
+    const resolved = this.#resolve(operand, collection, alias);
+    if (resolved.kind === 'computed') throw new FilterError(problem);
+    if (resolved.kind === 'constant') {
+      // A schema field must be numeric, so a rule cannot save that fails for
+      // some values; others, such as `@request.query.lat`, count when numeric.
+      if (resolved.fieldTypes?.some((t) => t !== 'number'))
+        throw new FilterError(problem);
+      if (resolved.value === BLANK) return 'NULL::double precision';
+      const type = resolved.type ?? jsType(resolved.value);
+      if (type === 'bool' || type === 'date') throw new FilterError(problem);
+      return this.#bind(coerce(resolved.value, 'number', true), 'number');
+    }
+    if (pathType(resolved, 'number') !== 'number' || isPlural(resolved))
+      throw new FilterError(problem);
+    if (!needsSubquery(resolved))
+      return this.#column(resolved, resolved.root, 'number');
+    // A single relation step at a time, so at most one row.
+    if (!isSingleValued(resolved)) throw new FilterError(problem);
+    const { from, joins, element } = this.#values(resolved, 'number');
+    return `(SELECT ${element} FROM ${from.join(', ')} WHERE ${joins.join(' AND ') || 'TRUE'})`;
   }
 
   #resolveCollection(
@@ -311,6 +392,14 @@ class Compiler {
           path(current, field, steps, names.slice(i + 1)),
           modifier,
         );
+      if (field.type === 'geoPoint') {
+        const key = names[i + 1];
+        if (names.length !== i + 2 || (key !== 'lon' && key !== 'lat'))
+          throw new FilterError(
+            `"${name}" is a geo point: compare ${name}.lon or ${name}.lat.`,
+          );
+        return this.#finishPath(path(current, field, steps, [key]), modifier);
+      }
       if (last)
         return this.#finishPath(path(current, field, steps, []), modifier);
       if (field.type !== 'relation')
@@ -338,7 +427,7 @@ class Compiler {
     if (
       modifier === 'lower' &&
       path.field.type !== 'json' &&
-      sqlType(path.field) !== 'text'
+      pathType(path, 'text') !== 'text'
     ) {
       throw new FilterError(
         `:lower applies to text fields, not "${path.field.name}".`,
@@ -391,12 +480,13 @@ class Compiler {
         type: 'bool',
       };
     }
+    if (section === 'auth' && name !== undefined && extra.length <= 1)
+      return this.#resolveAuth(name, modifier, extra[0]);
     if (name === undefined || extra.length > 0) {
       throw new FilterError(
         `"${operand.path.join('.')}" is not a supported @request value.`,
       );
     }
-    if (section === 'auth') return this.#resolveAuth(name, modifier);
     if (section === 'query' || section === 'headers') {
       if (modifier !== undefined) throw unknownModifier();
       return section === 'query'
@@ -415,11 +505,18 @@ class Compiler {
         throw new FilterError(
           `@request.body.${name} has several values and cannot be compared.`,
         );
-      if (!present) return { kind: 'constant', value: BLANK, type: undefined };
+      if (field?.type === 'geoPoint')
+        throw new FilterError(
+          `@request.body.${name} is a geo point, which rules cannot compare.`,
+        );
+      const fieldTypes = field && [sqlType(field)];
+      if (!present)
+        return { kind: 'constant', value: BLANK, type: undefined, fieldTypes };
       return {
         kind: 'constant',
         value: request.body[name],
         type: field ? sqlType(field) : undefined,
+        fieldTypes,
       };
     }
     throw new FilterError(
@@ -431,17 +528,26 @@ class Compiler {
    * A field of the signed-in record. It must exist in some auth collection, so a typo or removed field
    * fails when the schema is saved instead of reading blank. Hidden fields can be read, as in rules.
    */
-  #resolveAuth(name: string, modifier: string | undefined): Resolved {
+  #resolveAuth(
+    name: string,
+    modifier: string | undefined,
+    key: string | undefined,
+  ): Resolved {
     const { principal, schema } = this.#context;
     const { record, collection } = principal;
     const blank: Constant = { kind: 'constant', value: BLANK, type: undefined };
+    const unsupported = (): FilterError =>
+      new FilterError(
+        `"@request.auth.${name}.${key}" is not a supported @request value.`,
+      );
     if (name === 'collectionId' || name === 'collectionName') {
+      if (key !== undefined) throw unsupported();
       if (modifier !== undefined)
         throw new FilterError(`Unknown modifier ":${modifier}".`);
       const value = name === 'collectionId' ? collection?.id : collection?.name;
       return value === undefined
-        ? blank
-        : { kind: 'constant', value, type: 'text' };
+        ? { ...blank, fieldTypes: ['text'] }
+        : { kind: 'constant', value, type: 'text', fieldTypes: ['text'] };
     }
     const field = collection?.fields.find((f) => f.name === name);
     const known = schema.collections.flatMap((c) =>
@@ -458,6 +564,24 @@ class Compiler {
       throw new FilterError(
         `@request.auth.${name} is a JSON field, which rules cannot compare.`,
       );
+    // A geo point is read by coordinate: `@request.auth.home.lat`.
+    if (known.some((f) => f.type === 'geoPoint')) {
+      if (
+        (key !== 'lon' && key !== 'lat') ||
+        modifier !== undefined ||
+        known.some((f) => f.type !== 'geoPoint')
+      )
+        throw new FilterError(
+          `@request.auth.${name} is a geo point: compare @request.auth.${name}.lon or .lat.`,
+        );
+      const point = field && record ? record[name] : undefined;
+      const value = (point as Record<string, unknown> | undefined)?.[key];
+      return typeof value === 'number'
+        ? { kind: 'constant', value, type: 'number' }
+        : blank;
+    }
+    if (key !== undefined) throw unsupported();
+    const fieldTypes = known.map(sqlType);
 
     // Signed out, or signed in to a collection without the field.
     if (!record || !collection || !field) {
@@ -465,7 +589,7 @@ class Compiler {
         return { kind: 'constant', value: 0, type: 'number' };
       if (modifier !== undefined && modifier !== 'lower')
         throw new FilterError(`Unknown modifier ":${modifier}".`);
-      return blank;
+      return { ...blank, fieldTypes };
     }
     if (isMultiple(field)) {
       const value = record[name];
@@ -492,6 +616,7 @@ class Compiler {
       kind: 'constant',
       value: record[name] ?? BLANK,
       type: sqlType(field),
+      fieldTypes,
     };
   }
 
@@ -610,9 +735,11 @@ class Compiler {
     const rightType =
       right.kind === 'constant'
         ? jsType(right.value)
-        : right.field.type === 'json'
-          ? undefined
-          : pathType(right, 'text');
+        : right.kind === 'computed'
+          ? right.type
+          : right.field.type === 'json'
+            ? undefined
+            : pathType(right, 'text');
     const leftType = pathType(left, rightType ?? 'text');
 
     // A field compared with blank: `tags = ""` means "has no values".
@@ -759,6 +886,9 @@ class Compiler {
     let sql = col;
     if (field.type === 'json') {
       sql = this.#json(col, jsonKeys, modifier === 'lower' ? 'text' : type);
+    } else if (field.type === 'geoPoint') {
+      // The key is lon or lat, checked when the path was resolved.
+      sql = `(${col} ->> '${jsonKeys[0]}')::double precision`;
     } else if (
       // A hidden email still matches only when its owner shows it, or to the owner.
       this.#context.mode === 'filter' &&
@@ -908,6 +1038,7 @@ function pathType(path: Path, jsonType: SqlType): SqlType {
   if (path.count || path.modifier === 'length') return 'number';
   if (path.field.type === 'json')
     return path.modifier === 'lower' ? 'text' : jsonType;
+  if (path.field.type === 'geoPoint') return 'number';
   return sqlType(path.field);
 }
 
