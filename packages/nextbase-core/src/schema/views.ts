@@ -262,7 +262,13 @@ function typeColumn(column: {
       `Column "${name}": ${problem} Name every column with AS, e.g. count(c.id) AS comments.`,
     );
   }
-  const base = { name, system: false, required: false, hidden: false };
+  const base = {
+    name,
+    system: false,
+    required: false,
+    hidden: false,
+    presentable: false,
+  };
   if (category === 'S' || type === 'uuid' || type === 'name') {
     return {
       name,
@@ -274,6 +280,7 @@ function typeColumn(column: {
         min: 0,
         max: 0,
         pattern: '',
+        autogeneratePattern: '',
         primaryKey: false,
       }),
     };

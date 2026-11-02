@@ -55,7 +55,7 @@ GET /collections/{collection}/records
 | `page` | number | Optional. Page number, from 1. Default `1`. |
 | `perPage` | number | Optional. Records per page, 1 to 1000. Default `30`. |
 | `filter` | string | Optional. A [filter](/docs/guides/filters). |
-| `sort` | string | Optional. Comma-separated fields, `-` for descending, e.g. `-created,title`. Default `-created` when the collection has that field. |
+| `sort` | string | Optional. Comma-separated fields, `-` for descending, e.g. `-created,title`. Default `-created` when the collection has that field. Fields with several values, `json` and `geoPoint` fields cannot sort. |
 | `expand` | string | Optional. Relations to load, e.g. `author,comments_via_post.author`. Up to 6 levels. |
 | `fields` | string | Optional. Fields to return, e.g. `id,title,expand.author.name`. |
 | `skipTotal` | boolean | Optional. `true` skips counting; totals are then `-1`. |

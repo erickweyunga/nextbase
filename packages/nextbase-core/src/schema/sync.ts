@@ -450,7 +450,8 @@ async function convertMultiplicity(
 
 /**
  * Blanks are stored as "", 0 or false, not NULL, so filters like `name != "x"`
- * still match blank rows. Dates, JSON and single relations use NULL.
+ * still match blank rows, and geo points as `{ lon: 0, lat: 0 }`. Dates, JSON and
+ * single relations use NULL.
  */
 function columnType(q: Builder, field: Field, collection: Collection): string {
   switch (field.type) {
@@ -475,8 +476,12 @@ function columnType(q: Builder, field: Field, collection: Collection): string {
       return 'timestamptz';
     case 'autodate':
       return 'timestamptz NOT NULL DEFAULT now()';
+    case 'editor':
+      return "text NOT NULL DEFAULT ''";
     case 'json':
       return 'jsonb';
+    case 'geoPoint':
+      return `jsonb NOT NULL DEFAULT '{"lon": 0, "lat": 0}'`;
     case 'select':
     case 'file':
       return isMultiple(field)

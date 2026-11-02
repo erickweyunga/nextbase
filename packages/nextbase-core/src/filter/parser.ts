@@ -19,7 +19,9 @@ export type Operand =
       modifier: string | undefined;
       /** `@collection.members:m.user`: separate rows of the same collection. */
       alias?: string;
-    };
+    }
+  /** `geoDistance(lon, lat, 0, 0)` */
+  | { kind: 'call'; name: string; args: Operand[] };
 
 export type Node =
   | { kind: 'logical'; op: '&&' | '||'; left: Node; right: Node }
@@ -35,9 +37,13 @@ export type Node =
 const MAX_LENGTH = 3500;
 const MAX_COMPARISONS = 200;
 const MAX_DEPTH = 6;
+const MAX_ARGS = 8;
 
 type Token =
   | { kind: 'paren'; value: '(' | ')' }
+  | { kind: 'comma' }
+  /** A function name and its opening parenthesis. */
+  | { kind: 'call'; name: string }
   | { kind: 'logical'; value: '&&' | '||' }
   | { kind: 'operator'; value: Operator; any: boolean }
   | { kind: 'operand'; value: Operand };
@@ -61,6 +67,9 @@ function tokenize(source: string): Token[] {
       i++;
     } else if (char === '(' || char === ')') {
       tokens.push({ kind: 'paren', value: char });
+      i++;
+    } else if (char === ',') {
+      tokens.push({ kind: 'comma' });
       i++;
     } else if (source.startsWith('&&', i) || source.startsWith('||', i)) {
       tokens.push({
@@ -98,7 +107,12 @@ function tokenize(source: string): Token[] {
       } else if (identifier) {
         const [text] = identifier;
         i += text.length;
-        tokens.push({ kind: 'operand', value: identifierOperand(text) });
+        if (source[i] === '(' && /^[A-Za-z_]\w*$/.test(text)) {
+          tokens.push({ kind: 'call', name: text });
+          i++;
+        } else {
+          tokens.push({ kind: 'operand', value: identifierOperand(text) });
+        }
       } else {
         throw new FilterError(
           `Unexpected character "${char}" at position ${i + 1}.`,
@@ -159,6 +173,24 @@ export function parseFilter(source: string): Node | undefined {
 
   const operand = (): Operand => {
     const token = peek();
+    if (token?.kind === 'call') {
+      position++;
+      const args: Operand[] = [];
+      const next = peek();
+      if (next?.kind !== 'paren' || next.value !== ')') {
+        args.push(operand());
+        while (peek()?.kind === 'comma') {
+          position++;
+          args.push(operand());
+        }
+      }
+      const close = peek();
+      if (close?.kind !== 'paren' || close.value !== ')') fail('"," or ")"');
+      position++;
+      if (args.length > MAX_ARGS)
+        throw new FilterError(`Functions take at most ${MAX_ARGS} arguments.`);
+      return { kind: 'call', name: token.name, args };
+    }
     if (token?.kind !== 'operand') return fail('a value or field');
     position++;
     return token.value;

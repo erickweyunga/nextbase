@@ -10,6 +10,7 @@ import {
   defaultMfa,
   defaultOtp,
 } from './collection.ts';
+import { withFieldDefaults } from './fields.ts';
 
 interface CollectionRow {
   id: string;
@@ -114,9 +115,13 @@ function fromRow(row: CollectionRow): Collection {
     id: row.id,
     name: row.name,
     system: row.system,
-    // File fields stored before thumbnails existed.
+    // Fields stored before some of their settings existed.
     fields: row.fields.map((field) =>
-      field.type === 'file' ? { ...field, thumbs: field.thumbs ?? [] } : field,
+      withFieldDefaults(
+        field.type === 'file'
+          ? { ...field, thumbs: field.thumbs ?? [] }
+          : field,
+      ),
     ),
     indexes: row.indexes,
     listRule: row.list_rule,

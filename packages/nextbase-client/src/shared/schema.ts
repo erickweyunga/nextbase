@@ -13,6 +13,8 @@ export type FieldType =
   | 'relation'
   | 'file'
   | 'json'
+  | 'editor'
+  | 'geoPoint'
   | 'password';
 
 interface FieldBase<T extends FieldType> {
@@ -25,6 +27,8 @@ interface FieldBase<T extends FieldType> {
   required: boolean;
   /** Excluded from API output and from client filters and sorts. */
   hidden: boolean;
+  /** Shown to identify a record, such as in relation pickers. Display only. */
+  presentable: boolean;
 }
 
 export interface TextField extends FieldBase<'text'> {
@@ -34,6 +38,11 @@ export interface TextField extends FieldBase<'text'> {
   pattern: string;
   /** Only the system `id` field. */
   primaryKey: boolean;
+  /**
+   * A regex that generates the value of a record created without one, or "" for none.
+   * Only bounded patterns: literals, classes, groups, `|`, `?` and `{n}`/`{n,m}`.
+   */
+  autogeneratePattern: string;
 }
 
 export interface NumberField extends FieldBase<'number'> {
@@ -75,6 +84,8 @@ export interface SelectField extends FieldBase<'select'> {
 
 export interface RelationField extends FieldBase<'relation'> {
   collectionId: string;
+  /** At least this many when there are any; with `required`, an empty value fails too. */
+  minSelect: number;
   maxSelect: number;
   cascadeDelete: boolean;
 }
@@ -99,6 +110,22 @@ export interface JsonField extends FieldBase<'json'> {
   maxSize: number;
 }
 
+/** HTML, sanitized on the server to an allowlist of rich-text tags before it is stored. */
+export interface EditorField extends FieldBase<'editor'> {
+  /** Bytes of HTML. */
+  maxSize: number;
+  /** Tells rich-text editors to convert links to relative URLs. Stored only; the server ignores it. */
+  convertURLs: boolean;
+}
+
+/** A point on Earth in degrees. `{ lon: 0, lat: 0 }` is the blank value. */
+export interface GeoPoint {
+  lon: number;
+  lat: number;
+}
+
+export type GeoPointField = FieldBase<'geoPoint'>;
+
 export interface PasswordField extends FieldBase<'password'> {
   min: number;
   max: number;
@@ -117,6 +144,8 @@ export type Field =
   | RelationField
   | FileField
   | JsonField
+  | EditorField
+  | GeoPointField
   | PasswordField;
 
 export type TokenType =

@@ -102,6 +102,33 @@ meta.tags.0 = "first"
 Compared with a date field or a date macro, a JSON string in ISO 8601 form is
 read as a date.
 
+## Geo points and geoDistance
+
+A dot reads the longitude or latitude of a [geo point](/docs/guides/collections#geo-points)
+field, as a number: `location.lon`, `location.lat`. A whole geo point cannot be
+compared or sorted.
+
+`geoDistance(lonA, latA, lonB, latB)` is the distance between two points in
+kilometres, by the haversine formula on a sphere of radius 6371 km, which is
+within about 0.5% of the distance on the Earth's surface:
+
+```txt
+geoDistance(location.lon, location.lat, 39.2083, -6.7924) < 25
+```
+
+Each argument is a number, a numeric field, a coordinate of a geo point,
+including through a single relation such as `venue.location.lat`, or in rules a
+request value such as `@request.auth.home.lon`. `@request.auth` and
+`@request.body` values of the schema's fields must be numbers or coordinates
+too; `@request.query`, `@request.headers` and other body values must hold a
+number when the request is made. A field with several values,
+such as a relation with `maxSelect` > 1, cannot be an argument. A blank
+argument, such as a coordinate of the signed-out caller, makes the distance
+`null`. Like other empty values, it then fails `<`, `<=`, `>`, `>=` and `=`
+with a number, but matches `!=` with a number and `= ""` or `= null`. No index
+serves it, so the function is computed for every row the rest of the filter
+leaves.
+
 ## Date macros
 
 | Macro | Value (UTC) |
@@ -137,7 +164,8 @@ that field, it is empty. Hidden fields can be read, as everywhere in rules,
 but `password` and `tokenKey` cannot. A field with several values compares like
 one of the record's own: `@request.auth.roles ?= "admin"` matches when any
 role is "admin", and `@request.auth.roles:length` counts them. JSON fields
-cannot be compared.
+cannot be compared, and geo points only by coordinate, as in
+`@request.auth.home.lat`.
 
 See [Access rules](/docs/guides/rules) for how to use them.
 

@@ -51,12 +51,15 @@ names, since a filter reads them as values.
 
 ## Field types
 
-Every field has `name`, `type`, `required` (must not be empty) and `hidden`
-(left out of API output, client filters and sorts).
+Every field has `name`, `type`, `required` (must not be empty), `hidden`
+(left out of API output, client filters and sorts) and `presentable` (default
+`false`), a display hint that marks fields which identify a record, such as in
+relation pickers. `presentable` changes nothing else: not validation, rules,
+filters or output, and it can be set on system fields too.
 
 | Type       | Value | Empty value | Options |
 | ---------- | ----- | ----- | ------- |
-| `text`     | string | `""` | `min`, `max` (default 5000), `pattern` |
+| `text`     | string | `""` | `min`, `max` (default 5000), `pattern`, `autogeneratePattern`. See [below](#generated-text) |
 | `number`   | number | `0` | `min`, `max`, `onlyInt` |
 | `bool`     | boolean | `false` | |
 | `email`    | string | `""` | `onlyDomains`, `exceptDomains` |
@@ -65,9 +68,11 @@ Every field has `name`, `type`, `required` (must not be empty) and `hidden`
 | `date`     | ISO 8601 string | `""` | `min`, `max` |
 | `autodate` | ISO 8601 string, set by the server | | `onCreate`, `onUpdate` |
 | `select`   | one value, or an array with `maxSelect` > 1 | `""` or `[]` | `values`, `maxSelect` |
-| `relation` | record id, or an array with `maxSelect` > 1 | `""` or `[]` | `collectionId`, `maxSelect`, `cascadeDelete` |
+| `relation` | record id, or an array with `maxSelect` > 1 | `""` or `[]` | `collectionId`, `minSelect` (default 0), `maxSelect`, `cascadeDelete` |
 | `file`     | stored file name, or an array with `maxSelect` > 1 | `""` or `[]` | `maxSelect`, `maxSize` (bytes, default 5 MiB), `mimeTypes`, `protected`, `thumbs`. See [Files](/docs/guides/files) |
 | `json`     | any JSON | `null` | `maxSize` (bytes, default 1 MiB) |
+| `editor`   | HTML string, sanitized on save | `""` | `maxSize` (bytes, default 512 KiB), `convertURLs`. See [below](#rich-text) |
+| `geoPoint` | `{ "lon": number, "lat": number }` | `{ "lon": 0, "lat": 0 }` | |
 
 Dates are returned in UTC with milliseconds, such as
 `2026-10-19T09:30:00.000Z`.
@@ -76,7 +81,48 @@ Strings, including the keys and values inside `json`, cannot contain NUL
 characters or unpaired UTF-16 surrogates, which Postgres cannot store. Such a
 write fails with a 400.
 
+### Generated text
 
+A text field's `autogeneratePattern` is a regular expression. A record created
+without a value for the field, or with `""`, gets a random value matching it:
+
+```ts
+{ name: "code", type: "text", pattern: "^INV-\\d{6}$", autogeneratePattern: "INV-\\d{6}" }
+```
+
+Only patterns with a bounded length can generate values: literals, character
+classes such as `[a-z0-9]`, `\d`, `\w` and `\s`, `.` (letters and digits),
+groups, `|`, `?` and repeats such as `{8}` or `{4,8}`. `*`, `+`, `{n,}`, negated
+classes, anchors other than a leading `^` and trailing `$`, lookarounds and
+backreferences are rejected when the collection is saved, as is a pattern whose
+values would break the field's `min`, `max` (at most 5000 characters) or
+`pattern`. Generated values are random, not unique; add a unique index when
+they must be. Updates never generate a value, and `@request.body` in rules does
+not see a generated one. The system `id` field shows `[a-z0-9]{15}`, how record
+ids are made.
+
+### Rich text
+
+An `editor` field holds HTML, which the server sanitizes before saving, so it
+can be rendered as is. What remains is what rich-text editors produce:
+headings, paragraphs, line breaks, rules, lists, blockquotes, `pre` and `code`
+(with `language-*` classes), emphasis (`strong`, `em`, `u`, `s`, `sub`, `sup`,
+`mark` and the like), links (`http`, `https`, `mailto`, `tel` or relative, with
+`title`, `target="_blank"` and `rel`; a link that opens a new tab always gets
+`rel="noopener noreferrer"`), images with an `http` or `https` `src`, figures
+and tables. Scripts, styles, event handlers, `style` and `class` attributes
+(except code languages), frames, forms and other URL schemes such as
+`javascript:` and `data:` are removed. HTML with elements nested more than 512
+deep is refused. `maxSize` applies to the HTML sent and to what is stored. `convertURLs` is stored for editors to read, to make links
+relative; the server ignores it. Filters and sorts treat the field as text.
+
+### Geo points
+
+A `geoPoint` field stores a longitude from -180 to 180 and a latitude from -90
+to 90. `{ "lon": 0, "lat": 0 }` is its empty value, so a `required` field
+rejects it. Form data can send it as JSON text. Filters read `field.lon` and
+`field.lat`, and [`geoDistance`](/docs/guides/filters#geo-points-and-geodistance) measures
+between points.
 
 ## Relations
 
@@ -88,6 +134,11 @@ A relation field points at records of another collection (or the same one).
 
 - Ids are checked on write: pointing at a record that does not exist is a
   validation error.
+- `minSelect` asks for at least that many ids once there are any, up to
+  `maxSelect`. An empty value passes unless the field is `required`. Like
+  `required`, it is checked whenever the record is written, so a record left
+  short when related records are deleted can be read, but its next write must
+  fix the field.
 - When a referenced record is deleted, records pointing at it are deleted too
   with `cascadeDelete: true`. Otherwise the reference is cleared, and if that
   leaves a `required` field empty, the delete fails with a 400. Records the
@@ -112,7 +163,7 @@ A relation field points at records of another collection (or the same one).
   the field. An entry holds at most about 2.7 kB, so a btree index cannot be
   added while records hold longer values, and a longer value cannot be saved
   once it exists; both are `validation_length_out_of_range` errors.
-- `trigram` serves `~` ("contains") searches on text fields. The first one
+- `trigram` serves `~` ("contains") searches on text and editor fields. The first one
   installs Postgres's `pg_trgm` extension.
 
 Indexes refer to fields by id, so they survive renames. To refer to a new
