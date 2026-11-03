@@ -59,6 +59,9 @@ import { nextbase } from "@/lib/nextbase";
 export const { GET, POST, PUT, PATCH, DELETE } = newNextHandler(nextbase);
 ```
 
+The admin is served at `/api/nextbase/_`. To serve it at a path of your own,
+such as `/admin`, see [Serve the admin at its own path](/docs/integrations/nextjs#serve-the-admin-at-its-own-path).
+
 ## 4. Create the first superuser
 
 Start the app and make any request to the API:

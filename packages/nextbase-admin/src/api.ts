@@ -1,7 +1,14 @@
 import { NextBaseClient } from '@nextbasejs/client';
 
+export function apiBasePath(document: Document, pathname: string): string {
+  const meta = document.querySelector<HTMLMetaElement>(
+    'meta[name="nextbase-base-path"]',
+  );
+  return meta?.content || pathname.replace(/\/_\/?$/, '');
+}
+
 const apiRoot = new URL(
-  `${window.location.pathname.replace(/\/_\/?$/, '')}/`,
+  `${apiBasePath(document, window.location.pathname)}/`,
   window.location.origin,
 );
 

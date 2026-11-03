@@ -199,6 +199,11 @@ export interface NextBaseOptions<C extends Collections = Collections> {
   /** Path the route handler is mounted at. Defaults to `/api/nextbase`. */
   basePath?: string;
   /**
+   * Where the admin is served, such as `/admin`, from a route file there that
+   * exports `GET` of the same handler. Defaults to `<basePath>/_`.
+   */
+  adminPath?: string;
+  /**
    * Connection string or `pg.Pool`-compatible pool. Defaults to
    * `process.env.DATABASE_URL`. A pool you pass in stays yours to end.
    */
@@ -347,6 +352,10 @@ export class NextBase<C extends Collections = Collections> {
   readonly #clientIp: ClientIp;
   readonly #rateLimits: RateLimits | undefined;
   readonly #application: ApplicationSettings;
+  /** Without a trailing slash. */
+  readonly #adminPath: string;
+  /** The admin's page, told where the API is. */
+  readonly #adminPage: string;
   readonly #security: SecuritySettings;
   /** Work running after responses, such as after hooks and emails. */
   readonly #background = new Set<Promise<unknown>>();
@@ -357,18 +366,24 @@ export class NextBase<C extends Collections = Collections> {
   #setupLoggedAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: NextBaseOptions<C> = {}) {
-    const basePath = options.basePath ?? DEFAULT_BASE_PATH;
-    // Requests are matched on their URL's pathname, so any other form, such
-    // as one without the leading slash, would match nothing.
-    if (
-      !basePath.startsWith('/') ||
-      new URL(basePath, `http://${IN_PROCESS_HOST}`).pathname !== basePath
-    ) {
+    this.#basePath = urlPath(
+      'basePath',
+      options.basePath ?? DEFAULT_BASE_PATH,
+      DEFAULT_BASE_PATH,
+    );
+    this.#adminPath =
+      options.adminPath === undefined
+        ? `${this.#basePath}/_`
+        : urlPath('adminPath', options.adminPath, '/admin');
+    if (this.#adminPath === '' || this.#adminPath === this.#basePath) {
       throw new TypeError(
-        `basePath must be an absolute URL path such as "${DEFAULT_BASE_PATH}", not ${JSON.stringify(basePath)}.`,
+        'adminPath must be a path of its own, such as "/admin".',
       );
     }
-    this.#basePath = basePath.replace(/\/+$/, '');
+    this.#adminPage = adminHtml.replace(
+      BASE_PATH_META,
+      `<meta name="nextbase-base-path" content="${escapeAttribute(this.#basePath)}">`,
+    );
     this.#database = options.database;
     this.#rejectBreachedPasswords = options.rejectBreachedPasswords ?? false;
     if (
@@ -613,7 +628,7 @@ export class NextBase<C extends Collections = Collections> {
     const origin = this.#appUrl?.origin ?? 'https://<your app>';
     console.info(
       `[nextbase] No superuser exists yet. Within the next hour, create one in the admin:\n` +
-        `  ${origin}${this.#basePath}/_/#/setup/${token}\n` +
+        `  ${origin}${this.#adminPath}/#/setup/${token}\n` +
         `or with:\n` +
         `  curl -X POST ${origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
         `    -d '{"token":"${token}","email":"you@example.com","password":"a long password"}'`,
@@ -933,8 +948,8 @@ export class NextBase<C extends Collections = Collections> {
   };
 
   /**
-   * Skips successful health checks, admin pages and log reads, which would fill
-   * the log with itself.
+   * Skips the admin's page, successful health checks and log reads, which
+   * would fill the log with itself.
    */
   #logRequest(
     request: Request,
@@ -1098,28 +1113,39 @@ export class NextBase<C extends Collections = Collections> {
       return api(error.toResponse());
     };
     const { pathname } = new URL(request.url);
+    // Next.js answers HEAD with the GET handler and drops the body.
+    const verb = request.method === 'HEAD' ? 'GET' : request.method;
+    // No redirect to a trailing slash: Next.js strips them, so it would loop.
+    if (pathname === this.#adminPath || pathname === `${this.#adminPath}/`) {
+      if (verb !== 'GET') {
+        return api(
+          new ApiError(
+            405,
+            `${request.method} is not allowed here.`,
+            {},
+            { allow: 'GET, HEAD' },
+          ).toResponse(),
+        );
+      }
+      return new Response(this.#adminPage, {
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-frame-options': 'DENY',
+          'x-content-type-options': 'nosniff',
+          'referrer-policy': 'same-origin',
+        },
+      });
+    }
     const basePath = this.#basePath;
     if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) {
       return fail(new ApiError(404, 'Not found.'));
     }
     const route = pathname.slice(basePath.length) || '/';
     trace.route = route;
-    // Next.js answers HEAD with the GET handler and drops the body.
-    const verb = request.method === 'HEAD' ? 'GET' : request.method;
 
     if (verb === 'GET' && route === '/health') {
       return api(Response.json({ status: 'ok' } satisfies HealthResponse));
-    }
-    // No redirect to `/_/`: Next.js strips trailing slashes, so it would loop.
-    if (verb === 'GET' && (route === '/_' || route === '/_/')) {
-      return new Response(adminHtml, {
-        headers: {
-          'content-type': 'text/html; charset=utf-8',
-          'x-frame-options': 'DENY',
-          'x-content-type-options': 'nosniff',
-          'referrer-policy': 'same-origin',
-        },
-      });
     }
 
     for (const matched of ROUTES) {
@@ -1263,9 +1289,7 @@ export class NextBase<C extends Collections = Collections> {
     const allowed = new Set(
       ROUTES.filter((r) => r.pattern.test(route)).map((r) => r.method),
     );
-    if (route === '/health' || route === '/_' || route === '/_/') {
-      allowed.add('GET');
-    }
+    if (route === '/health') allowed.add('GET');
     if (allowed.size > 0) {
       if (allowed.has('GET')) allowed.add('HEAD');
       return fail(
@@ -1300,13 +1324,7 @@ function quietRoute(method: string, route: string): boolean {
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
     return false;
   }
-  return (
-    route === '/health' ||
-    route === '/_' ||
-    route === '/_/' ||
-    route === '/logs' ||
-    route.startsWith('/logs/')
-  );
+  return route === '/health' || route === '/logs' || route.startsWith('/logs/');
 }
 
 /**
@@ -1432,4 +1450,27 @@ function keepingAlive(
       console.error('[nextbase] waitUntil refused background work:', error);
     }
   };
+}
+
+/** An absolute URL path without a trailing slash, as requests' pathnames match it. */
+function urlPath(name: string, value: string, example: string): string {
+  if (
+    typeof value !== 'string' ||
+    !value.startsWith('/') ||
+    new URL(value, `http://${IN_PROCESS_HOST}`).pathname !== value
+  ) {
+    throw new TypeError(
+      `${name} must be an absolute URL path such as "${example}", not ${JSON.stringify(value)}.`,
+    );
+  }
+  return value.replace(/\/+$/, '');
+}
+
+const BASE_PATH_META = /<meta name="nextbase-base-path" content="[^"]*"\s*\/?>/;
+
+function escapeAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;');
 }

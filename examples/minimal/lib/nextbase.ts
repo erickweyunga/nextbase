@@ -1,3 +1,6 @@
 import { NextBase } from '@nextbasejs/core';
 
-export const nextbase = new NextBase({ appUrl: process.env.APP_URL });
+export const nextbase = new NextBase({
+  appUrl: process.env.APP_URL,
+  adminPath: '/admin',
+});

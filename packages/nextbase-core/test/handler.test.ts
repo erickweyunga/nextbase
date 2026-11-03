@@ -27,6 +27,45 @@ describe('route handler', () => {
     expect(response.status).toBe(200);
   });
 
+  it('tells the admin where the API is', async () => {
+    const custom = new NextBase({ basePath: '/backend', logs: false });
+    const page = await (
+      await custom.handle(new Request(`${origin}/backend/_`))
+    ).text();
+    expect(page).toContain(
+      '<meta name="nextbase-base-path" content="/backend">',
+    );
+  });
+
+  it('serves the admin at adminPath instead, outside the base path', async () => {
+    const moved = new NextBase({ adminPath: '/admin/', logs: false });
+    for (const path of ['/admin', '/admin/']) {
+      const response = await moved.handle(new Request(`${origin}${path}`));
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get('x-frame-options')).toBe('DENY');
+      expect(await response.text()).toContain(
+        '<meta name="nextbase-base-path" content="/api/nextbase">',
+      );
+    }
+    expect(
+      (await moved.handle(new Request(`${origin}/api/nextbase/_`))).status,
+    ).toBe(404);
+    const post = await moved.handle(
+      new Request(`${origin}/admin`, { method: 'POST' }),
+    );
+    expect(post.status).toBe(405);
+    expect(post.headers.get('allow')).toBe('GET, HEAD');
+    expect(
+      (await moved.handle(new Request(`${origin}/api/nextbase/health`))).status,
+    ).toBe(200);
+  });
+
+  it('rejects an admin path that is not a path of its own', () => {
+    for (const adminPath of ['admin', '/', '/api/nextbase', '//evil.example']) {
+      expect(() => new NextBase({ adminPath }), adminPath).toThrow(TypeError);
+    }
+  });
+
   it('returns the error shape for unknown routes', async () => {
     const response = await handle(new Request(`${origin}/api/nextbase/nope`));
     expect(response.status).toBe(404);
