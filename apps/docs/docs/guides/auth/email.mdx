@@ -65,7 +65,9 @@ NextBase uses Vercel's own `waitUntil` by default.
 
 ## Custom templates
 
-Each kind of email has a plain-text default. Replace any of them:
+Each kind of email has a plain-text default. The admin's Settings, under
+Mail, lists them with their keys and which ones you replaced, from
+[`GET /settings`](/docs/api/settings). Replace any of them:
 
 ```ts
 mail: {

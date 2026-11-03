@@ -50,11 +50,30 @@ describe('HTTP API', () => {
         expect(message).not.toContain(origin);
         setupToken = /"token":"([^"]+)"/.exec(message)?.[1] ?? '';
         expect(setupToken).not.toBe('');
+        expect(message).toContain(
+          `https://app.example/api/nextbase/_/#/setup/${setupToken}`,
+        );
         // Rate-limited: not logged again on the next request.
         await call('GET', '/setup');
         expect(log).toHaveBeenCalledTimes(1);
       } finally {
         log.mockRestore();
+      }
+    });
+
+    it('gives the token to the admin in development only', async () => {
+      expect((await call('GET', '/setup')).body).toEqual({ required: true });
+      vi.stubEnv('NODE_ENV', 'development');
+      try {
+        const { body } = await call('GET', '/setup');
+        const { token } = body as { token?: string };
+        expect(token).toMatch(/^[\w-]+\.[\w-]+\.[\w-]+$/);
+        expect(
+          (await call('POST', '/setup', { body: { token, email: 'bad' } }))
+            .status,
+        ).toBe(400);
+      } finally {
+        vi.unstubAllEnvs();
       }
     });
 

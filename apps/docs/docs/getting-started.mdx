@@ -68,9 +68,10 @@ curl http://localhost:3000/api/nextbase/setup
 ```
 
 NextBase creates its tables on the first request. While no superuser exists,
-the server log prints a `curl` command with a one-time setup token, valid for
-one hour. Only someone who can read your logs can claim a fresh deployment.
-Run that command with your own email and password.
+the server log prints a link with a one-time setup token, valid for one hour.
+Only someone who can read your logs can claim a fresh deployment. Open it to
+create your superuser in the admin, or run the `curl` command printed with it,
+with your own email and password.
 
 From a script or seed file you can also call
 `await nextbase.createSuperuser(email, password)`.

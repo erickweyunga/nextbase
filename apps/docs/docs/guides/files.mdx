@@ -222,6 +222,9 @@ export const nextbase = new NextBase({
 With a bucket, downloads redirect to a signed URL that works for 5 minutes,
 so large files never pass through your server.
 
+The admin's Settings, under File storage, shows where files are kept, from
+[`GET /settings`](/docs/api/settings), never with the keys.
+
 ### Large files
 
 Vercel limits request bodies to 4.5 MB. With a bucket, when a write's files
