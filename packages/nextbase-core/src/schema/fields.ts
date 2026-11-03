@@ -37,8 +37,8 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TEXT_MAX = 5000;
 const DEFAULT_FILE_MAX_SIZE = 5 * 1024 * 1024;
 const DEFAULT_JSON_MAX_SIZE = 1024 * 1024;
-// Length beats symbol mixes for guess resistance, and passwords are the only factor.
-export const DEFAULT_PASSWORD_MIN = 15;
+// Length beats symbol mixes for guess resistance; a field's own min can ask for more.
+export const DEFAULT_PASSWORD_MIN = 8;
 export const DEFAULT_PASSWORD_MAX = 256;
 const MAX_PASSWORD_LENGTH = 1024;
 const MAX_SELECT_VALUE_LENGTH = 255;

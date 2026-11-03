@@ -91,10 +91,10 @@ describe('creating collections', () => {
       'created',
       'updated',
     ]);
-    // Long passwords by default: at least 15 characters.
+    // At least 8 characters by default.
     expect(users.fields.find((f) => f.name === 'password')).toMatchObject({
       hidden: true,
-      min: 15,
+      min: 8,
     });
     expect(users.identityFields).toEqual(['email']);
     expect(users.authRule).toBe('');

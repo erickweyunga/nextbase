@@ -104,7 +104,7 @@ describe('nextbase CLI', () => {
       env: { NEXTBASE_SUPERUSER_PASSWORD: 'short' },
     });
     expect(weak.code).toBe(1);
-    expect(weak.err).toMatch(/password: Must be 15 to/);
+    expect(weak.err).toMatch(/password: Must be 8 to/);
     expect((await cli(['superuser'])).code).toBe(2);
   });
 
