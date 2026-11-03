@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import type { ClientIpSettings } from '@nextbasejs/client';
 
 /**
  * Where the client's IP comes from: `"vercel"`, a header your proxy sets, or a
@@ -28,8 +29,7 @@ const UNKNOWN: ClientIp = () => undefined;
  */
 export function clientIpReader(
   option: ClientIpOption | undefined,
-  onVercel: boolean = process.env.VERCEL !== undefined &&
-    process.env.VERCEL !== '',
+  onVercel: boolean = runsOnVercel(),
 ): ClientIp {
   const config = option ?? (onVercel ? 'vercel' : undefined);
   if (config === undefined) return UNKNOWN;
@@ -67,6 +67,26 @@ export function clientIpReader(
   }
   const name = header.toLowerCase();
   return (request) => fromHeader(request, name, trustedHops);
+}
+
+/** Where the IP comes from, for superusers. */
+export function clientIpSettings(
+  option: ClientIpOption | undefined,
+  onVercel: boolean = runsOnVercel(),
+): ClientIpSettings {
+  const config = option ?? (onVercel ? 'vercel' : undefined);
+  if (config === undefined) return { source: 'unknown' };
+  if (config === 'vercel') return { source: 'vercel' };
+  if (typeof config === 'function') return { source: 'function' };
+  return {
+    source: 'header',
+    header: config.header.toLowerCase(),
+    trustedHops: config.trustedHops ?? 0,
+  };
+}
+
+function runsOnVercel(): boolean {
+  return process.env.VERCEL !== undefined && process.env.VERCEL !== '';
 }
 
 /**

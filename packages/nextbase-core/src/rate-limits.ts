@@ -1,5 +1,5 @@
 import { BlockList, isIP } from 'node:net';
-import type { Collection } from '@nextbasejs/client';
+import type { ApplicationSettings, Collection } from '@nextbasejs/client';
 import type { DB } from '@nextbasejs/dbx';
 import type { Principal } from './auth/principal.ts';
 import { table } from './db/system.ts';
@@ -119,6 +119,8 @@ export interface Caller {
  * Signed-in callers count per record, guests per IP; unknown IPs are not limited.
  */
 export class RateLimits {
+  /** The rules in effect, for superusers. */
+  readonly settings: NonNullable<ApplicationSettings['rateLimits']>;
   readonly #tags = new Map<string, Slot>();
   readonly #paths = new Map<string, Slot>();
   /** Longest first. */
@@ -156,8 +158,15 @@ export class RateLimits {
     this.#waitUntil = waitUntil;
     const prefixes = new Map<string, Slot>();
     let byCollection = false;
+    this.settings = { rules: [], excludedIps: [...excludedIps] };
     for (const rule of rules) {
       const checked = checkRule(rule);
+      this.settings.rules.push({
+        label: checked.label,
+        audience: checked.audience ?? null,
+        max: checked.max,
+        window: checked.window,
+      });
       const { label } = checked;
       const tag = TAG_LABEL.exec(label);
       let slots: Map<string, Slot>;

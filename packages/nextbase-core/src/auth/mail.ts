@@ -1,3 +1,4 @@
+import type { MailSettings } from '@nextbasejs/client';
 import { waitUntil as vercelWaitUntil } from '@vercel/functions';
 import { checkAppUrl } from '../app-url.ts';
 import { ApiError } from '../errors.ts';
@@ -185,6 +186,30 @@ export class Mailer {
     this.#logger = logger;
   }
 
+  /** How email goes out, for superusers; never the `send` function itself. */
+  get settings(): MailSettings {
+    const templates = this.#options?.templates ?? {};
+    return {
+      delivery: this.#options
+        ? 'send'
+        : process.env.NODE_ENV === 'production'
+          ? 'off'
+          : 'log',
+      from: this.#options?.from ?? '',
+      emails: (Object.keys(DEFAULT_TEMPLATES) as MailKind[]).map((kind) => {
+        const path = PATHS[kind];
+        return {
+          kind,
+          subject: DEFAULT_TEMPLATES[kind]({ kind, collection: '', to: '' })
+            .subject,
+          custom: templates[kind] !== undefined,
+          link:
+            path && this.#appUrl ? pageUrl(this.#appUrl, path).toString() : '',
+        };
+      }),
+    };
+  }
+
   /** Development without mail set up logs emails instead, so flows work locally. */
   check(): void {
     if (this.#options || process.env.NODE_ENV !== 'production') return;
@@ -249,8 +274,12 @@ export class Mailer {
   }
 }
 
+function pageUrl(base: URL, path: string): URL {
+  return new URL(`${base.pathname.replace(/\/+$/, '')}${path}`, base);
+}
+
 function withToken(base: URL, path: string, token: string): string {
-  const url = new URL(`${base.pathname.replace(/\/+$/, '')}${path}`, base);
+  const url = pageUrl(base, path);
   url.searchParams.set('token', token);
   return url.toString();
 }

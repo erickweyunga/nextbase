@@ -570,6 +570,7 @@ describe('thumbnails with local storage', () => {
       const real = newStorage({ dir });
       const storage: Storage = {
         kind: real.kind,
+        settings: real.settings,
         put: real.put.bind(real),
         read: real.read.bind(real),
         readStart: real.readStart.bind(real),

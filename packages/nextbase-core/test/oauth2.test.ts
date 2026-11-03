@@ -1441,6 +1441,44 @@ describe('OAuth2 sign-in', () => {
     ).toBe(404);
   });
 
+  it('answers superusers each provider as configured, never the client secret', async () => {
+    const { oauth2 } = await nextbase
+      .client({ superuser: true })
+      .settings.get();
+    expect(oauth2.map((p) => p.name)).toEqual([
+      'idp',
+      'github',
+      'shop',
+      'closed',
+      'mobile',
+      'vault',
+    ]);
+    const byName = (name: string) => oauth2.find((p) => p.name === name);
+    expect(byName('shop')).toMatchObject({
+      displayName: 'shop',
+      issuer: ISSUER,
+      clientIds: ['client'],
+      callbackUrl: `${origin}/api/nextbase/callback/shop`,
+      params: { hd: 'example.com', prompt: 'select_account' },
+      disableSignUp: false,
+      storeTokens: false,
+      mapProfile: true,
+      profileFields: null,
+    });
+    expect(byName('shop')?.scopes).toEqual(
+      expect.arrayContaining(['openid', 'offline_access', 'email']),
+    );
+    expect(byName('github')).toMatchObject({
+      displayName: 'GitHub',
+      issuer: '',
+      photoHosts: ['avatars.githubusercontent.com'],
+    });
+    expect(byName('mobile')?.clientIds).toEqual(['web', 'ios', 'android']);
+    expect(byName('closed')?.disableSignUp).toBe(true);
+    expect(byName('vault')?.storeTokens).toBe(true);
+    expect(JSON.stringify(oauth2)).not.toContain('"secret"');
+  });
+
   it('needs the app URL to build redirects', () => {
     expect(
       () =>

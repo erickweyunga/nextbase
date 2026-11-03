@@ -21,6 +21,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { StorageSettings } from '@nextbasejs/client';
 import { ApiError } from '../errors.ts';
 import { LOWER_ALPHANUMERIC, randomString } from '../random.ts';
 
@@ -53,6 +54,8 @@ export interface Presentation {
 /** Files by key. Keys are built from ids and generated names, never taken from requests. */
 export interface Storage {
   readonly kind: 'local' | 's3';
+  /** Where files are kept, for superusers; no credentials. */
+  readonly settings: StorageSettings;
   put(key: string, data: Uint8Array, contentType: string): Promise<void>;
   /** The whole file, or `range` (inclusive); undefined when missing. */
   read(
@@ -90,10 +93,12 @@ export function newStorage(options: StorageOptions = {}): Storage {
 
 class LocalStorage implements Storage {
   readonly kind = 'local';
+  readonly settings: StorageSettings;
   readonly #root: string;
 
   constructor(root: string) {
     this.#root = root;
+    this.settings = { kind: 'local', dir: root };
   }
 
   // Defense in depth: a key resolving outside the root is refused.
@@ -186,14 +191,25 @@ class LocalStorage implements Storage {
 
 class S3Storage implements Storage {
   readonly kind = 's3';
+  readonly settings: StorageSettings;
   readonly #client: S3Client;
   readonly #bucket: string;
 
   constructor(options: S3StorageOptions) {
     if (!options.bucket) throw new TypeError('storage.s3 needs a bucket.');
     this.#bucket = options.bucket;
+    const region = options.region ?? 'auto';
+    const keys = Boolean(options.accessKeyId && options.secretAccessKey);
+    this.settings = {
+      kind: 's3',
+      bucket: options.bucket,
+      region,
+      endpoint: options.endpoint ?? '',
+      forcePathStyle: options.forcePathStyle === true,
+      credentials: keys ? 'keys' : 'sdk',
+    };
     this.#client = new S3Client({
-      region: options.region ?? 'auto',
+      region,
       ...(options.endpoint && { endpoint: options.endpoint }),
       ...(options.forcePathStyle && { forcePathStyle: true }),
       ...(options.accessKeyId &&

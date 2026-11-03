@@ -1,0 +1,128 @@
+---
+title: Settings
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Settings
+
+Answers the settings the server runs with, from the options passed to
+`nextbase()`. They are set in code, so this is read-only. It needs a
+superuser: anyone else gets a `401` when signed out and a `403` when signed in.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const settings = await superuser.settings.get();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl 'https://app.example/api/nextbase/settings' \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /settings
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "application": {
+    "appUrl": "https://acme.com/",
+    "basePath": "/api/nextbase",
+    "trustedOrigins": ["admin.acme.com"],
+    "trustProxy": false,
+    "clientIp": { "source": "vercel" },
+    "statementTimeout": 8000,
+    "rateLimits": {
+      "rules": [{ "label": "*:auth", "audience": null, "max": 2, "window": 3 }],
+      "excludedIps": []
+    },
+    "realtime": { "collections": null, "streamSeconds": 240 }
+  },
+  "security": {
+    "secretKeys": 1,
+    "secretKeySource": "env",
+    "rejectBreachedPasswords": false,
+    "validateSignIn": true
+  },
+  "oauth2": [
+    {
+      "name": "google",
+      "displayName": "Google",
+      "issuer": "https://accounts.google.com",
+      "clientIds": ["123-web.apps.googleusercontent.com"],
+      "callbackUrl": "https://acme.com/api/nextbase/callback/google",
+      "scopes": ["openid", "email", "profile"],
+      "params": { "prompt": "select_account" },
+      "disableSignUp": false,
+      "storeTokens": false,
+      "mapProfile": false,
+      "profileFields": { "name": "name", "avatar": "picture" },
+      "photoHosts": ["*.googleusercontent.com"],
+      "refreshProfile": []
+    }
+  ],
+  "logs": { "maxDays": 7, "minLevel": 0, "authId": false, "ip": false },
+  "storage": {
+    "kind": "s3",
+    "bucket": "acme-uploads",
+    "region": "auto",
+    "endpoint": "https://<account>.r2.cloudflarestorage.com",
+    "forcePathStyle": false,
+    "credentials": "keys"
+  },
+  "mail": {
+    "delivery": "send",
+    "from": "Acme <hello@acme.com>",
+    "emails": [
+      {
+        "kind": "verification",
+        "subject": "Verify your email",
+        "custom": false,
+        "link": "https://acme.com/verify-email"
+      }
+    ]
+  }
+}
+```
+
+| Field | Description |
+| ----- | ----------- |
+| `application.appUrl`, `basePath`, `trustedOrigins`, `trustProxy`, `statementTimeout` | Those options in effect; `appUrl` is `""` when not set. |
+| `application.clientIp` | Where the client's IP comes from: `{ "source": "vercel" }`, `"header"` with its `header` and `trustedHops`, `"function"`, or `"unknown"`. |
+| `application.rateLimits` | The [rate limit](/docs/guides/rate-limits) `rules` and `excludedIps` in effect, or `null` when off. |
+| `application.realtime` | The [realtime](/docs/guides/realtime) `collections` (`null` for all) and `streamSeconds`, or `null` when off. Never the listen URL. |
+| `security.secretKeys` | How many keys encrypt stored secrets; the keys themselves are never sent. |
+| `security.secretKeySource` | `option` for `secretKey`, `env` for `NEXTBASE_SECRET_KEY`, or `none`. |
+| `security.rejectBreachedPasswords`, `validateSignIn` | Whether breached passwords are refused, and whether a `validateSignIn` function is set. |
+| `oauth2` | Each [OAuth2 provider](/docs/guides/auth/oauth2) as configured, with the `callbackUrl` to register in its app and every scope a sign-in asks for. `issuer` is `""` for GitHub's own OAuth2, `mapProfile` says whether that function is set, and `profileFields` is `null` when off. The client secret is never sent. |
+| `logs` | The [`logs` option](/docs/guides/logs) in effect, or `null` when logs are off. |
+| `logs.maxDays` | Days entries are kept. |
+| `logs.minLevel` | Entries below it are not kept: `-4` debug, `0` info, `4` warn, `8` error. |
+| `logs.authId` | Whether each request records the id of its signed-in record. |
+| `logs.ip` | Whether each request records the client's IP. |
+| `storage` | The [`storage` option](/docs/guides/files) in effect. Credentials are never sent. |
+| `storage.kind` | `local` or `s3`. |
+| `storage.dir` | `local` only. The folder on the server's disk. |
+| `storage.bucket`, `region`, `endpoint`, `forcePathStyle` | `s3` only. The bucket and how it is reached; `endpoint` is `""` for AWS. |
+| `storage.credentials` | `s3` only. `keys` when the option sets them, otherwise `sdk`: the AWS SDK's own sources. |
+| `mail.delivery` | `send` through the [`mail` option](/docs/guides/auth/email); without it, `log` writes emails to the server log, as in development, and `off` refuses them, as in production. |
+| `mail.from` | The sender, or `""` without the option. |
+| `mail.emails` | Each email the server sends: its `kind` (the key of `mail.templates`), the default `subject`, whether a `custom` template replaces it, and the page its `link` opens, or `""`. |
+
+</TabItem>
+</Tabs>
