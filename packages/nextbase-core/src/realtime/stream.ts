@@ -1,4 +1,4 @@
-import type { Collection } from '@nextbasejs/client';
+import type { ApplicationSettings, Collection } from '@nextbasejs/client';
 import type { DB, Row, Tx } from '@nextbasejs/dbx';
 import type { Principal } from '../auth/principal.ts';
 import {
@@ -100,6 +100,14 @@ export class Realtime {
   #purgedAt = Number.NEGATIVE_INFINITY;
   /** Open streams by caller: a record's key, or "" when signed out. */
   readonly #callers = new Map<string, number>();
+
+  /** Which collections send events and for how long streams stay open; never the listen URL. */
+  get settings(): NonNullable<ApplicationSettings['realtime']> {
+    return {
+      collections: this.#collections ? [...this.#collections] : null,
+      streamSeconds: this.#streamMs / 1000,
+    };
+  }
 
   constructor(
     options: true | RealtimeOptions,

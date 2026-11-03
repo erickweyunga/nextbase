@@ -1,7 +1,11 @@
 import type {
+  ApplicationSettings,
   AuthCollection,
   AuthMethods,
   Collection,
+  MigrationsStatus,
+  SecuritySettings,
+  SettingsModel,
   SignInMethod,
 } from '@nextbasejs/client';
 import {
@@ -135,6 +139,8 @@ import {
   logStats,
   logsCollection,
 } from '../logs/store.ts';
+import type { Migrations } from '../migrations/define.ts';
+import { migrationList } from '../migrations/run.ts';
 import { newId } from '../random.ts';
 import type { Limited, RouteTag } from '../rate-limits.ts';
 import type { Realtime } from '../realtime/stream.ts';
@@ -188,6 +194,12 @@ interface Context {
   automigrate: OnSchemaChange | undefined;
   /** Whether the API may change collections; off where migrations manage them. */
   schemaChanges: boolean;
+  /** The app's migrations, when it passes them. */
+  migrations: Migrations | undefined;
+  /** The app's address and request handling, for superusers. */
+  application: ApplicationSettings;
+  /** How secrets and sign-ins are guarded, for superusers. */
+  security: SecuritySettings;
   /** The app's check of who may sign up, link or sign in. */
   validateSignIn: ValidateSignIn | undefined;
   rejectBreachedPasswords: boolean;
@@ -1928,6 +1940,46 @@ export const ROUTES: readonly Route[] = [
       requireSuperuser(principal);
       await deleteLogs(db);
       return new Response(null, { status: 204 });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/settings$/,
+    async handler({
+      principal,
+      logger,
+      storage,
+      mailer,
+      oauth2,
+      application,
+      security,
+    }) {
+      requireSuperuser(principal);
+      const logs = logger.config;
+      const settings: SettingsModel = {
+        application,
+        security,
+        oauth2: oauth2.settings,
+        logs: logs ? { ...logs } : null,
+        storage: storage.settings,
+        mail: mailer.settings,
+      };
+      return Response.json(settings);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/migrations$/,
+    async handler({ db, principal, migrations, automigrate, schemaChanges }) {
+      requireSuperuser(principal);
+      const status: MigrationsStatus = {
+        enabled: migrations !== undefined,
+        dir: migrations?.dir ?? '',
+        automigrate: automigrate !== undefined,
+        schemaChanges,
+        items: await migrationList(db, migrations),
+      };
+      return Response.json(status);
     },
   },
 ];

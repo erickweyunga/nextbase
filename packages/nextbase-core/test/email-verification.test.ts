@@ -1,5 +1,5 @@
 import { ClientError, type NextBaseClient } from '@nextbasejs/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type MailMessage, NextBase } from '../src/index.ts';
 import { call } from './http.ts';
 import { createTestDatabase, type TestDatabase } from './postgres.ts';
@@ -58,6 +58,59 @@ describe('email verification options', () => {
   afterAll(async () => {
     await nextbase.flush();
     await t.close();
+  });
+
+  it('answers superusers how email goes out, never the send function', async () => {
+    const { mail } = await admin.settings.get();
+    expect(mail.delivery).toBe('send');
+    expect(mail.from).toBe('app@example.com');
+    expect(mail.emails.find((e) => e.kind === 'verification')).toEqual({
+      kind: 'verification',
+      subject: 'Verify your email',
+      custom: false,
+      link: 'https://app.example.com/verify-email',
+    });
+    expect(mail.emails.find((e) => e.kind === 'passwordChanged')?.link).toBe(
+      '',
+    );
+    expect(mail.emails).toHaveLength(19);
+
+    const custom = new NextBase({
+      database: t.pool,
+      logs: false,
+      mail: {
+        from: 'app@example.com',
+        appUrl: 'https://app.example.com/account/',
+        send: async () => {},
+        templates: {
+          passwordReset: () => ({ subject: 'Reset', text: 'Reset' }),
+        },
+      },
+    });
+    const reset = (
+      await custom.client({ superuser: true }).settings.get()
+    ).mail.emails.find((e) => e.kind === 'passwordReset');
+    expect(reset).toMatchObject({
+      custom: true,
+      link: 'https://app.example.com/account/reset-password',
+    });
+    await custom.flush();
+  });
+
+  it('answers whether email is logged or refused without the mail option', async () => {
+    const without = new NextBase({ database: t.pool, logs: false });
+    const settings = () => without.client({ superuser: true }).settings.get();
+    expect((await settings()).mail).toMatchObject({
+      delivery: 'log',
+      from: '',
+    });
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      expect((await settings()).mail.delivery).toBe('off');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    await without.flush();
   });
 
   it('defaults every option to off, and checks their types', async () => {

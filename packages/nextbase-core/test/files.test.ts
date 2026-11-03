@@ -1,6 +1,6 @@
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { ClientError, type NextBaseClient } from '@nextbasejs/client';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -96,6 +96,13 @@ describe('file uploads with local storage', () => {
     await nextbase.flush();
     await t.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('answers the folder files are kept in', async () => {
+    expect((await admin.settings.get()).storage).toEqual({
+      kind: 'local',
+      dir: resolve(dir),
+    });
   });
 
   it('stores a file sent with a record under a generated name, and serves it', async () => {
