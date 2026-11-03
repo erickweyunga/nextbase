@@ -411,6 +411,24 @@ async function fromUpload(
   };
 }
 
+export async function fileProblem(
+  field: FileField,
+  bytes: Uint8Array,
+  declared: string,
+): Promise<string | undefined> {
+  if (bytes.byteLength > field.maxSize) {
+    return `Must be at most ${field.maxSize} bytes.`;
+  }
+  if (field.mimeTypes.length === 0) return undefined;
+  const { type } = await detectType(
+    bytes.subarray(0, DETECTION_BYTES),
+    declared,
+  );
+  return field.mimeTypes.includes(type)
+    ? undefined
+    : `Must be one of: ${field.mimeTypes.join(', ')}.`;
+}
+
 function tooLarge(field: FileField, fail: (problem: FileProblem) => void) {
   fail({
     code: 'validation_file_too_large',

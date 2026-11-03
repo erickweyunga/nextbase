@@ -56,6 +56,9 @@ first sign-in creates their account; later ones sign in to it.
 | `params` | Optional. More parameters for the provider's page, such as Google's `hd: "example.com"` to offer only one Workspace domain. Those NextBase sets itself, or that change how the provider answers (`client_id`, `redirect_uri`, `response_type`, `response_mode`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `nonce`, `request`, `request_uri`, in any case), are refused, as are names other than letters, digits, `_`, `.` and `-`. |
 | `disableSignUp` | Optional. Signs in, or links, existing accounts only; a new one fails with `sign_up_disabled`. |
 | `mapProfile` | Optional. Fills a new account's fields from the provider's profile; see [New accounts](#new-accounts). |
+| `profileFields` | Optional. `true` fills a new account's `name`, `givenName`, `familyName` and `avatar` from the standard profile, where the collection has those fields; or name fields by claim, such as `{ name: "name", photo: "picture" }`. See [Profile fields](#profile-fields). |
+| `photoHosts` | Optional. Hosts a profile photo may be downloaded from, over https, such as `*.googleusercontent.com`. Google and GitHub have theirs by default; other providers download none until you list them. |
+| `refreshProfile` | Optional. Fields to update from the provider on every sign-in, such as `["avatar"]`. None by default, so users' own edits are kept. |
 | `storeTokens` | Optional. Keeps each linked account's access and refresh tokens, encrypted, for [calling the provider's API](#call-the-providers-api). Needs `secretKey`. |
 
 `appUrl` must be the address users open your app at, and serve NextBase: the
@@ -152,10 +155,23 @@ need a session, such as your sign-in page, so the error is not lost on the way:
 | `email_required` | The provider did not share an email address, which a new account needs. |
 | `email_not_verified` | The provider did not verify the email it shared, or the account linking a provider has not verified its email. |
 | `sign_up_disabled` | The collection's `createRule` does not allow this sign-up, or the provider has `disableSignUp`. |
-| `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. |
+| `sign_up_failed` | The new account is invalid, for example because the collection has a required field the provider cannot fill. `&field=` names the field, such as `name`. |
 | `sign_in_forbidden` | The account exists but the collection's `authRule` does not let it sign in yet. |
 | `already_linked` | The provider account belongs to another user, or this user already linked one from this provider. |
 | Your own code | [`validateSignIn`](/docs/guides/auth#decide-who-may-sign-in) refused the sign-up, link or sign-in. |
+
+A refused sign-up is also written to the [logs](/docs/guides/logs) as a
+warning, with its reason, such as `OAuth2 sign-up refused: name: Cannot be
+blank.`, but none of the user's data. With `field`, your page can say what
+was missing:
+
+```tsx title="app/sign-in/page.tsx"
+const error = searchParams.get("error");
+const field = searchParams.get("field");
+if (error === "sign_up_failed" && field === "name") {
+  return <p>We couldn't get your name from Google. Add one to your Google account, or sign up with email.</p>;
+}
+```
 
 ## New accounts
 
@@ -191,6 +207,86 @@ refuse fails the sign-in with `sign_up_failed`. Sign-in fields (`email`,
 `emailVerified`, `password`, `phone`, `phoneVerified`, `tokenKey`, `id`) are
 never taken from it. `data` comes from the browser, as JSON of at most 2 KB:
 check it as you would any user input.
+
+### Profile fields
+
+Most providers share the same standard profile: the OpenID Connect claims
+`name`, `given_name`, `family_name` and `picture`, or GitHub's `name` and
+`avatar_url`. Set `profileFields: true` and a new account gets them in the
+fields it has:
+
+| Field | From |
+| ----- | ---- |
+| `name` | `name`, or `given_name` and `family_name` |
+| `givenName` | `given_name` |
+| `familyName` | `family_name` |
+| `avatar` | `picture` (a file field: the photo is downloaded) |
+
+Fields the collection lacks are skipped. To use your own field names, map
+them to claims: `profileFields: { fullName: "name", photo: "picture" }`. For
+OpenID Connect providers, NextBase then asks for the `profile` scope itself.
+`mapProfile` still runs, and wins for every field it returns.
+
+### Profile photos
+
+A file field gets the photo itself, downloaded once when the account is
+created and stored like any upload. From `mapProfile`, return
+`remoteFile(url)` for it:
+
+```ts title="lib/nextbase.ts"
+import { NextBase, remoteFile } from "@nextbasejs/core";
+
+mapProfile: (profile) => ({
+  photo: remoteFile(String(profile.picture)),
+}),
+```
+
+The download is limited, to keep it safe:
+
+- only over https, and only from the provider's `photoHosts`, redirects
+  included;
+- at most 5 MB, within 5 seconds;
+- and the field's own `maxSize` and `mimeTypes`, checked against the file's
+  bytes.
+
+A photo that fails any of these is left out and logged as a warning: the
+account is still created. A photo is never a reason to refuse one.
+
+### Keep fields up to date
+
+Profile fields are filled once, when the account is created; after that the
+user owns them. To update some from the provider on every sign-in, list them
+in `refreshProfile`, such as `["avatar"]`. A refresh that fails is logged and
+never stops the sign-in.
+
+### Recipe: sign up with Google
+
+A collection with a required name and a photo:
+
+```ts
+await superuser.collections.update("users", {
+  fields: [
+    { name: "name", type: "text", required: true },
+    { name: "avatar", type: "file", maxSize: 2_000_000, mimeTypes: ["image/jpeg", "image/png"] },
+  ],
+});
+```
+
+And the provider, filling both from Google's profile:
+
+```ts title="lib/nextbase.ts"
+oauth2: {
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID!,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    profileFields: true,
+  },
+},
+```
+
+A Google account with no name fails with `sign_up_failed&field=name`, which
+your sign-in page can [explain](#when-a-sign-in-fails); one whose photo cannot
+be downloaded signs up without it.
 
 ## Existing accounts with the same email
 

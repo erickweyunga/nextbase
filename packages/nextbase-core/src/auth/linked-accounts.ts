@@ -9,6 +9,8 @@ import {
 import { table } from '../db/system.ts';
 import { Effects } from '../effects.ts';
 import { ApiError } from '../errors.ts';
+import type { Storage } from '../files/storage.ts';
+import type { Logger } from '../logs/logger.ts';
 import { newId } from '../random.ts';
 import type { Hooks } from '../records/hooks.ts';
 import { newRecord, systemContext, updateRecord } from '../records/service.ts';
@@ -16,12 +18,9 @@ import type { Schema } from '../schema/cache.ts';
 import { randomPassword } from '../schema/fields.ts';
 import { findByEmail } from './identity.ts';
 import { takesSecondStep } from './mfa.ts';
-import {
-  type Identity,
-  OAuth2Error,
-  type OAuth2ProviderOptions,
-} from './oauth2.ts';
+import { type Identity, OAuth2Error } from './oauth2.ts';
 import { setPasswordOrigin } from './password-origins.ts';
+import { type ProfilePolicy, profileValues, resolveFiles } from './profile.ts';
 import {
   checkSignIn,
   type SignInAction,
@@ -36,6 +35,8 @@ export interface AccountContext {
   schema: Schema;
   effects: Effects;
   hooks: Hooks;
+  storage?: Storage;
+  logger: Logger;
   validateSignIn?: ValidateSignIn;
 }
 
@@ -46,12 +47,9 @@ export interface Account {
 }
 
 /** How a provider makes accounts: see `OAuth2ProviderOptions`. */
-export interface SignUpPolicy {
-  name: string;
+export interface SignUpPolicy extends ProfilePolicy {
   disableSignUp: boolean;
-  mapProfile: OAuth2ProviderOptions['mapProfile'];
-  /** What the app passed to the sign-in, for `mapProfile`. */
-  data: Record<string, unknown> | null;
+  refreshProfile: string[];
 }
 
 /**
@@ -66,7 +64,7 @@ export async function accountFor(
   linkRecordId: string | null,
 ): Promise<Account> {
   const effects = new Effects();
-  const account = await ctx.db.transaction((tx) =>
+  const { refresh, ...account } = await ctx.db.transaction((tx) =>
     findAccount(
       { ...ctx, effects },
       tx,
@@ -79,7 +77,55 @@ export async function accountFor(
   ctx.effects.absorb(effects);
   // Done even if the sign-in fails after this, as on its auth rule.
   ctx.effects.commit();
-  return account;
+  if (!refresh || provider.refreshProfile.length === 0) return account;
+  return {
+    ...account,
+    record: await refreshProfile(ctx, collection, provider, identity, account),
+  };
+}
+
+async function refreshProfile(
+  ctx: AccountContext,
+  collection: AuthCollection,
+  policy: SignUpPolicy,
+  identity: Identity,
+  { record }: Account,
+): Promise<Row> {
+  const effects = new Effects();
+  try {
+    const all = await profileValues(collection, policy, identity.profile);
+    const listed = Object.fromEntries(
+      Object.entries(all).filter(([name]) =>
+        policy.refreshProfile.includes(name),
+      ),
+    );
+    const values = await resolveFiles(collection, policy, listed, ctx.logger);
+    if (Object.keys(values).length === 0) return record;
+    const id = record.id as string;
+    await updateRecord(
+      {
+        ...systemContext({ ...ctx, effects }, values),
+        ...(ctx.storage && { storage: ctx.storage }),
+      },
+      collection,
+      id,
+      values,
+      new URLSearchParams(),
+    );
+    ctx.effects.absorb(effects);
+    return (await findRecord(ctx.db, collection, id)) ?? record;
+  } catch (error) {
+    if (ctx.storage && effects.newFiles.length > 0) {
+      await ctx.storage.delete(effects.newFiles).catch(() => {});
+    }
+    ctx.logger.failure(
+      'oauth2',
+      `the ${policy.name} profile of ${collection.name} was not refreshed`,
+      error,
+      'warn',
+    );
+    return record;
+  }
 }
 
 async function findAccount(
@@ -89,7 +135,7 @@ async function findAccount(
   policy: SignUpPolicy,
   identity: Identity,
   linkRecordId: string | null,
-): Promise<Account> {
+): Promise<Account & { refresh?: boolean }> {
   const provider = policy.name;
   // The app's check, with what the provider says about the account now.
   const check = (
@@ -128,7 +174,7 @@ async function findAccount(
   }
   if (linked) {
     await check('sign-in', linked);
-    return { record: linked };
+    return { record: linked, refresh: true };
   }
   if (identity.email === undefined) {
     throw new OAuth2Error(
@@ -302,19 +348,6 @@ async function link(
   if (inserted.length === 0) throw alreadyLinked();
 }
 
-/** Sign-in fields NextBase sets itself, never from a provider's profile. */
-const SIGN_IN_FIELDS = new Set([
-  'id',
-  'email',
-  'emailVerified',
-  'password',
-  'passwordConfirm',
-  'oldPassword',
-  'tokenKey',
-  'phone',
-  'phoneVerified',
-]);
-
 async function signUp(
   ctx: AccountContext & { tx: Tx },
   collection: AuthCollection,
@@ -324,28 +357,28 @@ async function signUp(
 ): Promise<Row> {
   const id = newId();
   const password = randomPassword(collection);
-  const mapped = policy.mapProfile
-    ? await policy.mapProfile(identity.profile, {
-        data: policy.data ?? undefined,
-      })
-    : {};
+  const values = await resolveFiles(
+    collection,
+    policy,
+    await profileValues(collection, policy, identity.profile),
+    ctx.logger,
+  );
   const input = {
-    ...Object.fromEntries(
-      Object.entries(mapped ?? {}).filter(([key]) => !SIGN_IN_FIELDS.has(key)),
-    ),
+    ...values,
     id,
     email: identity.email,
     password,
     passwordConfirm: password,
   };
   await check(input);
-  const { tx, db: pool, schema, effects, hooks } = ctx;
+  const { tx, db: pool, schema, effects, hooks, storage } = ctx;
   try {
     await newRecord(
       {
         db: tx,
         pool,
         schema,
+        ...(storage && { storage }),
         principal: { superuser: false },
         request: { method: 'POST', query: {}, headers: {}, body: input },
         effects,
@@ -372,9 +405,12 @@ async function signUp(
     );
   } catch (error) {
     if (error instanceof ApiError && error.status < 500) {
+      const [field, problem] = Object.entries(error.data)[0] ?? [];
+      const message = (problem as { message?: unknown } | undefined)?.message;
       throw new OAuth2Error(
         error.status === 403 ? 'sign_up_disabled' : 'sign_up_failed',
-        error.message,
+        typeof message === 'string' ? `${field}: ${message}` : error.message,
+        typeof message === 'string' ? field : undefined,
       );
     }
     throw error;

@@ -48,6 +48,9 @@ export interface OAuth2ProviderOptions {
     profile: Record<string, unknown>,
     context: { data: Record<string, unknown> | undefined },
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  profileFields?: boolean | Record<string, string>;
+  photoHosts?: string[];
+  refreshProfile?: string[];
 }
 
 /** Providers by name: `google`, `github`, or any OpenID Connect issuer. */
@@ -102,10 +105,12 @@ export interface OAuth2State {
 /** Sent back to the app as `?error=code`, not JSON, since the browser is navigating. */
 export class OAuth2Error extends Error {
   readonly code: string;
+  readonly field: string | undefined;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, field?: string) {
     super(message);
     this.code = code;
+    this.field = field;
   }
 }
 
@@ -118,6 +123,9 @@ interface Provider extends AuthProvider {
   disableSignUp: boolean;
   storeTokens: boolean;
   mapProfile: OAuth2ProviderOptions['mapProfile'];
+  profileFields: Record<string, string> | undefined;
+  photoHosts: string[];
+  refreshProfile: string[];
   /** Identity comes from a nonce-checked ID token. */
   oidc: boolean;
   client: oauth.Client;
@@ -862,11 +870,28 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
     disableSignUp: options.disableSignUp === true,
     storeTokens: options.storeTokens === true,
     mapProfile: options.mapProfile,
+    profileFields: profileFieldsOf(name, options.profileFields),
+    photoHosts: stringsOf(
+      name,
+      'photoHosts',
+      options.photoHosts ?? DEFAULT_PHOTO_HOSTS[name] ?? [],
+    ),
+    refreshProfile: stringsOf(
+      name,
+      'refreshProfile',
+      options.refreshProfile ?? [],
+    ),
   };
-  const withScopes = <P extends { scope: string }>(provider: P): P => ({
+  const withScopes = <P extends { scope: string; oidc: boolean }>(
+    provider: P,
+  ): P => ({
     ...provider,
     scope: [
-      ...new Set([...provider.scope.split(' '), ...(options.scopes ?? [])]),
+      ...new Set([
+        ...provider.scope.split(' '),
+        ...(provider.oidc && base.profileFields ? ['profile'] : []),
+        ...(options.scopes ?? []),
+      ]),
     ].join(' '),
   });
   if (options.issuer === undefined && name === 'github') {
@@ -889,6 +914,43 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
     displayName: options.displayName ?? (name === 'google' ? 'Google' : name),
     ...openIdConnect(issuer, base.client),
   });
+}
+
+const STANDARD_PROFILE_FIELDS: Record<string, string> = {
+  name: 'name',
+  givenName: 'given_name',
+  familyName: 'family_name',
+  avatar: 'picture',
+};
+
+const DEFAULT_PHOTO_HOSTS: Record<string, string[]> = {
+  google: ['*.googleusercontent.com'],
+  github: ['avatars.githubusercontent.com'],
+};
+
+function profileFieldsOf(
+  name: string,
+  value: OAuth2ProviderOptions['profileFields'],
+): Record<string, string> | undefined {
+  if (value === undefined || value === false) return undefined;
+  if (value === true) return STANDARD_PROFILE_FIELDS;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Object.values(value).some((claim) => typeof claim !== 'string')
+  ) {
+    throw new TypeError(
+      `OAuth2 provider "${name}" profileFields must be true or fields named by claim.`,
+    );
+  }
+  return value;
+}
+
+function stringsOf(name: string, option: string, value: unknown): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new TypeError(`OAuth2 provider "${name}" ${option} must be strings.`);
+  }
+  return value;
 }
 
 /**
