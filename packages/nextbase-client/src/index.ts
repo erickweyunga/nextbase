@@ -6,8 +6,10 @@ import { CollectionService } from './collections.ts';
 import { FileService } from './files.ts';
 import { type FilterValue, filter } from './filter.ts';
 import { LogService } from './logs.ts';
+import { MigrationService } from './migrations.ts';
 import { RealtimeService } from './realtime.ts';
 import { RecordService } from './records.ts';
+import { SettingsService } from './settings.ts';
 import {
   type ApiErrorBody,
   type AuthResponse,
@@ -36,6 +38,7 @@ export type { CollectionInput, CollectionService } from './collections.ts';
 export type { FileService, FileUrlOptions } from './files.ts';
 export { type FilterValue, filter } from './filter.ts';
 export type { LogListOptions, LogService, LogStatsOptions } from './logs.ts';
+export type { MigrationService } from './migrations.ts';
 export { passkeyAutofillAvailable } from './passkeys.ts';
 export type {
   RealtimeAction,
@@ -58,11 +61,14 @@ export type {
   SignUpPending,
   StepUpOptions,
 } from './records.ts';
+export type { SettingsService } from './settings.ts';
 export type {
   ApiErrorBody,
+  ApplicationSettings,
   AuthMethods,
   AuthProvider,
   AuthResponse,
+  ClientIpSettings,
   CurrentSession,
   ErrorData,
   FieldError,
@@ -71,15 +77,25 @@ export type {
   LinkedAccountModel,
   ListResult,
   LogModel,
+  LogSettings,
   LogStat,
+  MailEmail,
+  MailSettings,
   MfaRequired,
   MfaStatus,
+  MigrationModel,
+  MigrationsStatus,
+  OAuth2ProviderSettings,
   PasskeyModel,
+  RateLimitRuleSettings,
   RecordModel,
   RecoveryCodes,
+  SecuritySettings,
   SessionModel,
+  SettingsModel,
   SetupStatus,
   SignInMethod,
+  StorageSettings,
   TotpSetup,
 } from './shared/api.ts';
 export { DEFAULT_BASE_PATH } from './shared/api.ts';
@@ -148,11 +164,15 @@ export class NextBaseClient<
   readonly files: FileService;
   /** The server's request and error log. Superusers only. */
   readonly logs: LogService;
+  /** The app's migrations. Superusers only. */
+  readonly migrations: MigrationService;
   /**
    * Realtime subscriptions, all over one streamed request. Subscribe with
    * `collection(name).subscribe()`.
    */
   readonly realtime: RealtimeService;
+  /** The settings in effect. Superusers only. */
+  readonly settings: SettingsService;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
 
@@ -165,6 +185,8 @@ export class NextBaseClient<
     this.collections = new CollectionService(this);
     this.files = new FileService(this);
     this.logs = new LogService(this);
+    this.migrations = new MigrationService(this);
+    this.settings = new SettingsService(this);
     this.realtime = new RealtimeService(this, (init) =>
       this.#fetch(this.#url('/realtime'), init),
     );

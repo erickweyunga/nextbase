@@ -1,7 +1,9 @@
 import adminHtml from '@nextbasejs/admin/index.html?raw';
 import type {
+  ApplicationSettings,
   AuthCollection,
   RecordModel,
+  SecuritySettings,
   TotpSetup,
 } from '@nextbasejs/client';
 import {
@@ -47,6 +49,7 @@ import {
   type ClientIp,
   type ClientIpOption,
   clientIpReader,
+  clientIpSettings,
 } from './client-ip.ts';
 import { migrate } from './db/migrations.ts';
 import { sharedPool } from './db/pool.ts';
@@ -343,6 +346,8 @@ export class NextBase<C extends Collections = Collections> {
   readonly #logger: Logger;
   readonly #clientIp: ClientIp;
   readonly #rateLimits: RateLimits | undefined;
+  readonly #application: ApplicationSettings;
+  readonly #security: SecuritySettings;
   /** Work running after responses, such as after hooks and emails. */
   readonly #background = new Set<Promise<unknown>>();
   #db: DB | undefined;
@@ -409,6 +414,16 @@ export class NextBase<C extends Collections = Collections> {
     const secretKeys = new SecretKeys(
       options.secretKey ?? secretKeysFromEnv(process.env.NEXTBASE_SECRET_KEY),
     );
+    this.#security = {
+      secretKeys: secretKeys.count,
+      secretKeySource: !secretKeys.configured
+        ? 'none'
+        : options.secretKey === undefined
+          ? 'env'
+          : 'option',
+      rejectBreachedPasswords: this.#rejectBreachedPasswords,
+      validateSignIn: this.#validateSignIn !== undefined,
+    };
     this.#oauth2 = new OAuth2(
       options.oauth2,
       this.#appUrl,
@@ -469,6 +484,16 @@ export class NextBase<C extends Collections = Collections> {
       this.#logger,
       this.#realtime,
     );
+    this.#application = {
+      appUrl: this.#appUrl?.toString() ?? '',
+      basePath: this.#basePath,
+      trustedOrigins: [...this.#origins.trustedOrigins],
+      trustProxy: this.#origins.trustProxy,
+      clientIp: clientIpSettings(options.clientIp),
+      statementTimeout: this.#statementTimeout,
+      rateLimits: this.#rateLimits?.settings ?? null,
+      realtime: this.#realtime?.settings ?? null,
+    };
   }
 
   /**
@@ -990,6 +1015,7 @@ export class NextBase<C extends Collections = Collections> {
       passkeys: this.#passkeys,
       automigrate: this.#automigrate,
       schemaChanges: this.#schemaChanges,
+      migrations: this.#migrations,
       validateSignIn: this.#validateSignIn,
       rejectBreachedPasswords: this.#rejectBreachedPasswords,
       storage: this.#storage,
@@ -997,6 +1023,8 @@ export class NextBase<C extends Collections = Collections> {
       hooks: this.#hooks,
       realtime: this.#realtime,
       logger: this.#logger,
+      application: this.#application,
+      security: this.#security,
     };
   }
 

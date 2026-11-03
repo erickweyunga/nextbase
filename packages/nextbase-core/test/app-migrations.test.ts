@@ -613,4 +613,74 @@ describe("the app's migrations", () => {
       expect(out.at(-1)).toContain(snapshot);
     });
   });
+
+  describe('the migrations API', () => {
+    it('lists them for superusers, newest first, applied or pending, with or without a file', async () => {
+      const t = await database();
+      const step: Migration = { up: () => {} };
+      const nextbase = instance(t, {
+        dir: 'nextbase/migrations',
+        files: {
+          '1700000000_first': { ...step, down: () => {} },
+          '1700000001_second': step,
+        },
+        automigrate: false,
+      });
+      await nextbase.migrate();
+      await t.pool.query(
+        "INSERT INTO nextbase._app_migrations (name) VALUES ('1600000000_squashed')",
+      );
+
+      const status = await nextbase
+        .client({ superuser: true })
+        .migrations.getStatus();
+      expect(status).toMatchObject({
+        enabled: true,
+        dir: 'nextbase/migrations',
+        automigrate: false,
+        schemaChanges: false,
+      });
+      expect(
+        status.items.map(({ applied, ...item }) => ({
+          ...item,
+          applied: typeof applied,
+        })),
+      ).toEqual([
+        {
+          name: '1700000001_second',
+          applied: 'string',
+          file: true,
+          revertible: false,
+        },
+        {
+          name: '1700000000_first',
+          applied: 'string',
+          file: true,
+          revertible: true,
+        },
+        {
+          name: '1600000000_squashed',
+          applied: 'string',
+          file: false,
+          revertible: false,
+        },
+      ]);
+      await expect(
+        nextbase.client().migrations.getStatus(),
+      ).rejects.toMatchObject({ status: 401 });
+    });
+
+    it('answers without migrations too', async () => {
+      const status = await instance(await database(), undefined)
+        .client({ superuser: true })
+        .migrations.getStatus();
+      expect(status).toEqual({
+        enabled: false,
+        dir: '',
+        automigrate: false,
+        schemaChanges: true,
+        items: [],
+      });
+    });
+  });
 });

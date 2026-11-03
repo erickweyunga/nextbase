@@ -61,6 +61,19 @@ describe('file uploads to an S3-compatible bucket', () => {
     await s3.stop();
   });
 
+  it('answers where files are kept, without the credentials', async () => {
+    const settings = await admin.settings.get();
+    expect(settings.storage).toEqual({
+      kind: 's3',
+      bucket: s3.bucket,
+      region: 'us-east-1',
+      endpoint: s3.endpoint,
+      forcePathStyle: true,
+      credentials: 'keys',
+    });
+    expect(JSON.stringify(settings)).not.toContain('secretAccessKey');
+  });
+
   it('stores a small file in the bucket and redirects downloads to a signed URL', async () => {
     const nb = nextbase.client();
     const video = await nb

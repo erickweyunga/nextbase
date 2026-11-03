@@ -811,6 +811,32 @@ describe('logs', () => {
     });
   });
 
+  describe('settings', () => {
+    it('answers the logs settings in effect, to superusers only', async () => {
+      expect(
+        (await nextbase.client({ superuser: true }).settings.get()).logs,
+      ).toEqual({ maxDays: 7, minLevel: 0, authId: false, ip: false });
+      expect(
+        (
+          await instance({ logs: { maxDays: 30, minLevel: 4, ip: true } })
+            .client({ superuser: true })
+            .settings.get()
+        ).logs,
+      ).toEqual({ maxDays: 30, minLevel: 4, authId: false, ip: true });
+      expect(
+        (
+          await instance({ logs: false })
+            .client({ superuser: true })
+            .settings.get()
+        ).logs,
+      ).toBeNull();
+      expect((await call(nextbase, 'GET', '/settings')).status).toBe(401);
+      expect(
+        (await call(nextbase, 'GET', '/settings', { token: user })).status,
+      ).toBe(403);
+    });
+  });
+
   describe('routes', () => {
     const superuser = () => nextbase.client({ superuser: true });
 

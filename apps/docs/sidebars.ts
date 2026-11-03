@@ -75,6 +75,8 @@ const sidebars: SidebarsConfig = {
         { type: 'doc', id: 'api/realtime', label: 'Realtime' },
         { type: 'doc', id: 'api/collections', label: 'Collections' },
         { type: 'doc', id: 'api/logs', label: 'Logs' },
+        { type: 'doc', id: 'api/migrations', label: 'Migrations' },
+        { type: 'doc', id: 'api/settings', label: 'Settings' },
         { type: 'doc', id: 'api/setup', label: 'Setup and health' },
         { type: 'doc', id: 'sdk/index', label: 'Client SDK' },
       ],

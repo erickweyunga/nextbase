@@ -52,6 +52,10 @@ export class SecretKeys {
     return this.#keys.length > 0;
   }
 
+  get count(): number {
+    return this.#keys.length;
+  }
+
   encrypt(plain: Buffer, aad: string): string {
     const [current] = this.#keys;
     if (!current) throw new Error('No secretKey is set.');

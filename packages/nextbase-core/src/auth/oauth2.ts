@@ -1,5 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import type { AuthCollection, AuthProvider } from '@nextbasejs/client';
+import type {
+  AuthCollection,
+  AuthProvider,
+  OAuth2ProviderSettings,
+} from '@nextbasejs/client';
 import type { Builder, DB } from '@nextbasejs/dbx';
 import { createRemoteJWKSet, type JWTPayload, jwtVerify } from 'jose';
 import * as oauth from 'oauth4webapi';
@@ -115,6 +119,8 @@ export class OAuth2Error extends Error {
 }
 
 interface Provider extends AuthProvider {
+  /** The OpenID Connect issuer, or empty for GitHub's own OAuth2. */
+  issuer: string;
   scope: string;
   /** Every client id an ID token may be issued to. */
   audiences: string[];
@@ -207,6 +213,27 @@ export class OAuth2 {
   /** One per provider, so a callback can refuse a response meant for another provider. */
   callbackUrl(provider: Provider): string {
     return `${this.#callbackBase as string}${provider.name}`;
+  }
+
+  /** Each provider as configured, for superusers; never the client secret. */
+  get settings(): OAuth2ProviderSettings[] {
+    return [...this.#providers.values()].map((provider) => ({
+      name: provider.name,
+      displayName: provider.displayName,
+      issuer: provider.issuer,
+      clientIds: [...provider.audiences],
+      callbackUrl: this.callbackUrl(provider),
+      scopes: provider.scope.split(' ').filter(Boolean),
+      params: { ...provider.params },
+      disableSignUp: provider.disableSignUp,
+      storeTokens: provider.storeTokens,
+      mapProfile: provider.mapProfile !== undefined,
+      profileFields: provider.profileFields
+        ? { ...provider.profileFields }
+        : null,
+      photoHosts: [...provider.photoHosts],
+      refreshProfile: [...provider.refreshProfile],
+    }));
   }
 
   list(): AuthProvider[] {
@@ -897,6 +924,7 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
   if (options.issuer === undefined && name === 'github') {
     return withScopes({
       ...base,
+      issuer: '',
       displayName: options.displayName ?? 'GitHub',
       ...github(),
     });
@@ -911,6 +939,7 @@ function newProvider(name: string, options: OAuth2ProviderOptions): Provider {
   }
   return withScopes({
     ...base,
+    issuer,
     displayName: options.displayName ?? (name === 'google' ? 'Google' : name),
     ...openIdConnect(issuer, base.client),
   });

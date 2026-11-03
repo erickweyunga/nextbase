@@ -1,3 +1,4 @@
+import type { MigrationModel } from '@nextbasejs/client';
 import { type Builder, type DB, hash, type Tx } from '@nextbasejs/dbx';
 import { lockSchema, table } from '../db/system.ts';
 import { Effects } from '../effects.ts';
@@ -104,6 +105,32 @@ async function step(
     effects.commit();
     after(done, effects);
   }
+}
+
+/** The app's migrations and those applied here, newest first. */
+export async function migrationList(
+  q: Builder,
+  list: Migrations | undefined,
+): Promise<MigrationModel[]> {
+  const applied = new Map(
+    (
+      await q
+        .select('name', 'applied')
+        .from(table('_app_migrations'))
+        .all<{ name: string; applied: Date }>()
+    ).map((row) => [row.name, row.applied.toISOString()]),
+  );
+  const files = list?.files ?? {};
+  const names = new Set([...Object.keys(files), ...applied.keys()]);
+  return [...names]
+    .sort()
+    .reverse()
+    .map((name) => ({
+      name,
+      applied: applied.get(name) ?? null,
+      file: name in files,
+      revertible: files[name]?.down !== undefined,
+    }));
 }
 
 async function appliedNames(q: Builder, name?: string): Promise<string[]> {

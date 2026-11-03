@@ -1,0 +1,76 @@
+---
+title: Migrations
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Migrations
+
+Lists the app's [migrations](/docs/guides/migrations) and those applied to
+this database. It needs a superuser: anyone else gets a `401` when signed out
+and a `403` when signed in.
+
+<Tabs groupId="client">
+<TabItem value="sdk" label="SDK">
+
+```ts
+const status = await superuser.migrations.getStatus();
+```
+
+</TabItem>
+<TabItem value="curl" label="curl">
+
+```sh
+curl 'https://app.example/api/nextbase/migrations' \
+  -H 'authorization: Bearer <superuser token>'
+```
+
+</TabItem>
+</Tabs>
+
+```http
+GET /migrations
+```
+
+**Responses**
+
+<Tabs>
+<TabItem value="200" label="200">
+
+```json
+{
+  "enabled": true,
+  "dir": "nextbase/migrations",
+  "automigrate": false,
+  "schemaChanges": false,
+  "items": [
+    {
+      "name": "1762200000_created_posts",
+      "applied": "2026-11-02T11:28:00.000Z",
+      "file": true,
+      "revertible": true
+    },
+    {
+      "name": "1762100000_collections_snapshot",
+      "applied": "2026-11-01T09:10:00.000Z",
+      "file": false,
+      "revertible": false
+    }
+  ]
+}
+```
+
+| Field | Description |
+| ----- | ----------- |
+| `enabled` | Whether the app passes its migrations to `nextbase()`. |
+| `dir` | Their folder from the project root, or `""` without them. |
+| `automigrate` | Whether each collection change writes a migration here. |
+| `schemaChanges` | Whether the API may change collections here. |
+| `items` | Every migration of the app or applied here, newest first. |
+| `items[].applied` | When it ran on this database, or `null` while pending. |
+| `items[].file` | Whether the app still has its file; `false` after a squash removed it. |
+| `items[].revertible` | Whether it has a `down` that `revertMigrations()` can run. |
+
+</TabItem>
+</Tabs>
