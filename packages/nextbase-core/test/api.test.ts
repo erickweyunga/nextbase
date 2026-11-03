@@ -61,6 +61,25 @@ describe('HTTP API', () => {
       }
     });
 
+    it('links to the admin where adminPath moves it', async () => {
+      const moved = new NextBase({
+        database: t.pool,
+        appUrl: 'https://app.example',
+        adminPath: '/admin',
+        logs: false,
+      });
+      const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+      try {
+        await call('GET', '/setup', { instance: moved });
+        const message = String(log.mock.calls[0]?.[0]);
+        expect(message).toMatch(/https:\/\/app\.example\/admin\/#\/setup\/\S+/);
+        expect(message).not.toContain('/api/nextbase/_/');
+      } finally {
+        log.mockRestore();
+        await moved.flush();
+      }
+    });
+
     it('gives the token to the admin in development only', async () => {
       expect((await call('GET', '/setup')).body).toEqual({ required: true });
       vi.stubEnv('NODE_ENV', 'development');

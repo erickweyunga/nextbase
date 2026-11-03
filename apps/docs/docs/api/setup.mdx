@@ -45,7 +45,8 @@ SDK: `await nb.setupStatus()`.
 
 While no superuser exists, the server log prints a one-time setup token,
 valid for one hour, at most once a minute: as a link that opens the admin's
-setup screen, `<appUrl><basePath>/_/#/setup/<token>`, and as a `curl`
+setup screen, `<appUrl><adminPath>/#/setup/<token>` (`adminPath` defaults
+to `<basePath>/_`), and as a `curl`
 command. Send it with the superuser's credentials. Once a superuser exists,
 this endpoint returns `404`.
 

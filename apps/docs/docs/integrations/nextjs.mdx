@@ -60,6 +60,28 @@ Route handlers run on the Node.js runtime, the Next.js default. The Edge
 runtime cannot connect to Postgres, so do not set `runtime = "edge"` on this
 route.
 
+## Serve the admin at its own path
+
+The admin is served at `/api/nextbase/_` by default. To serve it at a path of
+your own, such as `/admin`, pass `adminPath` and add a route file there with
+the same handler:
+
+```ts title="lib/nextbase.ts"
+export const nextbase = new NextBase({ adminPath: "/admin" });
+```
+
+```ts title="app/admin/route.ts"
+import { newNextHandler } from "@nextbasejs/next";
+import { nextbase } from "@/lib/nextbase";
+
+export const { GET } = newNextHandler(nextbase);
+```
+
+The admin then answers only at `/admin`, and still talks to the API at its
+`basePath`. Its pages are in the URL's hash, such as `/admin#/collections`,
+so this one route serves all of them. The setup link in the server log points
+there too.
+
 ## Create a client
 
 In client components, use `@nextbasejs/react`. Wrap your app in
