@@ -9,12 +9,27 @@
   },
   "scripts": {
     "build": "vite build",
-    "dev": "vite build --watch",
-    "typecheck": "tsc"
+    "dev": "vite",
+    "typecheck": "tsc",
+    "test": "vitest run"
   },
   "devDependencies": {
+    "@fontsource-variable/google-sans": "catalog:",
+    "@iconify-json/material-symbols": "catalog:",
+    "@nextbasejs/client": "workspace:*",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "baseui": "catalog:",
+    "happy-dom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "styletron-engine-monolithic": "catalog:",
+    "styletron-react": "catalog:",
     "typescript": "catalog:",
+    "unplugin-icons": "catalog:",
     "vite": "catalog:",
-    "vite-plugin-singlefile": "catalog:"
+    "vite-plugin-singlefile": "catalog:",
+    "vitest": "catalog:"
   }
 }

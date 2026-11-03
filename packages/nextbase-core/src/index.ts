@@ -612,7 +612,9 @@ export class NextBase<C extends Collections = Collections> {
     const token = await setupToken(db);
     const origin = this.#appUrl?.origin ?? 'https://<your app>';
     console.info(
-      `[nextbase] No superuser exists yet. Within the next hour, create one with:\n` +
+      `[nextbase] No superuser exists yet. Within the next hour, create one in the admin:\n` +
+        `  ${origin}${this.#basePath}/_/#/setup/${token}\n` +
+        `or with:\n` +
         `  curl -X POST ${origin}${this.#basePath}/setup -H 'content-type: application/json' \\\n` +
         `    -d '{"token":"${token}","email":"you@example.com","password":"a long password"}'`,
     );

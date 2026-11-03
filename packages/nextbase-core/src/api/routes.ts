@@ -6,6 +6,7 @@ import type {
   MigrationsStatus,
   SecuritySettings,
   SettingsModel,
+  SetupStatus,
   SignInMethod,
 } from '@nextbasejs/client';
 import {
@@ -108,7 +109,7 @@ import {
   setSessionCookie,
 } from '../auth/sessions.ts';
 import type { Sms } from '../auth/sms.ts';
-import { completeSetup, hasSuperuser } from '../auth/superusers.ts';
+import { completeSetup, hasSuperuser, setupToken } from '../auth/superusers.ts';
 import { countAttempt, mailKey } from '../auth/throttle.ts';
 import {
   checkSignIn,
@@ -453,7 +454,15 @@ export const ROUTES: readonly Route[] = [
     method: 'GET',
     pattern: /^\/setup$/,
     async handler({ db }) {
-      return Response.json({ required: !(await hasSuperuser(db)) });
+      if (await hasSuperuser(db)) {
+        return Response.json({ required: false } satisfies SetupStatus);
+      }
+      return Response.json({
+        required: true,
+        ...(process.env.NODE_ENV === 'development' && {
+          token: await setupToken(db),
+        }),
+      } satisfies SetupStatus);
     },
   },
   {

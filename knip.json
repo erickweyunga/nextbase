@@ -14,6 +14,10 @@
     },
     "examples/next-app": {
       "ignoreBinaries": ["openssl"]
+    },
+    "packages/nextbase-admin": {
+      "entry": ["src/ui/*/index.ts"],
+      "ignoreDependencies": ["@fontsource-variable/google-sans"]
     }
   }
 }

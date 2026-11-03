@@ -25,11 +25,15 @@
         "noNamespace": "error",
         "useConsistentArrayType": {
           "level": "error",
-          "options": { "syntax": "shorthand" }
+          "options": {
+            "syntax": "shorthand"
+          }
         },
         "useConsistentTypeDefinitions": {
           "level": "error",
-          "options": { "style": "interface" }
+          "options": {
+            "style": "interface"
+          }
         },
         "useConst": "error",
         "useDefaultSwitchClause": "error",
@@ -62,13 +66,33 @@
         "**/*.d.ts",
         "apps/docs/sidebars.ts",
         "apps/docs/src/pages/**",
-        "examples/next-app/app/**/page.tsx",
-        "examples/next-app/app/**/layout.tsx"
+        "examples/*/app/**/page.tsx",
+        "examples/*/app/**/layout.tsx"
       ],
       "linter": {
         "rules": {
           "style": {
             "noDefaultExport": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/nextbase-admin/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["baseui/icon/*"],
+                    "message": "Import Base Web's icons by name from 'baseui/icon': these per-icon files are CommonJS defaults, which Vite does not unwrap, so React gets an object and crashes."
+                  }
+                ]
+              }
+            }
           }
         }
       }

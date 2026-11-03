@@ -114,6 +114,8 @@ export interface ImpersonateResponse<T extends RecordModel = RecordModel>
 export interface SetupStatus {
   /** True until the first superuser exists. */
   required: boolean;
+  /** In development only, while required: the setup token, so the admin can open its setup screen. */
+  token?: string;
 }
 
 /** How records of an auth collection can sign in. */

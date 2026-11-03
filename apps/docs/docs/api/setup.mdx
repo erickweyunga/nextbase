@@ -34,13 +34,20 @@ GET /setup
 { "required": true }
 ```
 
+In development (`NODE_ENV=development`, as under `next dev`), it also answers
+the setup `token` while setup is required, so the admin opens its setup screen
+on its own. Anyone who can reach a development server could then create the
+first superuser; outside development the token is only in the server log.
+
 SDK: `await nb.setupStatus()`.
 
 ## Create the first superuser
 
 While no superuser exists, the server log prints a one-time setup token,
-valid for one hour, at most once a minute. Send it with the superuser's
-credentials. Once a superuser exists, this endpoint returns `404`.
+valid for one hour, at most once a minute: as a link that opens the admin's
+setup screen, `<appUrl><basePath>/_/#/setup/<token>`, and as a `curl`
+command. Send it with the superuser's credentials. Once a superuser exists,
+this endpoint returns `404`.
 
 <Tabs groupId="client">
 <TabItem value="sdk" label="SDK">

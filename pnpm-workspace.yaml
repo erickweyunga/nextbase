@@ -29,8 +29,11 @@ catalog:
   "@types/react-dom": ^19.3.0
   "@vercel/functions": ^3.9.11
   "@file-type/xml": ^1.2.0
+  "@vitejs/plugin-react": ^6.1.2
+  baseui: ^18.2.0
   file-type: ^22.2.0
   happy-dom: ^21.0.4
+  '@iconify-json/material-symbols': ^1.2.97
   range-parser: ^1.3.0
   jose: ^6.2.11
   knip: ^6.41.0
@@ -44,9 +47,12 @@ catalog:
   react-dom: ^19.3.1
   server-only: ^0.0.1
   sharp: ^0.35.5
+  styletron-engine-monolithic: ^1.0.0
+  styletron-react: ^6.1.1
   tsdown: ^0.23.1
   turbo: ^2.11.9
   typescript: ^7.0.2
+  unplugin-icons: ^24.0.0
   vite: ^8.3.4
   vite-plugin-singlefile: 2.3.3
   vitest: ^5.0.5
@@ -56,6 +62,15 @@ allowBuilds:
   "@swc/core": true
   # Its install script only prints a funding message.
   core-js: false
+
+peerDependencyRules:
+  allowedVersions:
+    react-uid>react: "19"
+    react-uid>@types/react: "19"
+    react-window>react: "19"
+    react-window>react-dom: "19"
+    react-virtualized-auto-sizer>react: "19"
+    react-virtualized-auto-sizer>react-dom: "19"
 
 minimumReleaseAgeExclude:
   - "@aws-sdk/checksums@3.1001.6"

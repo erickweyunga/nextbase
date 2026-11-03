@@ -126,3 +126,6 @@ forgets nothing.
 `await nextbase.revertMigrations(count)` runs `down` of the last `count`
 applied migrations, newest first, each in its own transaction. A migration
 without `down` cannot be reverted.
+
+The admin's Settings, under Migrations, lists them with when each ran here,
+from [`GET /migrations`](/docs/api/migrations).
