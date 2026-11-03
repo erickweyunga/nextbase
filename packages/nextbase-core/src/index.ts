@@ -138,6 +138,7 @@ export type {
   OAuth2Options,
   OAuth2ProviderOptions,
 } from './auth/oauth2.ts';
+export { type RemoteFile, remoteFile } from './auth/profile.ts';
 export type {
   SmsContext,
   SmsKind,

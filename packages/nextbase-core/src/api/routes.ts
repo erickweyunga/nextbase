@@ -26,9 +26,11 @@ import {
 import { findByEmail } from '../auth/identity.ts';
 import {
   type Account,
+  type AccountContext,
   accountFor,
   findLinked,
   listLinkedAccounts,
+  type SignUpPolicy,
   unlinkAccount,
 } from '../auth/linked-accounts.ts';
 import {
@@ -126,7 +128,7 @@ import {
   readOptionalJsonObject,
   readRecordBody,
 } from '../http.ts';
-import type { Logger } from '../logs/logger.ts';
+import { LOG_LEVELS, type Logger } from '../logs/logger.ts';
 import {
   deleteLogs,
   logModel,
@@ -1059,26 +1061,16 @@ export const ROUTES: readonly Route[] = [
       let account: Account;
       try {
         account = await accountFor(
-          {
-            db,
-            schema,
-            effects: context.effects,
-            hooks: context.hooks,
-            validateSignIn: context.validateSignIn,
-          },
+          accountContext(context),
           collection,
-          {
-            name: provider.name,
-            disableSignUp: provider.disableSignUp,
-            mapProfile: provider.mapProfile,
-            data,
-          },
+          signUpPolicy(provider, data),
           identity,
           null,
         );
       } catch (error) {
         // The codes the browser sign-in returns in `?error=`.
         if (error instanceof OAuth2Error) {
+          logRefusedSignUp(context, provider.name, collection.name, error);
           throw new ApiError(400, error.message, {
             token: { code: error.code, message: error.message },
           });
@@ -1158,11 +1150,16 @@ export const ROUTES: readonly Route[] = [
       oauth2.provider(params[0] as string);
       let redirect = '';
       let errorRedirect = '';
-      const back = (error?: string): Response => {
+      let providerName = params[0] as string;
+      let collectionName = '';
+      const back = (
+        error?: string,
+        details: Record<string, string> = {},
+      ): Response => {
         const to = error === undefined ? redirect : errorRedirect;
         const response = new Response(null, {
           status: 302,
-          headers: [['location', oauth2.returnUrl(to, error)]],
+          headers: [['location', oauth2.returnUrl(to, error, details)]],
         });
         response.headers.append('set-cookie', setStateCookie(request));
         return response;
@@ -1180,6 +1177,8 @@ export const ROUTES: readonly Route[] = [
         }
         const provider = oauth2.provider(state.provider);
         const collection = authCollection(schema, state.collectionId);
+        providerName = provider.name;
+        collectionName = collection.name;
         // A link is for the record that started it, still signed in here,
         // and never for a superuser acting as it.
         if (
@@ -1201,20 +1200,9 @@ export const ROUTES: readonly Route[] = [
           });
         }
         const { record, linkedTo } = await accountFor(
-          {
-            db,
-            schema,
-            effects: context.effects,
-            hooks: context.hooks,
-            validateSignIn: context.validateSignIn,
-          },
+          accountContext(context),
           collection,
-          {
-            name: provider.name,
-            disableSignUp: provider.disableSignUp,
-            mapProfile: provider.mapProfile,
-            data: state.data,
-          },
+          signUpPolicy(provider, state.data),
           identity,
           state.linkRecordId,
         );
@@ -1289,6 +1277,12 @@ export const ROUTES: readonly Route[] = [
       } catch (error) {
         if (error instanceof OAuth2Error || error instanceof SignInRefused) {
           context.noteError(error.code);
+          if (error instanceof OAuth2Error) {
+            logRefusedSignUp(context, providerName, collectionName, error);
+            if (error.field !== undefined) {
+              return back(error.code, { field: error.field });
+            }
+          }
           return back(error.code);
         }
         context.logger.failure('oauth2', 'an OAuth2 sign-in failed', error);
@@ -2866,6 +2860,52 @@ function requireSchemaChanges(allowed: boolean): void {
         code: 'schema_managed_by_migrations',
         message: 'Change it through a migration.',
       },
+    },
+  );
+}
+
+function accountContext(context: Context): AccountContext {
+  return {
+    db: context.db,
+    schema: context.schema,
+    effects: context.effects,
+    hooks: context.hooks,
+    storage: context.storage,
+    logger: context.logger,
+    ...(context.validateSignIn && { validateSignIn: context.validateSignIn }),
+  };
+}
+
+function signUpPolicy(
+  provider: ReturnType<OAuth2['provider']>,
+  data: Record<string, unknown> | null,
+): SignUpPolicy {
+  return {
+    name: provider.name,
+    disableSignUp: provider.disableSignUp,
+    mapProfile: provider.mapProfile,
+    profileFields: provider.profileFields,
+    photoHosts: provider.photoHosts,
+    refreshProfile: provider.refreshProfile,
+    data,
+  };
+}
+
+function logRefusedSignUp(
+  context: Context,
+  provider: string,
+  collection: string,
+  error: OAuth2Error,
+): void {
+  if (!error.code.startsWith('sign_up_')) return;
+  context.logger.add(
+    LOG_LEVELS.warn,
+    `OAuth2 sign-up refused: ${error.message}`,
+    {
+      type: 'oauth2',
+      provider,
+      collection,
+      ...(error.field !== undefined && { field: error.field }),
     },
   );
 }
